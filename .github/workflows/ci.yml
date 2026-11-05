@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  matching-engine-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/matching-engine-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/matching-engine-service/package-lock.json
+      - run: npm install
+      - run: npm run lint
+      - run: npm test
+
+  settlement-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/settlement-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/settlement-service/package-lock.json
+      - run: npm install
+      - run: npm run lint
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - run: npm install
+      - run: npm run lint

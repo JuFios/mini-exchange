@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  exchange-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: exchange
+      POSTGRES_PASSWORD: exchange
+      POSTGRES_DB: exchange
+    ports:
+      - '5433:5432'
+    volumes:
+      - exchange-db-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+
+  matching-engine-service:
+    build: ./apps/matching-engine-service
+    env_file: ./apps/matching-engine-service/.env.example
+    environment:
+      DATABASE_HOST: exchange-db
+      REDIS_HOST: redis
+    depends_on:
+      - exchange-db
+      - redis
+    ports:
+      - '3001:3001'
+
+  settlement-service:
+    build: ./apps/settlement-service
+    env_file: ./apps/settlement-service/.env.example
+    depends_on:
+      - exchange-db
+    ports:
+      - '3002:3002'
+
+  frontend:
+    build: ./apps/frontend
+    env_file: ./apps/frontend/.env.example
+    environment:
+      MATCHING_ENGINE_URL: http://matching-engine-service:3001
+    depends_on:
+      - matching-engine-service
+    ports:
+      - '3000:3000'
+
+volumes:
+  exchange-db-data:
