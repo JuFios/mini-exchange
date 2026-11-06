@@ -15,6 +15,20 @@ export interface BookSnapshot {
   asks: Order[]; // сортовані: ціна зростає, за рівної ціни — час зростає
 }
 
+export const DEFAULT_BOOK_DEPTH = 50;
+export const MAX_BOOK_DEPTH = 50;
+
+export interface BookLevel {
+  price: string;
+  quantity: string;
+  orders: number;
+}
+
+export interface BookDepth {
+  bids: BookLevel[];
+  asks: BookLevel[];
+}
+
 export interface MatchResult {
   trades: Trade[];
   restingOrder: Order | null; // залишок заявки, що лягає в книгу (якщо є)

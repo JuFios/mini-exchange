@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -17,15 +17,9 @@ export class OrdersService {
   ) {}
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string): Promise<Trade[]> {
-    let price: string;
-    let quantity: string;
-    try {
-      price = formatPrice(parsePrice(dto.price));
-      quantity = formatQuantity(parseQuantity(dto.quantity));
-    } catch (error) {
-      if (error instanceof DecimalError) throw new BadRequestException(error.message);
-      throw error;
-    }
+    // Ті самі повідомлення й форма (масив), що й у DTO для рядкових сум.
+    const price = this.amount(() => formatPrice(parsePrice(dto.price)), 'Некоректна ціна');
+    const quantity = this.amount(() => formatQuantity(parseQuantity(dto.quantity)), 'Некоректна кількість');
 
     const incoming: Order = {
       id: randomUUID(),
@@ -71,22 +65,37 @@ export class OrdersService {
     return result.trades;
   }
 
-  async cancelOrder(orderId: string, instrument: string): Promise<void> {
-    const order = await this.orders.findOne({ where: { id: orderId } });
+  private amount(read: () => string, message: string): string {
+    try {
+      return read();
+    } catch (error) {
+      if (error instanceof DecimalError) throw new BadRequestException([message]);
+      throw error;
+    }
+  }
+
+  async cancelOrder(orderId: string, userId: string, instrumentHint?: string): Promise<void> {
+    const order = await this.orders.findOne({ where: { id: orderId, ownerId: userId } });
     if (!order) {
       throw new NotFoundException('Заявку не знайдено');
     }
-    order.status = 'cancelled';
-    order.remainingQuantity = '0';
-    await this.orders.save(order);
-    this.orderBook.removeOrder(instrument, orderId);
+    if (instrumentHint !== undefined && instrumentHint !== order.instrument) {
+      throw new BadRequestException('Інструмент не збігається з інструментом заявки');
+    }
+    if (order.status !== 'open' && order.status !== 'partially_filled') {
+      throw new ConflictException('Заявку вже закрито');
+    }
+    const { affected } = await this.orders.update(
+      { id: order.id, ownerId: userId, status: order.status },
+      { status: 'cancelled', remainingQuantity: '0' },
+    );
+    if (affected !== 1) {
+      throw new ConflictException('Стан заявки змінився');
+    }
+    this.orderBook.removeOrder(order.instrument, order.id);
   }
 
   async listOwn(ownerId: string): Promise<Order[]> {
     return this.orders.find({ where: { ownerId } });
-  }
-
-  getDepth(instrument: string) {
-    return this.orderBook.depth(instrument);
   }
 }

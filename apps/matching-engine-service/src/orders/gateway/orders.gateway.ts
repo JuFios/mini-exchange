@@ -6,6 +6,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { OrderBookService } from '../order-book.service';
+import { InstrumentCatalog } from '../instrument-catalog';
 
 /**
  * Трансляція оновлень order book підписаним клієнтам. Кожен клієнт
@@ -21,14 +22,20 @@ export class OrdersGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly orderBook: OrderBookService) {}
+  constructor(
+    private readonly orderBook: OrderBookService,
+    private readonly instruments: InstrumentCatalog,
+  ) {}
 
   handleConnection(client: Socket) {
     client.emit('connected', { message: 'ok' });
   }
 
   @SubscribeMessage('subscribe')
-  subscribe(client: Socket, instrument: string) {
+  subscribe(client: Socket, instrument: unknown) {
+    if (!this.instruments.has(instrument)) {
+      return { ok: false, error: 'Невідомий інструмент' };
+    }
     client.join(instrument);
     client.emit('book', this.orderBook.depth(instrument));
   }

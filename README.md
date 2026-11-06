@@ -54,12 +54,12 @@ AOF, невдалі healthcheck не враховуються протягом `
 
 ### Віддалене розгортання
 
-Порти `3000` і `3001` опубліковані на всіх інтерфейсах хоста. `.env.example` містить
-публічні демо-секрети JWT: з ними будь-хто з доступом до порту `3001` може підписати власний
-токен і діяти від імені довільного користувача. Тому стек, доступний з інших хостів,
-запускайте лише з `docker-compose.remote.yml`. Цей файл вимагає власні `JWT_ACCESS_SECRET`
-і `JWT_REFRESH_SECRET`, а також адресу WebSocket, доступну браузеру. Без цих значень
-Compose не запуститься.
+Локальний Compose публікує порти `3000` і `3001` лише на `127.0.0.1`.
+`.env.example` містить публічні демо-секрети JWT для цього режиму. Для доступу з інших
+хостів використовуйте `docker-compose.remote.yml`. Він публікує ці порти на всіх
+інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` та адресу WebSocket,
+доступну браузеру. Engine відхиляє старт, якщо JWT-секрет відсутній, коротший за 32
+символи або збігається з іншим JWT-секретом.
 
 ```bash
 export COMPOSE_FILE=docker-compose.yml:docker-compose.remote.yml
@@ -136,6 +136,9 @@ volumes:
 | Збірка або запуск Docker падають, а CI не знаходить lockfiles для npm-кешу | `docker compose up -d --build --wait`, `docker compose up -d --build --wait matching-engine-service`, `npm ci` у будь-якому з трьох пакетів, `npm install && npm run build` у `apps/frontend` | Lockfiles, окремі налаштування збірки Nest, явний `varchar` для `User.refreshTokenHash`, екранування апострофа в JSX і `.dockerignore` для залежностей та артефактів хоста. CI встановлює залежності через `npm ci` і запускає Compose smoke. |
 | Тест self-trade проходить, навіть коли перевірка не запобігає власній угоді | У `test/self-trade.spec.ts` початкова перевірка лише підтверджує наявність результату | Тест перевіряє угоди, статус incoming і обидві сторони книги. Підміна політики на no-op має порушити ці твердження. |
 | Після часткового виконання bid і ask одного власника залишаються на однаковій ціні | X ставить sell 1 @ 100, Y ставить sell 1 @ 99, X подає buy 2 @ 100 | Угода з Y виконується за 99, залишок buy скасовується, власний ask X лишається в книзі. |
+| Можна скасувати чужу або виконану заявку | `test/e2e/regression/cancel-access.e2e-spec.ts` | Пошук за ID і власником, перевірка статусу та видалення з книги за збереженим інструментом. |
+| Глибина розкриває ID і власників, показує початковий обсяг | `test/e2e/regression/depth-leak.e2e-spec.ts` | HTTP і WebSocket повертають агреговані залишки за ціною. |
+| Некоректні параметри заявок приймаються або дають HTTP 500 | `test/e2e/regression/order-validation.e2e-spec.ts` | Межі й точність сум, перелік інструментів, перевірка UUID і відхилення зайвих полів. |
 
 ## Зіставлення заявок
 
@@ -162,6 +165,32 @@ JSON-чисел перевіряється запис із тіла запиту
 Експоненційний запис (`1e-8`) розгортається без округлення. Зіставлення оперує
 цілими тиками та лотами, а ціни й кількості угод повертаються як десяткові рядки.
 
+## Зміни контрактів і поведінки
+
+- `GET /instruments` публічно повертає символи, активи, тики, лоти й межі заявок. Перелік
+  задається обов’язковою змінною `INSTRUMENTS` у matching engine (у `.env.example` —
+  `ABC,XYZ`, котирування в USD). Без неї, як і без `PORT` та `INSTANCE_ID`, engine не
+  стартує: типових значень у коді немає.
+- `GET /instruments/ABC/book?depth=50` і сумісний `GET /orders/book?instrument=ABC` доступні
+  без JWT. Відповідь містить `instrument`, `bids` і `asks`. Кожен рівень містить
+  `price`, суму відкритих залишків `quantity` та кількість заявок `orders`. Ціна й
+  кількість — точні десяткові рядки. `depth` задає 1–50 рівнів на сторону, типово 50.
+  Поточний знімок книги не має номера послідовності.
+- Подія `book` на публічному WebSocket повертає ті самі агреговані `bids` і `asks`.
+  Підписка `subscribe` приймає символ із переліку інструментів.
+- `POST /orders` повертає 400 для порожнього чи невідомого інструмента або зайвих полів.
+  Ціни й кількості приймаються як JSON-числа та десяткові рядки. Некоректна сума завжди
+  повертає `message` з масивом українських повідомлень, незалежно від типу значення.
+- Зайві поля тіла чи query відхиляються глобально: те саме 400 «Зайве поле …» діє для
+  `/auth/register`, `/auth/login` і `DELETE /orders/:id`. Раніше такі поля мовчки відкидались.
+- `DELETE /orders/:id` вимагає JWT. Чужа або відсутня заявка повертає 404, закрита — 409,
+  некоректний UUID — 400. Необов’язковий `?instrument` лише звіряється зі збереженим
+  інструментом, незбіг повертає 400. Успішне скасування повертає 200 з порожнім тілом.
+
+Для запуску matching engine без Compose скопіюйте `apps/matching-engine-service/.env.example`
+у `.env` у каталозі пакета. Задайте адреси PostgreSQL і Redis, доступні з вашого хоста,
+і згенеруйте власні JWT-секрети командами з розділу віддаленого розгортання.
+
 ## Тести
 
 ```bash
@@ -174,5 +203,49 @@ curl -fsS http://localhost:3002/health
 curl -fsS http://localhost:3000/orderbook > /dev/null
 ```
 
+Тести matching engine потребують Node.js 20.12 або новішого (`util.parseEnv`).
 Jest у matching engine запускає файли `*.spec.ts` поза `test/e2e/` і `test/integration/`.
 Тести зіставлення перевіряють сценарії виконання, скасування та звіряють книгу й угоди з незалежним еталоном.
+
+У тесті сервісу заявок перевірка STP читає внутрішній знімок книги напряму, щоб
+зберегти перевірку конкретної resting-заявки після зміни публічної глибини. У
+HTTP-тесті точності використано дійсний символ `ABC`. Рядок і вкладене число, які
+перевіряють виділення JSON-чисел верхнього рівня, лишаються в полі `note` тестової фікстури.
+
+### Engine e2e
+
+Запустіть з кореня репозиторію після `npm ci` у пакеті matching engine. Кожен запуск
+створює окремий Compose-проєкт зі своїми томами й динамічними портами на loopback.
+Тестова роль PostgreSQL створює окрему БД для кожного набору, а після тестів її видаляє.
+
+```bash
+(
+  set -eu
+  project="exchange-e2e-$(openssl rand -hex 6)"
+  e2e() {
+    docker compose -p "$project" -f docker-compose.yml -f docker-compose.e2e.yml "$@"
+  }
+  cleanup() {
+    result=$?
+    if [ "$result" -ne 0 ]; then
+      e2e ps -a || true
+      e2e logs --no-color --tail=200 || true
+    fi
+    e2e down -v --remove-orphans || true
+    exit "$result"
+  }
+  trap cleanup EXIT
+  printf 'Compose project: %s\n' "$project"
+  e2e up -d --wait --wait-timeout 240 exchange-db redis
+  pg_address=$(e2e port exchange-db 5432)
+  redis_address=$(e2e port redis 6379)
+  export DATABASE_HOST=127.0.0.1 DATABASE_PORT=${pg_address##*:}
+  export DATABASE_USER=exchange DATABASE_PASSWORD=exchange DATABASE_NAME=postgres
+  export REDIS_HOST=127.0.0.1 REDIS_PORT=${redis_address##*:}
+  (cd apps/matching-engine-service && npm run test:e2e)
+)
+```
+
+Після `SIGKILL` повторний запуск отримає інший проєкт і порти. Прибрати ресурси
+перерваного тесту можна командою `docker compose -p ІМʼЯ_ПРОЄКТУ -f docker-compose.yml -f docker-compose.e2e.yml down -v`
+з кореня репозиторію, використавши надруковану назву проєкту.

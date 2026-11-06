@@ -19,7 +19,7 @@ function setup() {
 const sell = { instrument: 'ABC', side: 'sell' as const, price: 100, quantity: 1 };
 
 it('persists an STP cancellation and keeps fills made before the self-cross', async () => {
-  const { service } = setup();
+  const { service, book } = setup();
   await service.submitOrder(sell, 'X');
   await service.submitOrder({ ...sell, price: 99 }, 'Y');
 
@@ -29,7 +29,7 @@ it('persists an STP cancellation and keeps fills made before the self-cross', as
   expect(trades).toMatchObject([{ price: '99.00', quantity: '1.00000000', buyOrderId: buy.id }]);
   // Виконаний обсяг відновлюється як quantity - remainingQuantity.
   expect(buy).toMatchObject({ status: 'cancelled', quantity: '2.00000000', remainingQuantity: '1.00000000' });
-  expect(service.getDepth('ABC')).toEqual({ bids: [], asks: [ownAsk] });
+  expect(book.snapshot('ABC')).toEqual({ bids: [], asks: [ownAsk] });
 });
 
 it('keeps the whole quantity as the cancelled remainder when nothing was filled before the self-cross', async () => {
