@@ -10,6 +10,8 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
+    "migration:run": "ts-node src/migrate.ts run",
+    "migration:revert": "ts-node src/migrate.ts revert",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
     "test": "jest",

@@ -41,6 +41,18 @@ jobs:
       - run: npm run lint:check
       - run: npx tsc --noEmit
       - run: npm test
+      - name: Run, revert and reapply engine migrations
+        env:
+          DATABASE_HOST: 127.0.0.1
+          DATABASE_PORT: ${{ job.services.postgres.ports[5432] }}
+          DATABASE_USER: exchange
+          DATABASE_PASSWORD: exchange
+          DATABASE_NAME: exchange
+        run: |
+          npm run migration:run
+          npm run migration:revert
+          npm run migration:revert
+          npm run migration:run
       - name: Run engine end-to-end tests
         env:
           DATABASE_PORT: ${{ job.services.postgres.ports[5432] }}

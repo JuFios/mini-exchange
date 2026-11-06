@@ -6,24 +6,20 @@ import { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
+import { migrate } from '../../src/database/migrate';
+import { testDatabase } from '../test-database';
 import { configureApp } from '../../src/configure-app';
 import type { Order } from '../../src/orders/entities/order.entity';
 
 export function engineApp() {
-  const database = `exchange_e2e_${randomUUID().replaceAll('-', '')}`;
+  const database = testDatabase();
   const example = parseEnv(readFileSync(join(__dirname, '../../.env.example'), 'utf8'));
   const settings = {
     ...example,
-    DATABASE_HOST: process.env.DATABASE_HOST ?? '127.0.0.1',
-    DATABASE_PORT: process.env.DATABASE_PORT ?? '5433',
-    DATABASE_USER: process.env.DATABASE_USER ?? example.DATABASE_USER,
-    DATABASE_PASSWORD: process.env.DATABASE_PASSWORD ?? example.DATABASE_PASSWORD,
-    DATABASE_NAME: database,
+    ...database.env,
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
   };
-  let admin: DataSource | undefined;
-  let databaseCreated = false;
   let app: INestApplication | undefined;
   let baseUrl: string;
   const original = new Map<string, string | undefined>();
@@ -41,19 +37,14 @@ export function engineApp() {
     } finally {
       redis.disconnect();
     }
-    admin = new DataSource({
-      type: 'postgres',
-      host: settings.DATABASE_HOST,
-      port: Number(settings.DATABASE_PORT),
-      username: settings.DATABASE_USER,
-      password: settings.DATABASE_PASSWORD,
-      database: process.env.DATABASE_NAME ?? 'postgres',
-      installExtensions: false,
-      connectTimeoutMS: 3000,
-    });
-    await admin.initialize();
-    await admin.query(`CREATE DATABASE "${database}"`);
-    databaseCreated = true;
+    await database.create();
+    const source = database.source();
+    await source.initialize();
+    try {
+      await migrate(source, 'run');
+    } finally {
+      await source.destroy();
+    }
     for (const [key, value] of Object.entries(settings)) {
       if (value === undefined) continue;
       original.set(key, process.env[key]);
@@ -81,12 +72,7 @@ export function engineApp() {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    if (!admin?.isInitialized) return;
-    try {
-      if (databaseCreated) await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`);
-    } finally {
-      await admin.destroy();
-    }
+    await database.destroy();
   });
 
   function request(path: string, method = 'GET', token?: string, body?: unknown) {

@@ -31,13 +31,17 @@ function instruments(value: unknown, key: string): string[] {
   return symbols;
 }
 
-const schema = {
-  PORT: port,
+const databaseSchema = {
   DATABASE_HOST: required,
   DATABASE_PORT: port,
   DATABASE_USER: required,
   DATABASE_PASSWORD: required,
   DATABASE_NAME: required,
+};
+
+const schema = {
+  PORT: port,
+  ...databaseSchema,
   REDIS_HOST: required,
   REDIS_PORT: port,
   JWT_ACCESS_SECRET: jwtSecret,
@@ -47,6 +51,13 @@ const schema = {
 };
 
 export type EngineEnv = { [K in keyof typeof schema]: ReturnType<(typeof schema)[K]> };
+export type DatabaseEnv = Pick<EngineEnv, keyof typeof databaseSchema>;
+
+export function validateDatabaseEnv(input: Record<string, unknown>): DatabaseEnv {
+  return Object.fromEntries(
+    Object.entries(databaseSchema).map(([key, read]) => [key, read(input[key], key)]),
+  ) as DatabaseEnv;
+}
 
 export function validateEnv(input: Record<string, unknown>): EngineEnv {
   const parsed = Object.fromEntries(

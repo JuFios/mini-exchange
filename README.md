@@ -38,6 +38,24 @@ docker compose up --build
 Якщо встановлено alias `docker-compose`, можна запустити `docker-compose up --build`.
 Для запуску у фоні з очікуванням усіх healthcheck використовуйте `docker compose up -d --build --wait`.
 
+### Схема engine
+
+Compose запускає `engine-migrate` після готовності PostgreSQL. Engine стартує після
+успішних міграцій. При збої перегляньте `docker compose logs engine-migrate`.
+Повторний запуск застосує лише відсутні міграції. Паралельні запуски на одній БД
+виконують міграції по черзі під блокуванням PostgreSQL.
+
+Для запуску engine поза Compose задайте реквізити чистої PostgreSQL 16 через
+`DATABASE_*` або `apps/matching-engine-service/.env`. У каталозі пакета після
+`npm ci` виконайте `npm run migration:run` перед `npm run start:dev`.
+`npm run migration:revert` відкочує одну міграцію. Перевіряйте відкат на окремій
+тестовій БД, бо відкат початкової міграції видаляє таблиці та їхні дані.
+
+Том PostgreSQL із таблицями, створеними автоматично в starter, потребує окремого
+перенесення даних. Для одноразового локального стеку зі збереженою резервною копією
+можна скинути томи через `docker compose down -v` і запустити стек знову.
+Ця команда видалить також локальний том Redis.
+
 - matching-engine-service: http://localhost:3001
 - settlement-service: http://localhost:3002
 - frontend: http://localhost:3000
@@ -168,9 +186,9 @@ JSON-чисел перевіряється запис із тіла запиту
 ## Зміни контрактів і поведінки
 
 - `GET /instruments` публічно повертає символи, активи, тики, лоти й межі заявок. Перелік
-  задається обов’язковою змінною `INSTRUMENTS` у matching engine (у `.env.example` —
-  `ABC,XYZ`, котирування в USD). Без неї, як і без `PORT` та `INSTANCE_ID`, engine не
-  стартує: типових значень у коді немає.
+  читається з таблиці `instruments`. Міграція додає `ABC,XYZ` з котируванням в USD.
+  На старті engine звіряє весь перелік із обов’язковою змінною `INSTRUMENTS`.
+  `PORT` та `INSTANCE_ID` також обов’язкові.
 - `GET /instruments/ABC/book?depth=50` і сумісний `GET /orders/book?instrument=ABC` доступні
   без JWT. Відповідь містить `instrument`, `bids` і `asks`. Кожен рівень містить
   `price`, суму відкритих залишків `quantity` та кількість заявок `orders`. Ціна й
@@ -217,6 +235,7 @@ HTTP-тесті точності використано дійсний симв�
 Запустіть з кореня репозиторію після `npm ci` у пакеті matching engine. Кожен запуск
 створює окремий Compose-проєкт зі своїми томами й динамічними портами на loopback.
 Тестова роль PostgreSQL створює окрему БД для кожного набору, а після тестів її видаляє.
+Перед запуском застосунку тестовий хелпер виконує міграції в цій БД.
 
 ```bash
 (
