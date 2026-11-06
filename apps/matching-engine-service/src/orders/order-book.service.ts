@@ -1,6 +1,27 @@
 import { Injectable } from '@nestjs/common';
 import { Order } from './entities/order.entity';
-import { BookSnapshot } from './order-book.types';
+import { formatQuantity, parseQuantity } from '../matching/decimal';
+import { BookDepth, BookLevel, BookSnapshot } from './order-book.types';
+
+function aggregateLevels(orders: Order[], limit: number): BookLevel[] {
+  const levels = new Map<string, { quantity: bigint; orders: number }>();
+  // Книга вже відсортована. Після останнього рівня решту заявок можна пропустити.
+  for (const order of orders) {
+    const level = levels.get(order.price);
+    if (level) {
+      level.quantity += parseQuantity(order.remainingQuantity);
+      level.orders += 1;
+    } else {
+      if (levels.size >= limit) break;
+      levels.set(order.price, { quantity: parseQuantity(order.remainingQuantity), orders: 1 });
+    }
+  }
+  return Array.from(levels, ([price, level]) => ({
+    price,
+    quantity: formatQuantity(level.quantity),
+    orders: level.orders,
+  }));
+}
 
 /**
  * In-memory стан order book по інструменту. У межах одного інстанса
@@ -30,8 +51,10 @@ export class OrderBookService {
     };
   }
 
-  depth(instrument: string): BookSnapshot {
-    return this.snapshot(instrument);
+  depth(instrument: string, limit = 50): BookDepth {
+    const book = this.books.get(instrument);
+    if (!book) return { bids: [], asks: [] };
+    return { bids: aggregateLevels(book.bids, limit), asks: aggregateLevels(book.asks, limit) };
   }
 
   replace(instrument: string, next: BookSnapshot): void {

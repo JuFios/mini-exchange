@@ -58,11 +58,6 @@ export class OrdersController {
     return this.orders.listOwn(req.user.userId);
   }
 
-  @Get('book')
-  getDepth(@Query('instrument') instrument: string) {
-    return this.orders.getDepth(instrument);
-  }
-
   @Delete(':id')
   cancel(
     @Param('id') id: string,

@@ -95,8 +95,4 @@ export class OrdersService {
   async listOwn(ownerId: string): Promise<Order[]> {
     return this.orders.find({ where: { ownerId } });
   }
-
-  getDepth(instrument: string) {
-    return this.orderBook.depth(instrument);
-  }
 }
