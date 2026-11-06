@@ -41,7 +41,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - '3001:3001'
+      - '127.0.0.1:3001:3001'
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health']
       interval: 5s
@@ -74,7 +74,7 @@ services:
       matching-engine-service:
         condition: service_healthy
     ports:
-      - '3000:3000'
+      - '127.0.0.1:3000:3000'
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/']
       interval: 5s
