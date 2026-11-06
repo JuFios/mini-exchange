@@ -47,7 +47,10 @@ docker compose up --build
 
 Обидва backend-сервіси повертають HTTP 200 та `{"status":"ok"}` на `GET /health`.
 Це перевірка доступності HTTP-процесу. PostgreSQL і Redis мають власні healthcheck.
-Redis пише AOF у том `redis-data` і працює з політикою `noeviction`.
+Redis пише AOF у том `redis-data` і працює з політикою `noeviction`. Поки Redis відтворює
+AOF, невдалі healthcheck не враховуються протягом `REDIS_HEALTH_START_PERIOD` (типово `120s`).
+Для більшого набору даних збільште значення, наприклад `REDIS_HEALTH_START_PERIOD=10m`, і
+відповідно `--wait-timeout`.
 
 ### Віддалене розгортання
 
