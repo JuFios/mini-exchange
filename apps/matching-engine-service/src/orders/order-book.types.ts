@@ -16,6 +16,7 @@ export interface BookSnapshot {
 }
 
 export const DEFAULT_BOOK_DEPTH = 50;
+export const MAX_BOOK_DEPTH = 50;
 
 export interface BookLevel {
   price: string;

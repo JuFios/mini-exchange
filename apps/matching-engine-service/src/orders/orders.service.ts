@@ -17,15 +17,9 @@ export class OrdersService {
   ) {}
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string): Promise<Trade[]> {
-    let price: string;
-    let quantity: string;
-    try {
-      price = formatPrice(parsePrice(dto.price));
-      quantity = formatQuantity(parseQuantity(dto.quantity));
-    } catch (error) {
-      if (error instanceof DecimalError) throw new BadRequestException(error.message);
-      throw error;
-    }
+    // Ті самі повідомлення й форма (масив), що й у DTO для рядкових сум.
+    const price = this.amount(() => formatPrice(parsePrice(dto.price)), 'Некоректна ціна');
+    const quantity = this.amount(() => formatQuantity(parseQuantity(dto.quantity)), 'Некоректна кількість');
 
     const incoming: Order = {
       id: randomUUID(),
@@ -69,6 +63,15 @@ export class OrdersService {
     // Поки що угоди лише повертаються викликачу й нікуди не публікуються.
 
     return result.trades;
+  }
+
+  private amount(read: () => string, message: string): string {
+    try {
+      return read();
+    } catch (error) {
+      if (error instanceof DecimalError) throw new BadRequestException([message]);
+      throw error;
+    }
   }
 
   async cancelOrder(orderId: string, userId: string, instrumentHint?: string): Promise<void> {

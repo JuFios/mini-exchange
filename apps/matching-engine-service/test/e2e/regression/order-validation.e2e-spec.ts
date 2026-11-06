@@ -17,6 +17,18 @@ it.each([
   });
 });
 
+it.each([
+  ['price', { price: 100.005 }, 'Некоректна ціна'],
+  ['price', { price: '100.005' }, 'Некоректна ціна'],
+  ['quantity', { quantity: 0.123456789 }, 'Некоректна кількість'],
+  ['quantity', { quantity: '0.123456789' }, 'Некоректна кількість'],
+])('reports the %s error in the same form for %j', async (_field, body, message) => {
+  const owner = await register();
+  const response = await submit(owner, body);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ message: [message] });
+});
+
 it('returns 400 for a malformed cancellation ID', async () => {
   const owner = await register();
   const response = await request('/orders/not-a-uuid', 'DELETE', owner);

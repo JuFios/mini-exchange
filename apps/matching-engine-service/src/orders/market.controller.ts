@@ -1,7 +1,7 @@
 import { BadRequestException, Controller, Get, Param, Query } from '@nestjs/common';
 import { InstrumentCatalog } from './instrument-catalog';
 import { OrderBookService } from './order-book.service';
-import { DEFAULT_BOOK_DEPTH } from './order-book.types';
+import { DEFAULT_BOOK_DEPTH, MAX_BOOK_DEPTH } from './order-book.types';
 
 @Controller()
 export class MarketController {
@@ -29,8 +29,8 @@ export class MarketController {
     const instrument = this.instruments.require(symbol);
     let limit = DEFAULT_BOOK_DEPTH;
     if (depth !== undefined) {
-      if (typeof depth !== 'string' || !/^[1-9][0-9]?$/.test(depth) || Number(depth) > DEFAULT_BOOK_DEPTH) {
-        throw new BadRequestException(`Глибина має бути цілим числом від 1 до ${DEFAULT_BOOK_DEPTH}`);
+      if (typeof depth !== 'string' || !/^[1-9][0-9]?$/.test(depth) || Number(depth) > MAX_BOOK_DEPTH) {
+        throw new BadRequestException(`Глибина має бути цілим числом від 1 до ${MAX_BOOK_DEPTH}`);
       }
       limit = Number(depth);
     }

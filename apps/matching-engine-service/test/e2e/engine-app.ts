@@ -70,6 +70,8 @@ export function engineApp() {
   });
 
   afterEach(async () => {
+    // Заявки одного тесту не повинні потрапити в книгу наступного після її відновлення при старті.
+    await app?.get(DataSource).query('TRUNCATE TABLE orders');
     await app?.close();
     app = undefined;
   });

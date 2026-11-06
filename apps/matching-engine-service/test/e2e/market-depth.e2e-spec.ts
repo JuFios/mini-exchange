@@ -49,6 +49,34 @@ it('sends only aggregated levels to an unauthenticated WebSocket subscriber', as
   }
 });
 
+it.each(['UNKNOWN', '', 42, ['ABC'], { symbol: 'ABC' }])(
+  'rejects a WebSocket subscription to %j without joining a room or sending a book',
+  async (instrument) => {
+    const socket = io(url(), { transports: ['websocket'], reconnection: false, timeout: 3000 });
+    try {
+      let bookReceived = false;
+      socket.on('book', () => { bookReceived = true; });
+      const ack = await new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('No acknowledgement received')), 5000);
+        socket.once('connect_error', (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        socket.once('connect', () => {
+          socket.emit('subscribe', instrument, (response: unknown) => {
+            clearTimeout(timer);
+            resolve(response);
+          });
+        });
+      });
+      expect(ack).toEqual({ ok: false, error: 'Невідомий інструмент' });
+      expect(bookReceived).toBe(false);
+    } finally {
+      socket.disconnect();
+    }
+  },
+);
+
 it('lists the configured instruments and their exact order limits without a JWT', async () => {
   const response = await request('/instruments');
   expect(response.status).toBe(200);
