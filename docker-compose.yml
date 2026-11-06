@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   exchange-db:
     image: postgres:16-alpine
@@ -8,14 +6,27 @@ services:
       POSTGRES_PASSWORD: exchange
       POSTGRES_DB: exchange
     ports:
-      - '5433:5432'
+      - '127.0.0.1:5433:5432'
     volumes:
       - exchange-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -h 127.0.0.1 ping | grep -qx PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   matching-engine-service:
     build: ./apps/matching-engine-service
@@ -24,18 +35,31 @@ services:
       DATABASE_HOST: exchange-db
       REDIS_HOST: redis
     depends_on:
-      - exchange-db
-      - redis
+      exchange-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - '3001:3001'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   settlement-service:
     build: ./apps/settlement-service
     env_file: ./apps/settlement-service/.env.example
     depends_on:
-      - exchange-db
+      exchange-db:
+        condition: service_healthy
     ports:
-      - '3002:3002'
+      - '127.0.0.1:3002:3002'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   frontend:
     build: ./apps/frontend
@@ -43,9 +67,16 @@ services:
     environment:
       MATCHING_ENGINE_URL: http://matching-engine-service:3001
     depends_on:
-      - matching-engine-service
+      matching-engine-service:
+        condition: service_healthy
     ports:
       - '3000:3000'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   exchange-db-data:
+  redis-data:

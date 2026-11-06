@@ -44,7 +44,7 @@ export default function OrderBookPage() {
   return (
     <main style={{ maxWidth: 480, margin: '60px auto' }}>
       <h1>Order Book — {INSTRUMENT}</h1>
-      <p>Статус з'єднання: {status}</p>
+      <p>Статус з&apos;єднання: {status}</p>
       <div style={{ display: 'flex', gap: 32 }}>
         <div>
           <h3>Bids</h3>

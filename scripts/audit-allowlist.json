@@ -1,0 +1,31 @@
+{
+  "matching-engine-service": {
+    "tar": [
+      "GHSA-23hp-3jrh-7fpw",
+      "GHSA-34x7-hfp2-rc4v",
+      "GHSA-83g3-92jg-28cx",
+      "GHSA-8qq5-rm4j-mr97",
+      "GHSA-8x88-c5mf-7j5w",
+      "GHSA-9ppj-qmqm-q256",
+      "GHSA-qffp-2rhf-9h96",
+      "GHSA-r292-9mhp-454m",
+      "GHSA-r6q2-hw4h-h46w"
+    ]
+  },
+  "frontend": {
+    "next": [
+      "GHSA-2464-fhr4-w9xw",
+      "GHSA-2xp9-vwfh-vxw4",
+      "GHSA-36qx-fr4f-26g5",
+      "GHSA-89xv-2m56-2m9x",
+      "GHSA-8h8q-6873-q5fj",
+      "GHSA-c4j6-fc7j-m34r",
+      "GHSA-h25m-26qc-wcjf",
+      "GHSA-m99w-x7hq-7vfj",
+      "GHSA-p293-qw3h-jr36",
+      "GHSA-p3m5-59mp-jv5r",
+      "GHSA-p9j2-gv94-2wf4",
+      "GHSA-q4gf-8mx6-v5v3"
+    ]
+  }
+}
