@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -71,15 +71,25 @@ export class OrdersService {
     return result.trades;
   }
 
-  async cancelOrder(orderId: string, instrument: string): Promise<void> {
-    const order = await this.orders.findOne({ where: { id: orderId } });
+  async cancelOrder(orderId: string, userId: string, instrumentHint?: string): Promise<void> {
+    const order = await this.orders.findOne({ where: { id: orderId, ownerId: userId } });
     if (!order) {
       throw new NotFoundException('Заявку не знайдено');
     }
-    order.status = 'cancelled';
-    order.remainingQuantity = '0';
-    await this.orders.save(order);
-    this.orderBook.removeOrder(instrument, orderId);
+    if (instrumentHint !== undefined && instrumentHint !== order.instrument) {
+      throw new BadRequestException('Інструмент не збігається з інструментом заявки');
+    }
+    if (order.status !== 'open' && order.status !== 'partially_filled') {
+      throw new ConflictException('Заявку вже закрито');
+    }
+    const { affected } = await this.orders.update(
+      { id: orderId, ownerId: userId, status: order.status },
+      { status: 'cancelled', remainingQuantity: '0' },
+    );
+    if (affected !== 1) {
+      throw new ConflictException('Стан заявки змінився');
+    }
+    this.orderBook.removeOrder(order.instrument, orderId);
   }
 
   async listOwn(ownerId: string): Promise<Order[]> {

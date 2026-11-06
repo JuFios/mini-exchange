@@ -64,7 +64,11 @@ export class OrdersController {
   }
 
   @Delete(':id')
-  cancel(@Param('id') id: string, @Query('instrument') instrument: string) {
-    return this.orders.cancelOrder(id, instrument);
+  cancel(
+    @Param('id') id: string,
+    @Query('instrument') instrument: string | undefined,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    return this.orders.cancelOrder(id, req.user.userId, instrument);
   }
 }
