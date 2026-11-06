@@ -1,6 +1,12 @@
-import { randomUUID } from 'crypto';
-import { Order } from './entities/order.entity';
-import { BookSnapshot, MatchResult, Trade } from './order-book.types';
+import type { BookOrder } from '../matching/book';
+import { formatPrice, formatQuantity, parsePrice, parseQuantity } from '../matching/decimal';
+import { apply, uuidv5 } from '../matching/engine';
+import type { Order } from './entities/order.entity';
+import type { BookSnapshot, MatchResult } from './order-book.types';
+
+type MatcherOrder = Order & { priority_seq?: bigint };
+
+const UNSEQUENCED_TRADE_NAMESPACE = '4b50a677-1972-442c-8660-32f2b3416d47';
 
 /**
  * Чиста функція зіставлення заявки з наявною книгою (price-time priority).
@@ -8,90 +14,71 @@ import { BookSnapshot, MatchResult, Trade } from './order-book.types';
  * повертає результат. Побічні ефекти (запис у реальну книгу, персистенція)
  * — відповідальність викликача.
  */
-export function matchOrder(book: BookSnapshot, incoming: Order): MatchResult {
-  const trades: Trade[] = [];
-  const rawOpposite = incoming.side === 'buy' ? [...book.asks] : [...book.bids];
-  const oppositeSide: Order['side'] = incoming.side === 'buy' ? 'sell' : 'buy';
-  // Явно впорядковуємо протилежну сторону за price-time priority перед
-  // матчингом — не покладаємось на те, що виклик передав уже відсортований
-  // знімок книги.
-  const opposite = sortByPriceTimePriority(rawOpposite, oppositeSide);
-  const remainingOpposite: Order[] = [];
-
-  let remainingQty = Number(incoming.remainingQuantity);
-
-  for (const resting of opposite) {
-    const priceCrosses =
-      incoming.side === 'buy'
-        ? Number(incoming.price) >= Number(resting.price)
-        : Number(incoming.price) <= Number(resting.price);
-
-    // Self-trade prevention: заявки одного власника не зіставляються.
-    const sameOwner = resting.ownerId === incoming.ownerId;
-
-    if (remainingQty > 0 && priceCrosses && !sameOwner) {
-      const tradeQty = Math.min(remainingQty, Number(resting.remainingQuantity));
-      trades.push({
-        id: randomUUID(),
-        instrument: incoming.instrument,
-        buyOrderId: incoming.side === 'buy' ? incoming.id : resting.id,
-        sellOrderId: incoming.side === 'buy' ? resting.id : incoming.id,
-        price: resting.price, // виконання за ціною заявки, що вже стояла в книзі
-        quantity: tradeQty.toFixed(8),
-        executedAt: new Date(),
-      });
-
-      remainingQty = Number((remainingQty - tradeQty).toFixed(8));
-      const restingRemainder = Number(
-        (Number(resting.remainingQuantity) - tradeQty).toFixed(8),
-      );
-
-      if (restingRemainder > 0) {
-        remainingOpposite.push({
-          ...resting,
-          remainingQuantity: restingRemainder.toFixed(8),
-          status: 'partially_filled',
-        });
-      }
-      // якщо restingRemainder === 0 — заявка повністю виконана, у книгу не повертається
-    } else {
-      remainingOpposite.push(resting);
-    }
+export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchResult {
+  const orders: MatcherOrder[] = [...book.bids, ...book.asks, incoming];
+  const sequenced = orders.every(({ priority_seq }) => priority_seq !== undefined);
+  if (!sequenced) {
+    orders.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
-
-  const restingOrder: Order | null =
-    remainingQty > 0
-      ? {
-          ...incoming,
-          remainingQuantity: remainingQty.toFixed(8),
-          status: remainingQty < Number(incoming.quantity) ? 'partially_filled' : 'open',
-        }
-      : null;
-
-  const same = incoming.side === 'buy' ? book.bids : book.asks;
-  const updatedSame = restingOrder ? insertByPriceTimePriority(same, restingOrder) : same;
-
-  return {
-    trades,
-    restingOrder,
-    updatedBids: incoming.side === 'buy' ? updatedSame : remainingOpposite,
-    updatedAsks: incoming.side === 'buy' ? remainingOpposite : updatedSame,
-  };
-}
-
-function insertByPriceTimePriority(list: Order[], order: Order): Order[] {
-  return sortByPriceTimePriority([...list, order], order.side);
-}
-
-function sortByPriceTimePriority(list: Order[], side: Order['side']): Order[] {
-  const result = [...list];
-  result.sort((a, b) => {
-    const priceDiff =
-      side === 'buy'
-        ? Number(b.price) - Number(a.price) // bids: спадання ціни
-        : Number(a.price) - Number(b.price); // asks: зростання ціни
-    if (priceDiff !== 0) return priceDiff;
-    return a.createdAt.getTime() - b.createdAt.getTime();
+  const byId = new Map(orders.map((order, index) => [
+    order.id,
+    {
+      original: order,
+      state: {
+        id: order.id,
+        ownerId: order.ownerId,
+        side: order.side,
+        price: parsePrice(order.price),
+        quantity: parseQuantity(order.quantity),
+        remaining: parseQuantity(order.remainingQuantity),
+        prioritySeq: sequenced ? order.priority_seq! : BigInt(index + 1),
+      },
+    },
+  ]));
+  const toBookOrder = (order: Order) => byId.get(order.id)!.state;
+  const fromBookOrder = (state: BookOrder): Order => ({
+    ...byId.get(state.id)!.original,
+    price: formatPrice(state.price),
+    quantity: formatQuantity(state.quantity),
+    remainingQuantity: formatQuantity(state.remaining),
+    status: state.remaining === state.quantity ? 'open' : 'partially_filled',
   });
-  return result;
+
+  const order = toBookOrder(incoming);
+  const result = apply(
+    { bids: book.bids.map(toBookOrder), asks: book.asks.map(toBookOrder) },
+    {
+      type: 'submit',
+      instrument: incoming.instrument,
+      seq: order.prioritySeq,
+      acceptedAt: incoming.createdAt.toISOString(),
+      order,
+    },
+  );
+  const updatedBids = result.book.bids.map(fromBookOrder);
+  const updatedAsks = result.book.asks.map(fromBookOrder);
+  const restingOrder = (incoming.side === 'buy' ? updatedBids : updatedAsks)
+    .find(({ id }) => id === incoming.id) ?? null;
+  const cancelled = result.orderChanges.find(
+    (change) => change.id === incoming.id && change.status === 'cancelled',
+  );
+  const trades = result.trades.map(({ tradeId, price, quantity, executedAt, ...fill }, index) => ({
+    ...fill,
+    // A legacy priority rank is local to a snapshot, so it cannot identify a fill.
+    id: sequenced
+      ? tradeId
+      : uuidv5(UNSEQUENCED_TRADE_NAMESPACE, JSON.stringify([incoming.instrument, incoming.id, index])),
+    price: formatPrice(price),
+    quantity: formatQuantity(quantity),
+    executedAt: new Date(executedAt),
+  }));
+  const match: MatchResult = { trades, restingOrder, updatedBids, updatedAsks };
+  if (cancelled?.status === 'cancelled' && cancelled.cancelReason === 'self_trade_prevented') {
+    match.cancelledIncoming = {
+      ...fromBookOrder(cancelled),
+      status: 'cancelled',
+      cancelReason: cancelled.cancelReason,
+    };
+  }
+  return match;
 }
