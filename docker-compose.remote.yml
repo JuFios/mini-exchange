@@ -1,0 +1,12 @@
+# Settings for a stack reachable from other hosts. The demo secrets in
+# .env.example are public, so this file requires unique values.
+services:
+  matching-engine-service:
+    environment:
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set a unique JWT_REFRESH_SECRET}
+
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?Set NEXT_PUBLIC_WS_URL to the address browsers use}
