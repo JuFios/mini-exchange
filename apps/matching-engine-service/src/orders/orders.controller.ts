@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -12,9 +13,34 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OrdersService } from './orders.service';
 import { SubmitOrderDto } from './dto/submit-order.dto';
+import { plainDecimal, topLevelNumberLexemes } from './amount-lexemes';
 
 interface AuthenticatedRequest {
   user: { userId: string; email: string };
+  // Заповнюється, коли застосунок створено з `rawBody: true`.
+  rawBody?: Buffer;
+}
+
+const AMOUNT_FIELDS = ['price', 'quantity'] as const;
+
+// JSON.parse округлює число до double, тому 1000000.00000000001 виглядає як 1000000.
+// Для чисел беремо точний запис із тіла запиту, щоб строгий парсер побачив усі знаки.
+function withExactAmounts(dto: SubmitOrderDto, rawBody?: Buffer): SubmitOrderDto {
+  if (!rawBody) return dto;
+  let lexemes: Map<string, string>;
+  try {
+    lexemes = topLevelNumberLexemes(rawBody.toString('utf8'));
+  } catch {
+    throw new BadRequestException('Некоректне тіло запиту');
+  }
+  const exact = { ...dto };
+  for (const field of AMOUNT_FIELDS) {
+    const lexeme = lexemes.get(field);
+    if (typeof dto[field] === 'number' && lexeme !== undefined) {
+      exact[field] = plainDecimal(lexeme);
+    }
+  }
+  return exact;
 }
 
 @Controller('orders')
@@ -24,7 +50,7 @@ export class OrdersController {
 
   @Post()
   submit(@Body() dto: SubmitOrderDto, @Request() req: AuthenticatedRequest) {
-    return this.orders.submitOrder(dto, req.user.userId);
+    return this.orders.submitOrder(withExactAmounts(dto, req.rawBody), req.user.userId);
   }
 
   @Get()

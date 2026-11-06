@@ -16,10 +16,20 @@ const UNSEQUENCED_TRADE_NAMESPACE = '4b50a677-1972-442c-8660-32f2b3416d47';
  */
 export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchResult {
   const orders: MatcherOrder[] = [...book.bids, ...book.asks, incoming];
-  const sequenced = orders.every(({ priority_seq }) => priority_seq !== undefined);
-  if (!sequenced) {
-    orders.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  const sequencedCount = orders.filter(({ priority_seq }) => priority_seq !== undefined).length;
+  // Номер надходження і час створення несумісні: змішаний знімок не має однозначного FIFO.
+  if (sequencedCount !== 0 && sequencedCount !== orders.length) {
+    throw new Error('Book snapshot mixes orders with and without a priority sequence');
   }
+  const sequenced = sequencedCount === orders.length;
+  // Без номерів надходження пріоритет — (час створення, позиція у знімку). Це той самий
+  // порядок, що дало б стабільне сортування, але за один прохід без сортування книги.
+  const rank = (order: MatcherOrder, index: number): bigint => {
+    if (sequenced) return order.priority_seq!;
+    const createdAt = order.createdAt.getTime();
+    if (!Number.isFinite(createdAt)) throw new Error(`Order ${order.id} has an invalid creation time`);
+    return BigInt(createdAt) * BigInt(orders.length) + BigInt(index);
+  };
   const byId = new Map(orders.map((order, index) => [
     order.id,
     {
@@ -31,7 +41,7 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
         price: parsePrice(order.price),
         quantity: parseQuantity(order.quantity),
         remaining: parseQuantity(order.remainingQuantity),
-        prioritySeq: sequenced ? order.priority_seq! : BigInt(index + 1),
+        prioritySeq: rank(order, index),
       },
     },
   ]));

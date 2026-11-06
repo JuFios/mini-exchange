@@ -46,11 +46,14 @@ export class OrdersService {
     // операція — під час await виконання переходить іншим таскам у черзі
     // подій Node.js (наприклад, паралельному виклику submitOrder для
     // того самого інструмента).
+    // Скасований залишок зберігаємо як є: різниця quantity і remainingQuantity
+    // показує, скільки вже виконано до скасування.
+    const settled = result.cancelledIncoming ?? result.restingOrder;
     await this.orders.save(
       this.orders.create({
         ...incoming,
-        remainingQuantity: result.restingOrder?.remainingQuantity ?? '0',
-        status: result.cancelledIncoming?.status ?? result.restingOrder?.status ?? 'filled',
+        remainingQuantity: settled?.remainingQuantity ?? '0',
+        status: settled?.status ?? 'filled',
       }),
     );
 

@@ -1,17 +1,28 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import { JwtAuthGuard } from '../../src/auth/guards/jwt-auth.guard';
+import { Order } from '../../src/orders/entities/order.entity';
+import { OrderBookService } from '../../src/orders/order-book.service';
 import { OrdersController } from '../../src/orders/orders.controller';
 import { OrdersService } from '../../src/orders/orders.service';
 
 let app: INestApplication;
 let base: string;
-const submitOrder = jest.fn();
+const rows: Order[] = [];
+const repository = {
+  create: (order: Order) => order,
+  save: async (order: Order) => { rows.push(order); },
+};
 
 beforeAll(async () => {
   const moduleRef = await Test.createTestingModule({
     controllers: [OrdersController],
-    providers: [{ provide: OrdersService, useValue: { submitOrder } }],
+    providers: [
+      OrdersService,
+      OrderBookService,
+      { provide: getRepositoryToken(Order), useValue: repository },
+    ],
   })
     .overrideGuard(JwtAuthGuard)
     .useValue({
@@ -28,7 +39,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => app.close());
-beforeEach(() => submitOrder.mockReset().mockResolvedValue([]));
+beforeEach(() => { rows.length = 0; });
 
 function post(body: string) {
   return fetch(`${base}/orders`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
@@ -40,7 +51,7 @@ const json = (price: string, quantity: string) =>
 describe('JSON number lexemes', () => {
   it.each([
     ['1000000.00000000001', '1'],
-    ['999999.12345678001', '1'],
+    ['100', '999999.12345678001'],
     ['100.001', '1'],
     ['100', '1.000000001'],
     ['100', '1000000.000000000001'],
@@ -48,21 +59,24 @@ describe('JSON number lexemes', () => {
   ])('rejects a lossy number that JavaScript would round into range (price %s, quantity %s)', async (price, quantity) => {
     const response = await post(json(price, quantity));
     expect(response.status).toBe(400);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(rows).toEqual([]);
   });
 
   it.each([
     ['100.25', '0.00000001', '100.25', '0.00000001'],
-    ['1e2', '1e-8', '100', '0.00000001'],
-    ['1000000.00', '1000000', '1000000.00', '1000000'],
-    ['0.01', '1.50', '0.01', '1.50'],
-  ])('keeps the exact decimal value of price %s and quantity %s', async (price, quantity, exactPrice, exactQuantity) => {
+    ['1e2', '1e-8', '100.00', '0.00000001'],
+    ['1000000.00', '1000000', '1000000.00', '1000000.00000000'],
+    ['0.01', '1.50', '0.01', '1.50000000'],
+  ])('stores price %s and quantity %s exactly', async (price, quantity, exactPrice, exactQuantity) => {
     const response = await post(json(price, quantity));
     expect(response.status).toBe(201);
-    expect(submitOrder).toHaveBeenCalledWith(
-      expect.objectContaining({ price: exactPrice, quantity: exactQuantity }),
-      'X',
-    );
+    expect(rows).toMatchObject([{ price: exactPrice, quantity: exactQuantity }]);
+  });
+
+  it('rejects a body that is not valid JSON', async () => {
+    const response = await post('{"instrument":"ABC","price":1.5,');
+    expect(response.status).toBe(400);
+    expect(rows).toEqual([]);
   });
 
   it('reads only top-level members and ignores numbers and keys inside strings', async () => {
@@ -70,7 +84,7 @@ describe('JSON number lexemes', () => {
       + '"side":"buy","price":100.5,"quantity":2}';
     const response = await post(body);
     expect(response.status).toBe(201);
-    expect(submitOrder).toHaveBeenCalledWith(expect.objectContaining({ price: '100.5', quantity: '2' }), 'X');
+    expect(rows).toMatchObject([{ instrument: '1000000.00000000001', price: '100.50', quantity: '2.00000000' }]);
   });
 });
 
@@ -78,12 +92,12 @@ describe('decimal strings', () => {
   it('accepts exact decimal strings and passes them to the service', async () => {
     const response = await post(json('"100.25"', '"0.00000001"'));
     expect(response.status).toBe(201);
-    expect(submitOrder).toHaveBeenCalledWith(expect.objectContaining({ price: '100.25', quantity: '0.00000001' }), 'X');
+    expect(rows).toMatchObject([{ price: '100.25', quantity: '0.00000001' }]);
   });
 
   it.each([['null'], ['true'], ['{}']])('rejects %s instead of a price', async (price) => {
     const response = await post(json(price, '1'));
     expect(response.status).toBe(400);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(rows).toEqual([]);
   });
 });
