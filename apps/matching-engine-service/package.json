@@ -9,7 +9,8 @@
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
-    "test": "jest"
+    "test": "jest",
+    "test:e2e": "jest --config test/jest-e2e.json --runInBand"
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",

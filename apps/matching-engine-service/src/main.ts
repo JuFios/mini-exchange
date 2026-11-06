@@ -1,11 +1,10 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { configureApp } from './configure-app';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  app.enableCors();
+  configureApp(app);
   const port = process.env.PORT ?? 3001;
   await app.listen(port);
   // eslint-disable-next-line no-console
