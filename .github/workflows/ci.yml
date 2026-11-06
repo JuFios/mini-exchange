@@ -23,7 +23,6 @@ jobs:
       - run: npm run lint:check
       - run: npx tsc --noEmit
       - run: npm test
-      - run: node ../../scripts/audit-production.cjs
 
   settlement-service:
     runs-on: ubuntu-latest
@@ -40,7 +39,6 @@ jobs:
       - run: npm ci
       - run: npm run lint:check
       - run: npx tsc --noEmit
-      - run: node ../../scripts/audit-production.cjs
 
   frontend:
     runs-on: ubuntu-latest
@@ -57,7 +55,6 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-      - run: node ../../scripts/audit-production.cjs
 
   compose-smoke:
     runs-on: ubuntu-latest

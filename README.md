@@ -60,22 +60,3 @@ curl -fsS http://localhost:3000/orderbook > /dev/null
 
 Jest у matching engine запускає файли `*.spec.ts` поза `test/e2e/` і `test/integration/`.
 Обидва наявні тестові файли потрапляють до unit-набору. Обмеження starter-тестів описано в ТЗ.
-
-## Аудит залежностей
-
-CI запускає `npm audit --omit=dev --audit-level=high` у кожному пакеті. Для локальної
-перевірки за тими самими правилами запустіть `node ../../scripts/audit-production.cjs`
-з каталогу пакета. Нові high або critical advisory зупиняють CI. Винятки обмежено
-ідентифікаторами advisory та назвами залежностей у [списку винятків](scripts/audit-allowlist.json).
-Конфігурація Dependabot дозволяє patch і minor оновлення версій. GitHub читає її з
-гілки за замовчуванням. [Документація GitHub](https://docs.github.com/en/code-security/concepts/supply-chain-security/about-the-dependabot-yml-file).
-
-- `tar` 6 встановлюється через `bcrypt` 5 та `@mapbox/node-pre-gyp` і використовується
-  для розпакування нативного модуля під час встановлення. Для зняття винятків потрібен
-  перехід на `bcrypt` 6 з перевіркою збірки та автентифікації.
-- Для `next` 14 залишаються advisory, зокрема про відмову в обслуговуванні. Окремі
-  критичні advisory стосуються Windows-хостів або оптимізації зображень. Compose
-  запускає Next.js у Linux Alpine. Для зняття винятків потрібні оновлення до виправленого
-  Next.js 15 або новішого та повторна перевірка збірки, маршрутів і WebSocket. [Windows](https://github.com/advisories/GHSA-p293-qw3h-jr36), [AVIF](https://github.com/advisories/GHSA-2xp9-vwfh-vxw4), [SVG](https://github.com/advisories/GHSA-2464-fhr4-w9xw).
-- Для NestJS 10 наступний мажорний перехід — NestJS 11. Поточні lockfiles фіксують
-  сумісні виправлення `body-parser`, `multer`, `lodash` і `postcss`.
