@@ -34,6 +34,12 @@ describe('self-trade prevention', () => {
 
     const result = matchOrder({ bids: [], asks: [restingSell] }, incomingBuy);
 
-    expect(result).toBeTruthy();
+    expect(result.trades).toEqual([]);
+    expect(result.updatedAsks).toEqual([restingSell]);
+    expect(result.updatedBids).toEqual([]);
+    expect(result.restingOrder).toBeNull();
+    expect(result).toMatchObject({
+      cancelledIncoming: { id: incomingBuy.id, status: 'cancelled' },
+    });
   });
 });
