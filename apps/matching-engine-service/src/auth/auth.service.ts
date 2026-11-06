@@ -19,8 +19,13 @@ interface TokenPair {
   refreshToken: string;
 }
 
+const BCRYPT_COST = 10;
+
 @Injectable()
 export class AuthService {
+  // Хеш випадкового пароля з тією самою вартістю, що й у реєстрації. Рахується у фоні при створенні сервісу.
+  private readonly absentPasswordHash = bcrypt.hash(randomUUID(), BCRYPT_COST);
+
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly jwt: JwtService,
@@ -31,7 +36,7 @@ export class AuthService {
     if (this.isAdminEmail(dto.email) || await this.users.existsBy({ email: dto.email })) {
       throw new ConflictException('Email вже зареєстровано');
     }
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
     let user: User;
     try {
       user = await this.users.save(this.users.create({ email: dto.email, passwordHash }));
@@ -48,7 +53,10 @@ export class AuthService {
   async login(dto: LoginDto): Promise<TokenPair> {
     const email = this.isAdminEmail(dto.email) ? dto.email.toLowerCase() : dto.email;
     const user = await this.users.findOneBy({ email });
-    if (!user || !await bcrypt.compare(dto.password, user.passwordHash)) {
+    // Невідомий email теж платить за bcrypt: час відповіді не розкриває, чи є акаунт.
+    const hash = user?.passwordHash ?? await this.absentPasswordHash;
+    const valid = await bcrypt.compare(dto.password, hash);
+    if (!user || !valid) {
       throw new UnauthorizedException('Невірний email або пароль');
     }
     return this.startSession(user);

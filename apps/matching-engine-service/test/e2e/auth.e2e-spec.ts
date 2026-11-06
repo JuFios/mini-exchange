@@ -74,17 +74,25 @@ it('revokes a session when an older refresh token is reused', async () => {
   expect((await post('refresh', { refreshToken: third.refreshToken })).status).toBe(401);
 });
 
-it('logs out only the session identified by the signed refresh token', async () => {
+it('keeps one refresh session per account: a new login replaces the previous one', async () => {
   const { credentials, tokens: first } = await registerAccount();
   const login = await post('login', credentials);
   expect(login.status).toBe(201);
   const second = await login.json() as Tokens;
 
+  // Попередня сесія вже замінена: її refresh повертає 401, але нову сесію не відкликає.
+  expect((await post('refresh', { refreshToken: first.refreshToken })).status).toBe(401);
   expect((await post('logout', { refreshToken: first.refreshToken })).status).toBe(204);
   const third = await rotate(second.refreshToken);
   expect((await post('logout', { refreshToken: second.refreshToken })).status).toBe(204);
   expect((await post('refresh', { refreshToken: third.refreshToken })).status).toBe(401);
   expect((await post('logout', { refreshToken: 'bad-token' })).status).toBe(401);
+});
+
+it('logs out the current session when its signed refresh token is presented', async () => {
+  const { tokens } = await registerAccount();
+  expect((await post('logout', { refreshToken: tokens.refreshToken })).status).toBe(204);
+  expect((await post('refresh', { refreshToken: tokens.refreshToken })).status).toBe(401);
 });
 
 it('seeds an admin, reserves the address and preserves its password on restart', async () => {

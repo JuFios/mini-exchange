@@ -25,10 +25,14 @@ function jwtSecret(value: unknown, key: string): string {
 }
 
 function adminEmails(value: unknown, key: string): string[] {
-  const emails = required(value, key).split(',').map((email) => email.trim().toLowerCase());
-  if (emails.some((email) => !isEmail(email, { allow_utf8_local_part: false }))
+  const entries = required(value, key).split(',').map((email) => email.trim());
+  // Регістр порівнюють і JS (`toLowerCase`), і PostgreSQL (`LOWER ... COLLATE "C"`, лише ASCII).
+  // Для ASCII-адрес обидва дають однаковий результат; IDN-домен записують у punycode.
+  // ASCII перевіряємо до `toLowerCase`: він перетворює, наприклад, знак Кельвіна на `k`.
+  const emails = entries.map((email) => email.toLowerCase());
+  if (entries.some((email) => !/^[ -~]+$/.test(email) || !isEmail(email.toLowerCase(), { allow_utf8_local_part: false }))
       || new Set(emails).size !== emails.length) {
-    throw new Error(`${key} must contain unique email addresses`);
+    throw new Error(`${key} must contain unique ASCII email addresses`);
   }
   return emails;
 }

@@ -38,6 +38,8 @@ it('requires ADMIN_PASSWORD to have at least twelve characters and fit in bcrypt
 it.each([
   ['ADMIN_EMAILS', 'admin@example.test,ADMIN@example.test'],
   ['ADMIN_EMAILS', 'invalid'],
+  ['ADMIN_EMAILS', 'admin@пошта.укр'],
+  ['ADMIN_EMAILS', 'admin@\u212Aelvin.example'],
   ['JWT_ACCESS_TTL', '16m'],
   ['JWT_REFRESH_TTL', '0s'],
   ['REFRESH_REUSE_GRACE_MS', '10001'],
