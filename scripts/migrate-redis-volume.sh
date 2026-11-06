@@ -13,13 +13,23 @@ if [ -n "$running_redis" ]; then
 fi
 
 import_script=$(cat <<'SH'
-  destination_files=$(ls -A /data)
+  # One import at a time per volume. The kernel releases the lock when the
+  # process dies, including after SIGKILL.
+  exec 9</data
+  if ! flock -n 9; then
+    echo "Another Redis import is using the destination volume." >&2
+    exit 1
+  fi
+
+  stage=/data/.redis-import
+  destination_files=$(ls -A /data | grep -vxF .redis-import || true)
   if [ -n "$destination_files" ]; then
     echo "The destination Redis volume must be empty." >&2
     exit 1
   fi
 
-  stage=/data/.redis-import
+  # A previous import stopped before it published the AOF.
+  rm -rf "$stage"
   mkdir "$stage"
   redis_pid=
   cleanup() {
@@ -37,6 +47,7 @@ import_script=$(cat <<'SH'
   socket="$stage/redis.sock"
   (
     cd "$stage"
+    exec 9<&-
     exec docker-entrypoint.sh redis-server --dir "$stage" --port 0 \
       --unixsocket "$socket" --unixsocketperm 700 --appendonly no --save ""
   ) &
