@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { MigrationInterface, QueryRunner } from 'typeorm';
+import { advisoryLocks } from '../../src/database/advisory-lock';
 import { migrate } from '../../src/database/migrate';
+import { formatPrice, formatQuantity, parsePrice, parseQuantity } from '../../src/matching/decimal';
 import { testDatabase } from '../test-database';
 
 let database: ReturnType<typeof testDatabase>;
@@ -85,4 +87,49 @@ it('rolls back schema and history when the migration connection is terminated', 
   `)).toEqual([{ orders: null, migrations: null, probe: null }]);
   await migrate(source, 'run');
   expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([{ count: 2 }]);
+});
+
+it('fails with a clear error instead of waiting forever for a migration lock held elsewhere', async () => {
+  const holder = database.source();
+  await holder.initialize();
+  const runner = holder.createQueryRunner();
+  try {
+    await runner.startTransaction();
+    await runner.query('SELECT pg_advisory_xact_lock($1, $2)', [...advisoryLocks.migrations.key]);
+
+    const started = Date.now();
+    await expect(migrate(source, 'run', { lockTimeoutMs: 200 })).rejects.toThrow(/Timed out after 200 ms.*migrations lock/);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(await source.query("SELECT to_regclass('orders') AS name")).toEqual([{ name: null }]);
+
+    await runner.commitTransaction();
+    await migrate(source, 'run', { lockTimeoutMs: 200 });
+    expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([{ count: 2 }]);
+  } finally {
+    if (runner.isTransactionActive) await runner.rollbackTransaction();
+    await runner.release();
+    await holder.destroy();
+  }
+});
+
+it('keeps instrument limits equal to the bounds enforced by the amount parser', async () => {
+  await migrate(source, 'run');
+  const [row] = await source.query(
+    "SELECT tick_size, lot_size, min_qty, max_qty, max_price FROM instruments WHERE symbol = 'ABC'",
+  ) as Record<string, string>[];
+  expect(row).toEqual({
+    tick_size: formatPrice(parsePrice('0.01')),
+    lot_size: formatQuantity(parseQuantity('0.00000001')),
+    min_qty: formatQuantity(parseQuantity('0.00000001')),
+    max_qty: formatQuantity(parseQuantity('1000000')),
+    max_price: formatPrice(parsePrice('1000000')),
+  });
+  expect(() => parseQuantity('1000000.00000001')).toThrow();
+  expect(() => parsePrice('1000000.01')).toThrow();
+
+  // Таблиця не може оголосити інші межі, ніж ті, що реально перевіряє парсер.
+  await expect(source.query(
+    `INSERT INTO instruments (symbol, base_asset, quote_asset, tick_size, lot_size, min_qty, max_qty, max_price)
+     VALUES ('DEF', 'DEF', 'USD', 0.01, 0.00000001, 0.00000001, 100, 1000000)`,
+  )).rejects.toMatchObject({ code: '23514' });
 });

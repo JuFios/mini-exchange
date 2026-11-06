@@ -3,8 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
+import { advisoryLocks, lockForTransaction } from '../database/advisory-lock';
 import { User } from './entities/user.entity';
 
+const seedLockTimeoutMs = 60_000;
 const adminEmailCollision = 'ADMIN_EMAILS contains an address registered by a regular account';
 
 @Injectable()
@@ -17,7 +19,7 @@ export class AdminSeedService implements OnApplicationBootstrap {
   async onApplicationBootstrap(): Promise<void> {
     const emails = this.config.getOrThrow<string[]>('ADMIN_EMAILS');
     await this.users.manager.transaction(async (manager) => {
-      await manager.query('SELECT pg_advisory_xact_lock(734021, 2)');
+      await lockForTransaction(manager, advisoryLocks.adminSeed, seedLockTimeoutMs);
       const users = manager.getRepository(User);
       const existing = await users.createQueryBuilder('account')
         .select(['account.email', 'account.adminSeeded'])

@@ -21,9 +21,10 @@ export class InitialSchema1793980800000 implements MigrationInterface {
         quote_asset varchar NOT NULL,
         tick_size numeric(18,2) NOT NULL CHECK (tick_size = 0.01),
         lot_size numeric(18,8) NOT NULL CHECK (lot_size = 0.00000001),
-        min_qty numeric(18,8) NOT NULL CHECK (min_qty >= lot_size),
-        max_qty numeric(18,8) NOT NULL CHECK (max_qty >= min_qty),
-        max_price numeric(18,2) NOT NULL CHECK (max_price >= tick_size),
+        -- Ці межі перевіряє парсер у src/matching/decimal.ts, тож таблиця не може їх змінити.
+        min_qty numeric(18,8) NOT NULL CHECK (min_qty = 0.00000001),
+        max_qty numeric(18,8) NOT NULL CHECK (max_qty = 1000000),
+        max_price numeric(18,2) NOT NULL CHECK (max_price = 1000000),
         next_seq bigint NOT NULL DEFAULT 0 CHECK (next_seq >= 0)
       );
 
