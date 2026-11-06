@@ -20,4 +20,5 @@ export interface MatchResult {
   restingOrder: Order | null; // залишок заявки, що лягає в книгу (якщо є)
   updatedBids: Order[];
   updatedAsks: Order[];
+  cancelledIncoming?: Order & { status: 'cancelled'; cancelReason: 'self_trade_prevented' };
 }

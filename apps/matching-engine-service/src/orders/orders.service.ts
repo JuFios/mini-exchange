@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
+import { DecimalError, formatPrice, formatQuantity, parsePrice, parseQuantity } from '../matching/decimal';
 import { Order } from './entities/order.entity';
 import { OrderBookService } from './order-book.service';
 import { SubmitOrderDto } from './dto/submit-order.dto';
@@ -16,14 +17,24 @@ export class OrdersService {
   ) {}
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string): Promise<Trade[]> {
+    let price: string;
+    let quantity: string;
+    try {
+      price = formatPrice(parsePrice(dto.price));
+      quantity = formatQuantity(parseQuantity(dto.quantity));
+    } catch (error) {
+      if (error instanceof DecimalError) throw new BadRequestException(error.message);
+      throw error;
+    }
+
     const incoming: Order = {
       id: randomUUID(),
       ownerId,
       instrument: dto.instrument,
       side: dto.side,
-      price: dto.price.toFixed(2),
-      quantity: dto.quantity.toFixed(8),
-      remainingQuantity: dto.quantity.toFixed(8),
+      price,
+      quantity,
+      remainingQuantity: quantity,
       status: 'open',
       createdAt: new Date(),
     };
@@ -35,13 +46,14 @@ export class OrdersService {
     // операція — під час await виконання переходить іншим таскам у черзі
     // подій Node.js (наприклад, паралельному виклику submitOrder для
     // того самого інструмента).
+    // Скасований залишок зберігаємо як є: різниця quantity і remainingQuantity
+    // показує, скільки вже виконано до скасування.
+    const settled = result.cancelledIncoming ?? result.restingOrder;
     await this.orders.save(
       this.orders.create({
         ...incoming,
-        remainingQuantity: result.restingOrder
-          ? result.restingOrder.remainingQuantity
-          : '0',
-        status: result.restingOrder ? result.restingOrder.status : 'filled',
+        remainingQuantity: settled?.remainingQuantity ?? '0',
+        status: settled?.status ?? 'filled',
       }),
     );
 
