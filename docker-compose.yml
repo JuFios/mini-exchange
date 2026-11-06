@@ -18,8 +18,6 @@ services:
   redis:
     image: redis:7-alpine
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
-    ports:
-      - '127.0.0.1:6379:6379'
     volumes:
       - redis-data:/data
     healthcheck:
@@ -62,7 +60,10 @@ services:
       retries: 10
 
   frontend:
-    build: ./apps/frontend
+    build:
+      context: ./apps/frontend
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
     env_file: ./apps/frontend/.env.example
     environment:
       MATCHING_ENGINE_URL: http://matching-engine-service:3001

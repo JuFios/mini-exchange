@@ -59,10 +59,50 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      NEXT_PUBLIC_WS_URL: wss://exchange.example.test
     steps:
       - uses: actions/checkout@v4
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Verify the frontend address and Redis port
+        run: |
+          docker compose exec -T frontend sh -ec 'grep -rqF "$1" .next/static/chunks/app/orderbook' sh "$NEXT_PUBLIC_WS_URL"
+          docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
+            jq -e '(. // {}) == {}'
+      - name: Verify Redis volume migration
+        env:
+          COMPOSE_PROJECT_NAME: redis-upgrade-smoke
+        run: |
+          fixture=$(mktemp -d)
+          source_compose() {
+            docker compose -p redis-upgrade-source -f "$fixture/compose.yml" "$@"
+          }
+          cleanup() {
+            docker compose down -v --remove-orphans
+            source_compose down -v --remove-orphans
+            rm -rf "$fixture"
+          }
+          trap cleanup EXIT
+          cat > "$fixture/compose.yml" <<'YAML'
+          services:
+            redis:
+              image: redis:7-alpine
+              healthcheck:
+                test: ['CMD', 'redis-cli', 'ping']
+                interval: 1s
+                timeout: 2s
+                retries: 10
+          YAML
+          source_compose up -d --wait --wait-timeout 60 redis
+          source_compose exec -T redis redis-cli -e SET smoke:upgrade preserved EX 3600
+          source_compose exec -T redis redis-cli -e SAVE
+          source_compose cp redis:/data/dump.rdb "$fixture/dump.rdb"
+          sh scripts/migrate-redis-volume.sh "$fixture/dump.rdb"
+          docker compose up -d --wait --wait-timeout 60 redis
+          docker compose up -d --force-recreate --wait --wait-timeout 60 redis
+          test "$(docker compose exec -T redis redis-cli -e --raw GET smoke:upgrade)" = preserved
+          test "$(docker compose exec -T redis redis-cli -e --raw TTL smoke:upgrade)" -gt 0
       - name: Diagnose failure
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200

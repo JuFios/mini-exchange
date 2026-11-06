@@ -4,6 +4,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 FROM dependencies AS build
+ARG NEXT_PUBLIC_WS_URL=ws://localhost:3001
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY . .
 RUN npm run build && rm -rf .next/cache
