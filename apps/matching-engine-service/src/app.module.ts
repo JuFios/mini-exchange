@@ -1,24 +1,28 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
 import { OrdersModule } from './orders/orders.module';
 import { User } from './auth/entities/user.entity';
 import { Order } from './orders/entities/order.entity';
 import { HealthController } from './health.controller';
+import { validateEnv } from './config/env.validation';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: process.env.DATABASE_HOST,
-      port: Number(process.env.DATABASE_PORT ?? 5432),
-      username: process.env.DATABASE_USER,
-      password: process.env.DATABASE_PASSWORD,
-      database: process.env.DATABASE_NAME,
-      entities: [User, Order],
-      synchronize: true, // OK для стартового репо
+    ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres',
+        host: config.getOrThrow<string>('DATABASE_HOST'),
+        port: config.getOrThrow<number>('DATABASE_PORT'),
+        username: config.getOrThrow<string>('DATABASE_USER'),
+        password: config.getOrThrow<string>('DATABASE_PASSWORD'),
+        database: config.getOrThrow<string>('DATABASE_NAME'),
+        entities: [User, Order],
+        synchronize: true, // OK для стартового репо
+      }),
     }),
     AuthModule,
     OrdersModule,

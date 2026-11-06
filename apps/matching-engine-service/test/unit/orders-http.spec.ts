@@ -1,7 +1,9 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { JwtAuthGuard } from '../../src/auth/guards/jwt-auth.guard';
+import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
 import { Order } from '../../src/orders/entities/order.entity';
 import { OrderBookService } from '../../src/orders/order-book.service';
 import { OrdersController } from '../../src/orders/orders.controller';
@@ -21,6 +23,8 @@ beforeAll(async () => {
     providers: [
       OrdersService,
       OrderBookService,
+      InstrumentCatalog,
+      { provide: ConfigService, useValue: new ConfigService({ INSTRUMENTS: ['ABC', 'XYZ'] }) },
       { provide: getRepositoryToken(Order), useValue: repository },
     ],
   })
@@ -80,11 +84,11 @@ describe('JSON number lexemes', () => {
   });
 
   it('reads only top-level members and ignores numbers and keys inside strings', async () => {
-    const body = '{"instrument":"1000000.00000000001","note":{"price":1000000.00000000001},'
+    const body = '{"instrument":"ABC","note":{"label":"1000000.00000000001","price":1000000.00000000001},'
       + '"side":"buy","price":100.5,"quantity":2}';
     const response = await post(body);
     expect(response.status).toBe(201);
-    expect(rows).toMatchObject([{ instrument: '1000000.00000000001', price: '100.50', quantity: '2.00000000' }]);
+    expect(rows).toMatchObject([{ instrument: 'ABC', price: '100.50', quantity: '2.00000000' }]);
   });
 });
 

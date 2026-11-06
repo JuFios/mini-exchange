@@ -48,3 +48,29 @@ it('sends only aggregated levels to an unauthenticated WebSocket subscriber', as
     socket.disconnect();
   }
 });
+
+it('lists the configured instruments and their exact order limits without a JWT', async () => {
+  const response = await request('/instruments');
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual(['ABC', 'XYZ'].map((symbol) => ({
+    symbol,
+    baseAsset: symbol,
+    quoteAsset: 'USD',
+    tickSize: '0.01',
+    lotSize: '0.00000001',
+    minQty: '0.00000001',
+    maxQty: '1000000.00000000',
+    maxPrice: '1000000.00',
+  })));
+});
+
+it.each([
+  '/instruments/UNKNOWN/book',
+  '/orders/book',
+  '/orders/book?instrument=ABC&instrument=XYZ',
+  '/instruments/ABC/book?depth=0',
+  '/instruments/ABC/book?depth=51',
+  '/instruments/ABC/book?depth=1&depth=2',
+])('rejects invalid public book queries (%s)', async (path) => {
+  expect((await request(path)).status).toBe(400);
+});

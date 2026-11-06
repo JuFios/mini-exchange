@@ -15,6 +15,8 @@ export interface BookSnapshot {
   asks: Order[]; // сортовані: ціна зростає, за рівної ціни — час зростає
 }
 
+export const DEFAULT_BOOK_DEPTH = 50;
+
 export interface BookLevel {
   price: string;
   quantity: string;

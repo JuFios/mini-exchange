@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Post,
   Query,
   Request,
@@ -12,6 +13,8 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { OrdersService } from './orders.service';
+import { CancelOrderQueryDto } from './dto/cancel-order-query.dto';
+import { InstrumentCatalog } from './instrument-catalog';
 import { SubmitOrderDto } from './dto/submit-order.dto';
 import { plainDecimal, topLevelNumberLexemes } from './amount-lexemes';
 
@@ -46,10 +49,14 @@ function withExactAmounts(dto: SubmitOrderDto, rawBody?: Buffer): SubmitOrderDto
 @Controller('orders')
 @UseGuards(JwtAuthGuard)
 export class OrdersController {
-  constructor(private readonly orders: OrdersService) {}
+  constructor(
+    private readonly orders: OrdersService,
+    private readonly instruments: InstrumentCatalog,
+  ) {}
 
   @Post()
   submit(@Body() dto: SubmitOrderDto, @Request() req: AuthenticatedRequest) {
+    this.instruments.require(dto.instrument);
     return this.orders.submitOrder(withExactAmounts(dto, req.rawBody), req.user.userId);
   }
 
@@ -60,10 +67,12 @@ export class OrdersController {
 
   @Delete(':id')
   cancel(
-    @Param('id') id: string,
-    @Query('instrument') instrument: string | undefined,
+    @Param('id', new ParseUUIDPipe({
+      exceptionFactory: () => new BadRequestException('Некоректний ідентифікатор заявки'),
+    })) id: string,
+    @Query() query: CancelOrderQueryDto,
     @Request() req: AuthenticatedRequest,
   ) {
-    return this.orders.cancelOrder(id, req.user.userId, instrument);
+    return this.orders.cancelOrder(id, req.user.userId, query.instrument);
   }
 }

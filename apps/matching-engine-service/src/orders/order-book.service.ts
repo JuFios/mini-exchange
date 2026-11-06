@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Order } from './entities/order.entity';
 import { formatQuantity, parseQuantity } from '../matching/decimal';
-import { BookDepth, BookLevel, BookSnapshot } from './order-book.types';
+import { BookDepth, BookLevel, BookSnapshot, DEFAULT_BOOK_DEPTH } from './order-book.types';
 
 function aggregateLevels(orders: Order[], limit: number): BookLevel[] {
   const levels = new Map<string, { quantity: bigint; orders: number }>();
@@ -51,7 +51,7 @@ export class OrderBookService {
     };
   }
 
-  depth(instrument: string, limit = 50): BookDepth {
+  depth(instrument: string, limit = DEFAULT_BOOK_DEPTH): BookDepth {
     const book = this.books.get(instrument);
     if (!book) return { bids: [], asks: [] };
     return { bids: aggregateLevels(book.bids, limit), asks: aggregateLevels(book.asks, limit) };
