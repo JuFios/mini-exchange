@@ -83,13 +83,13 @@ export class OrdersService {
       throw new ConflictException('Заявку вже закрито');
     }
     const { affected } = await this.orders.update(
-      { id: orderId, ownerId: userId, status: order.status },
+      { id: order.id, ownerId: userId, status: order.status },
       { status: 'cancelled', remainingQuantity: '0' },
     );
     if (affected !== 1) {
       throw new ConflictException('Стан заявки змінився');
     }
-    this.orderBook.removeOrder(order.instrument, orderId);
+    this.orderBook.removeOrder(order.instrument, order.id);
   }
 
   async listOwn(ownerId: string): Promise<Order[]> {
