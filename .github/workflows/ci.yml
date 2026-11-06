@@ -91,9 +91,24 @@ jobs:
             docker compose -p redis-upgrade-source -f "$fixture/compose.yml" "$@"
           }
           cleanup() {
-            docker compose down -v --remove-orphans
-            source_compose down -v --remove-orphans
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              for project in redis-upgrade-source redis-upgrade-smoke; do
+                echo "::group::Compose project $project"
+                if [ "$project" = redis-upgrade-source ]; then
+                  source_compose ps -a || true
+                  source_compose logs --no-color --tail=200 || true
+                else
+                  docker compose ps -a || true
+                  docker compose logs --no-color --tail=200 || true
+                fi
+                echo '::endgroup::'
+              done
+            fi
+            docker compose down -v --remove-orphans || true
+            source_compose down -v --remove-orphans || true
             rm -rf "$fixture"
+            exit "$status"
           }
           trap cleanup EXIT
           cat > "$fixture/compose.yml" <<'YAML'
