@@ -49,15 +49,26 @@ docker compose up --build
 Це перевірка доступності HTTP-процесу. PostgreSQL і Redis мають власні healthcheck.
 Redis пише AOF у том `redis-data` і працює з політикою `noeviction`.
 
-### Публічна адреса WebSocket
+### Віддалене розгортання
 
-Для локального запуску frontend використовує `ws://localhost:3001`. Для віддаленого
-розгортання передайте адресу, доступну браузеру, під час збірки frontend.
+Порти `3000` і `3001` опубліковані на всіх інтерфейсах хоста. `.env.example` містить
+публічні демо-секрети JWT: з ними будь-хто з доступом до порту `3001` може підписати власний
+токен і діяти від імені довільного користувача. Тому стек, доступний з інших хостів,
+запускайте лише з `docker-compose.remote.yml`. Цей файл вимагає власні `JWT_ACCESS_SECRET`
+і `JWT_REFRESH_SECRET`, а також адресу WebSocket, доступну браузеру. Без цих значень
+Compose не запуститься.
 
 ```bash
-NEXT_PUBLIC_WS_URL=wss://exchange.example.com docker compose up -d --build frontend
+export COMPOSE_FILE=docker-compose.yml:docker-compose.remote.yml
+export JWT_ACCESS_SECRET="$(openssl rand -hex 32)"
+export JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
+export NEXT_PUBLIC_WS_URL=wss://exchange.example.com
+docker compose up -d --build --wait --wait-timeout 240
 ```
 
+Збережіть секрети: після їх зміни раніше видані токени стають недійсними.
+
+Для локального запуску frontend використовує `ws://localhost:3001`.
 Compose також читає значення з `.env` поруч із `docker-compose.yml`. Якщо адреса вже є
 в `apps/frontend/.env.production` або `apps/frontend/.env.local`, передайте відповідний файл явно,
 наприклад `docker compose --env-file apps/frontend/.env.production up -d --build frontend`.

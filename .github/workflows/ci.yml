@@ -63,6 +63,18 @@ jobs:
       NEXT_PUBLIC_WS_URL: wss://exchange.example.test
     steps:
       - uses: actions/checkout@v4
+      - name: Verify the remote deployment settings
+        run: |
+          remote() {
+            docker compose -f docker-compose.yml -f docker-compose.remote.yml "$@"
+          }
+          if JWT_ACCESS_SECRET= JWT_REFRESH_SECRET=refresh remote config -q; then
+            echo 'The remote settings accepted an empty JWT secret.' >&2
+            exit 1
+          fi
+          JWT_ACCESS_SECRET=access-ci JWT_REFRESH_SECRET=refresh-ci remote config --format json |
+            jq -e '.services["matching-engine-service"].environment |
+              .JWT_ACCESS_SECRET == "access-ci" and .JWT_REFRESH_SECRET == "refresh-ci"'
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
       - name: Verify the frontend address and Redis port
