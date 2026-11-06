@@ -55,11 +55,3 @@ export const parsePrice = (value: string | number): bigint => parse(value, PRICE
 export const parseQuantity = (value: string | number): bigint => parse(value, QUANTITY_SCALE, 'quantity');
 export const formatPrice = (ticks: bigint): string => format(ticks, PRICE_SCALE);
 export const formatQuantity = (lots: bigint): string => format(lots, QUANTITY_SCALE);
-
-export const ORDER_AMOUNT_LIMITS = {
-  tickSize: formatPrice(1n),
-  lotSize: formatQuantity(1n),
-  minQty: formatQuantity(1n),
-  maxQty: formatQuantity(MAX_WHOLE * 10n ** BigInt(QUANTITY_SCALE)),
-  maxPrice: formatPrice(MAX_WHOLE * 10n ** BigInt(PRICE_SCALE)),
-};

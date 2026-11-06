@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { JwtAuthGuard } from '../../src/auth/guards/jwt-auth.guard';
 import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
+import { Instrument } from '../../src/orders/entities/instrument.entity';
 import { Order } from '../../src/orders/entities/order.entity';
 import { OrderBookService } from '../../src/orders/order-book.service';
 import { OrdersController } from '../../src/orders/orders.controller';
@@ -25,6 +26,9 @@ beforeAll(async () => {
       OrderBookService,
       InstrumentCatalog,
       { provide: ConfigService, useValue: new ConfigService({ INSTRUMENTS: ['ABC', 'XYZ'] }) },
+      { provide: getRepositoryToken(Instrument), useValue: {
+        find: async () => [{ symbol: 'ABC' }, { symbol: 'XYZ' }],
+      } },
       { provide: getRepositoryToken(Order), useValue: repository },
     ],
   })

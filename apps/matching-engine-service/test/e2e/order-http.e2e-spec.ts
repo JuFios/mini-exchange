@@ -8,8 +8,9 @@ it('requires a JWT for the private order list', async () => {
 });
 
 it('rejects a correctly signed token without a valid owner identifier', async () => {
-  const token = new JwtService().sign({ email: 'no-owner@example.test' }, {
+  const token = new JwtService().sign({ email: 'no-owner@example.test', typ: 'access' }, {
     secret: process.env.JWT_ACCESS_SECRET,
+    expiresIn: '15m',
   });
   expect((await request('/orders', 'GET', token)).status).toBe(401);
 });

@@ -38,6 +38,27 @@ docker compose up --build
 Якщо встановлено alias `docker-compose`, можна запустити `docker-compose up --build`.
 Для запуску у фоні з очікуванням усіх healthcheck використовуйте `docker compose up -d --build --wait`.
 
+### Схема engine
+
+Compose запускає `engine-migrate` після готовності PostgreSQL. Engine стартує після
+успішних міграцій. При збої перегляньте `docker compose logs engine-migrate`.
+Повторний запуск застосує лише відсутні міграції. Паралельні запуски на одній БД
+виконують міграції по черзі під блокуванням PostgreSQL. Очікування блокування обмежено
+60 с, а один SQL-оператор міграції — 300 с. Якщо інша міграція тримає блокування довше,
+`engine-migrate` завершується з помилкою `Timed out … migrations lock`, а engine не
+стартує. Тоді перевірте активні сесії в `pg_stat_activity` і запустіть міграції знову.
+
+Для запуску engine поза Compose задайте реквізити чистої PostgreSQL 16 через
+`DATABASE_*` або `apps/matching-engine-service/.env`. У каталозі пакета після
+`npm ci` виконайте `npm run migration:run` перед `npm run start:dev`.
+`npm run migration:revert` відкочує одну міграцію. Перевіряйте відкат на окремій
+тестовій БД, бо відкат початкової міграції видаляє таблиці та їхні дані.
+
+Том PostgreSQL із таблицями, створеними автоматично в starter, потребує окремого
+перенесення даних. Для одноразового локального стеку зі збереженою резервною копією
+можна скинути томи через `docker compose down -v` і запустити стек знову.
+Ця команда видалить також локальний том Redis.
+
 - matching-engine-service: http://localhost:3001
 - settlement-service: http://localhost:3002
 - frontend: http://localhost:3000
@@ -57,19 +78,23 @@ AOF, невдалі healthcheck не враховуються протягом `
 Локальний Compose публікує порти `3000` і `3001` лише на `127.0.0.1`.
 `.env.example` містить публічні демо-секрети JWT для цього режиму. Для доступу з інших
 хостів використовуйте `docker-compose.remote.yml`. Він публікує ці порти на всіх
-інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` та адресу WebSocket,
-доступну браузеру. Engine відхиляє старт, якщо JWT-секрет відсутній, коротший за 32
-символи або збігається з іншим JWT-секретом.
+інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
+`ADMIN_PASSWORD` та адресу WebSocket, доступну браузеру. Використовуйте окремий
+Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
+отримає окрему БД та власні облікові дані.
 
 ```bash
 export COMPOSE_FILE=docker-compose.yml:docker-compose.remote.yml
 export JWT_ACCESS_SECRET="$(openssl rand -hex 32)"
 export JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
+export ADMIN_EMAILS=admin@exchange.example.com
+export ADMIN_PASSWORD="$(openssl rand -hex 24)"
 export NEXT_PUBLIC_WS_URL=wss://exchange.example.com
-docker compose up -d --build --wait --wait-timeout 240
+docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 ```
 
-Збережіть секрети: після їх зміни раніше видані токени стають недійсними.
+Збережіть секрети в захищеному сховищі. Зміна JWT-секретів робить видані токени
+недійсними. `ADMIN_PASSWORD` задає початковий пароль нових admin-акаунтів.
 
 Для локального запуску frontend використовує `ws://localhost:3001`.
 Compose також читає значення з `.env` поруч із `docker-compose.yml`. Якщо адреса вже є
@@ -167,10 +192,31 @@ JSON-чисел перевіряється запис із тіла запиту
 
 ## Зміни контрактів і поведінки
 
+- `POST /auth/register` і `POST /auth/login` повертають `{accessToken, refreshToken}`.
+  `POST /auth/refresh` з тілом `{"refreshToken":"..."}` повертає HTTP 200 і нову пару.
+  Повтор попереднього refresh у межах `REFRESH_REUSE_GRACE_MS` (типово 10 с) повертає
+  лише `{accessToken}`. Клієнт у цьому випадку зберігає поточний refresh. Повтор після
+  цього вікна або використання старішого refresh відкликає сесію і повертає 401.
+  Відповіді з токенами мають `Cache-Control: no-store`. `POST /auth/logout` з тим самим
+  форматом тіла відкликає сесію й повертає 204.
+- Engine перевіряє тип токена і підпис окремим секретом для кожного типу. Токени,
+  видані до оновлення, потребують повторного входу. Акаунт має одну refresh-сесію:
+  новий вхід замінює попередню, і refresh старого клієнта повертає 401, не зачіпаючи
+  нову сесію. Вихід і відкликання завершують refresh-сесію, а виданий access діє
+  до `exp`, щонайбільше 15 хв.
+- Після міграцій engine створює admin-акаунти з `ADMIN_EMAILS`. Для локального
+  запуску увійдіть на `POST /auth/login` як `admin@demo.local` з `ADMIN_PASSWORD`
+  з `apps/matching-engine-service/.env.example`. Реєстрація налаштованих адрес дає
+  409. Якщо адреса вже належить звичайному користувачу, engine відхиляє старт.
+  Адреси в `ADMIN_EMAILS` мають бути ASCII (IDN-домен записують у punycode), бо регістр
+  порівнюють JavaScript і PostgreSQL. Повторний старт зберігає пароль seed-акаунта. Після вилучення адреси з
+  `ADMIN_EMAILS` раніше видана роль зберігається до закінчення access JWT.
 - `GET /instruments` публічно повертає символи, активи, тики, лоти й межі заявок. Перелік
-  задається обов’язковою змінною `INSTRUMENTS` у matching engine (у `.env.example` —
-  `ABC,XYZ`, котирування в USD). Без неї, як і без `PORT` та `INSTANCE_ID`, engine не
-  стартує: типових значень у коді немає.
+  читається з таблиці `instruments`. Міграція додає `ABC,XYZ` з котируванням в USD.
+  Тик, лот і межі кількості та ціни закріплені CHECK-обмеженнями на значення, які
+  перевіряє парсер сум, тож таблиця не може оголосити інші межі.
+  На старті engine звіряє весь перелік із обов’язковою змінною `INSTRUMENTS`.
+  `PORT` та `INSTANCE_ID` також обов’язкові.
 - `GET /instruments/ABC/book?depth=50` і сумісний `GET /orders/book?instrument=ABC` доступні
   без JWT. Відповідь містить `instrument`, `bids` і `asks`. Кожен рівень містить
   `price`, суму відкритих залишків `quantity` та кількість заявок `orders`. Ціна й
@@ -217,6 +263,10 @@ HTTP-тесті точності використано дійсний симв�
 Запустіть з кореня репозиторію після `npm ci` у пакеті matching engine. Кожен запуск
 створює окремий Compose-проєкт зі своїми томами й динамічними портами на loopback.
 Тестова роль PostgreSQL створює окрему БД для кожного набору, а після тестів її видаляє.
+Перед запуском застосунку тестовий хелпер виконує міграції в цій БД.
+Тест JWT без ідентифікатора власника підписує токен із новим полем `typ`, щоб
+перевірка й далі стосувалася відсутнього `sub`. Unit-тест обробки сум підміняє
+репозиторій інструментів, бо каталог тепер читається з БД.
 
 ```bash
 (

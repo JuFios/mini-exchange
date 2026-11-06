@@ -3,10 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { isUUID } from 'class-validator';
+import type { Role } from '../guards/roles.guard';
 
 export interface JwtPayload {
   sub: string;
   email: string;
+  typ: 'access';
+  exp: number;
+  roles?: Role[];
 }
 
 @Injectable()
@@ -20,8 +24,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: JwtPayload) {
-    if (!isUUID(payload?.sub)) throw new UnauthorizedException('Некоректний токен доступу');
-    return { userId: payload.sub, email: payload.email };
+  validate(payload: JwtPayload) {
+    if (payload?.typ !== 'access' || !isUUID(payload.sub) || typeof payload.email !== 'string'
+        || !Number.isInteger(payload.exp)) {
+      throw new UnauthorizedException('Некоректний токен доступу');
+    }
+    const roles: Role[] | undefined = Array.isArray(payload.roles) && payload.roles.includes('admin')
+      ? ['admin']
+      : undefined;
+    return { userId: payload.sub, email: payload.email, roles };
   }
 }

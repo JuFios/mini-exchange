@@ -29,15 +29,25 @@ services:
       start_period: ${REDIS_HEALTH_START_PERIOD:-120s}
       start_interval: 1s
 
+  engine-migrate:
+    build: &engine-build ./apps/matching-engine-service
+    env_file: ./apps/matching-engine-service/.env.example
+    environment:
+      DATABASE_HOST: exchange-db
+    command: ['node', 'dist/migrate', 'run']
+    depends_on:
+      exchange-db:
+        condition: service_healthy
+
   matching-engine-service:
-    build: ./apps/matching-engine-service
+    build: *engine-build
     env_file: ./apps/matching-engine-service/.env.example
     environment:
       DATABASE_HOST: exchange-db
       REDIS_HOST: redis
     depends_on:
-      exchange-db:
-        condition: service_healthy
+      engine-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     ports:
