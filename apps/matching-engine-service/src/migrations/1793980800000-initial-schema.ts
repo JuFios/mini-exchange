@@ -13,6 +13,7 @@ export class InitialSchema1793980800000 implements MigrationInterface {
         refresh_prev_hash varchar,
         refresh_rotated_at timestamptz
       );
+      CREATE INDEX users_email_lower_idx ON users (LOWER(email COLLATE "C"));
 
       CREATE TABLE instruments (
         symbol varchar PRIMARY KEY,

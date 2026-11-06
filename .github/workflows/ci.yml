@@ -113,6 +113,8 @@ jobs:
         env:
           CI_ACCESS_SECRET: ci-only-access-secret-value-000001
           CI_REFRESH_SECRET: ci-only-refresh-secret-value-00001
+          ADMIN_EMAILS: ci-admin@example.test
+          ADMIN_PASSWORD: ci-only-admin-password-000001
         run: |
           docker compose config --format json | jq -e '
             .services as $s |
@@ -125,17 +127,26 @@ jobs:
             echo 'The remote settings accepted an empty JWT secret.' >&2
             exit 1
           fi
+          if JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
+            ADMIN_PASSWORD= remote config -q; then
+            echo 'The remote settings accepted an empty admin password.' >&2
+            exit 1
+          fi
           JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" remote config --format json |
-            jq -e --arg access "$CI_ACCESS_SECRET" --arg refresh "$CI_REFRESH_SECRET" '
+            jq -e --arg access "$CI_ACCESS_SECRET" --arg refresh "$CI_REFRESH_SECRET" \
+              --arg admin "$ADMIN_EMAILS" --arg password "$ADMIN_PASSWORD" '
               .services as $s |
               ($s["matching-engine-service"].environment |
-                .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh) and
+                .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh and
+                .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password) and
+              ($s["engine-migrate"].ports // [] | length == 0) and
               ($s["matching-engine-service"].ports | length == 1 and .[0].host_ip == null) and
               ($s.frontend.ports | length == 1 and .[0].host_ip == null)'
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
       - name: Verify the frontend address and Redis port
         run: |
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q engine-migrate)")" = 0
           docker compose exec -T frontend sh -ec 'grep -rqF "$1" .next/static/chunks/app/orderbook' sh "$NEXT_PUBLIC_WS_URL"
           docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
             jq -e '(. // {}) == {}'

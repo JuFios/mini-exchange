@@ -1,3 +1,5 @@
+import { isEmail } from 'class-validator';
+
 function required(value: unknown, key: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`${key} is required`);
@@ -20,6 +22,48 @@ function jwtSecret(value: unknown, key: string): string {
     throw new Error(`${key} must contain at least 32 characters`);
   }
   return secret;
+}
+
+function adminEmails(value: unknown, key: string): string[] {
+  const emails = required(value, key).split(',').map((email) => email.trim().toLowerCase());
+  if (emails.some((email) => !isEmail(email, { allow_utf8_local_part: false }))
+      || new Set(emails).size !== emails.length) {
+    throw new Error(`${key} must contain unique email addresses`);
+  }
+  return emails;
+}
+
+function adminPassword(value: unknown, key: string): string {
+  const password = required(value, key);
+  if (password.trim().length < 12 || Buffer.byteLength(password) > 72) {
+    throw new Error(`${key} must contain at least 12 characters and at most 72 bytes`);
+  }
+  return password;
+}
+
+const secondsPerUnit = { s: 1, m: 60, h: 3600, d: 86400 };
+
+function tokenTtl(value: unknown, key: string): number {
+  const match = /^([1-9][0-9]*)([smhd])$/.exec(required(value, key));
+  if (!match) throw new Error(`${key} must be a positive duration with unit s, m, h or d`);
+  const seconds = Number(match[1]) * secondsPerUnit[match[2] as keyof typeof secondsPerUnit];
+  if (!Number.isSafeInteger(seconds)) throw new Error(`${key} is too large`);
+  return seconds;
+}
+
+function accessTtl(value: unknown, key: string): number {
+  const seconds = tokenTtl(value, key);
+  if (seconds > 900) throw new Error(`${key} must not exceed 15 minutes`);
+  return seconds;
+}
+
+function refreshGrace(value: unknown, key: string): number {
+  const text = required(value, key);
+  const milliseconds = Number(text);
+  if (!/^[0-9]+$/.test(text) || milliseconds > 10000) {
+    throw new Error(`${key} must be an integer from 0 to 10000`);
+  }
+  return milliseconds;
 }
 
 function instruments(value: unknown, key: string): string[] {
@@ -46,6 +90,11 @@ const schema = {
   REDIS_PORT: port,
   JWT_ACCESS_SECRET: jwtSecret,
   JWT_REFRESH_SECRET: jwtSecret,
+  JWT_ACCESS_TTL: accessTtl,
+  JWT_REFRESH_TTL: tokenTtl,
+  REFRESH_REUSE_GRACE_MS: refreshGrace,
+  ADMIN_EMAILS: adminEmails,
+  ADMIN_PASSWORD: adminPassword,
   INSTANCE_ID: required,
   INSTRUMENTS: instruments,
 };

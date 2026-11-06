@@ -3,13 +3,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { INestApplication } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import { Test } from '@nestjs/testing';
 import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import { migrate } from '../../src/database/migrate';
 import { testDatabase } from '../test-database';
 import { configureApp } from '../../src/configure-app';
 import type { Order } from '../../src/orders/entities/order.entity';
+import { EngineEnv, validateEnv } from '../../src/config/env.validation';
 
 export function engineApp() {
   const database = testDatabase();
@@ -52,19 +54,46 @@ export function engineApp() {
     }
   });
 
-  beforeEach(async () => {
+  async function start(overrides?: Partial<EngineEnv>) {
     const { AppModule } = await import('../../src/app.module');
-    app = await NestFactory.create(AppModule, { rawBody: true, logger: ['error'], abortOnError: false });
-    configureApp(app);
-    await app.listen(0, '127.0.0.1');
-    baseUrl = await app.getUrl();
-  });
+    const builder = Test.createTestingModule({ imports: [AppModule] });
+    if (overrides) {
+      const config = { ...validateEnv(process.env), ...overrides };
+      builder.overrideProvider(ConfigService).useValue({ getOrThrow: (key: keyof EngineEnv) => config[key] });
+    }
+    const module = await builder.compile();
+    const instance = module.createNestApplication({ rawBody: true, logger: ['error'], abortOnError: false });
+    try {
+      configureApp(instance);
+      await instance.listen(0, '127.0.0.1');
+      baseUrl = await instance.getUrl();
+      app = instance;
+    } catch (error) {
+      await instance.close();
+      throw error;
+    }
+  }
+
+  async function close() {
+    const instance = app;
+    app = undefined;
+    await instance?.close();
+  }
+
+  async function restart(overrides?: Partial<EngineEnv>) {
+    await close();
+    await start(overrides);
+  }
+
+  beforeEach(() => start());
 
   afterEach(async () => {
     // Заявки одного тесту не повинні потрапити в книгу наступного після її відновлення при старті.
-    await app?.get(DataSource).query('TRUNCATE TABLE orders');
-    await app?.close();
-    app = undefined;
+    try {
+      await app?.get(DataSource).query('TRUNCATE TABLE orders');
+    } finally {
+      await close();
+    }
   });
 
   afterAll(async () => {
@@ -113,5 +142,5 @@ export function engineApp() {
     return (await response.json()) as Order[];
   }
 
-  return { request, register, submit, list, url: () => baseUrl };
+  return { request, register, submit, list, restart, database: () => app!.get(DataSource), url: () => baseUrl };
 }
