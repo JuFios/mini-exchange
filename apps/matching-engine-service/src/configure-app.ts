@@ -1,3 +1,4 @@
+import { DatabaseExceptionFilter } from './database/database-exception.filter';
 import {
   ArgumentMetadata, BadRequestException, INestApplication, ValidationError, ValidationPipe,
 } from '@nestjs/common';
@@ -33,5 +34,6 @@ export function configureApp(app: INestApplication): void {
     forbidNonWhitelisted: true,
     transform: true,
   }));
+  app.useGlobalFilters(new DatabaseExceptionFilter(app.getHttpAdapter()));
   app.enableCors();
 }

@@ -1,30 +1,41 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { Injectable, Logger } from '@nestjs/common';
+import { EntityManager, In } from 'typeorm';
+import { Book, compareOrders } from '../matching/book';
 import { Order } from '../orders/entities/order.entity';
-import { OrderBookService } from '../orders/order-book.service';
-import { compareOrders } from '../matching/book';
-import { parsePrice, parseQuantity } from '../matching/decimal';
+import { bookOrder } from './command';
+
+export function counters(book: Book) {
+  return {
+    bidCount: String(book.bids.length), askCount: String(book.asks.length),
+    bidLots: book.bids.reduce((sum, order) => sum + order.remaining, 0n).toString(),
+    askLots: book.asks.reduce((sum, order) => sum + order.remaining, 0n).toString(),
+    count: String(book.bids.length + book.asks.length),
+    quantity: [...book.bids, ...book.asks].reduce((sum, order) => sum + order.remaining, 0n).toString(),
+  };
+}
 
 @Injectable()
-export class BookLoader implements OnModuleInit {
-  constructor(
-    @InjectRepository(Order) private readonly orders: Repository<Order>,
-    private readonly books: OrderBookService,
-  ) {}
+export class BookLoader {
+  private readonly logger = new Logger(BookLoader.name);
 
-  async onModuleInit(): Promise<void> {
-    const orders = await this.orders.find({ where: { status: In(['open', 'partially_filled']) } });
-    const symbols = new Set(orders.map(({ instrument }) => instrument));
-    for (const symbol of symbols) {
-      const sorted = orders.filter(({ instrument }) => instrument === symbol).sort((a, b) => a.side !== b.side ? a.side.localeCompare(b.side) : compareOrders(
-        { ...a, price: parsePrice(a.price), quantity: parseQuantity(a.quantity), remaining: parseQuantity(a.remainingQuantity), prioritySeq: BigInt(a.prioritySeq ?? a.createdAt.getTime()) },
-        { ...b, price: parsePrice(b.price), quantity: parseQuantity(b.quantity), remaining: parseQuantity(b.remainingQuantity), prioritySeq: BigInt(b.prioritySeq ?? b.createdAt.getTime()) },
-      ));
-      this.books.replace(symbol, {
-        bids: sorted.filter(({ side }) => side === 'buy'),
-        asks: sorted.filter(({ side }) => side === 'sell'),
-      });
+  async load(db: EntityManager, instrument: string): Promise<{ book: Book; seq: string; halted: boolean }> {
+    const [state] = await db.query('SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE', [instrument]);
+    const rows = await db.getRepository(Order).find({ where: { instrument, status: In(['open', 'partially_filled']) } });
+    const orders = rows.map(bookOrder);
+    const book = {
+      bids: orders.filter(({ side }) => side === 'buy').sort(compareOrders),
+      asks: orders.filter(({ side }) => side === 'sell').sort(compareOrders),
+    };
+    const actual = counters(book);
+    const crossed = book.bids.length > 0 && book.asks.length > 0 && book.bids[0].price >= book.asks[0].price;
+    if (actual.count !== state.resting_count || actual.quantity !== state.resting_quantity
+      || actual.bidCount !== state.resting_bid_count || actual.askCount !== state.resting_ask_count
+      || actual.bidLots !== state.resting_bid_lots || actual.askLots !== state.resting_ask_lots || crossed) {
+      await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [instrument]);
+      this.logger.error({ alert: 'engine_recovery_mismatch', instrument });
+      state.status = 'halted';
     }
+    await db.query('UPDATE instrument_state SET recovered_at=now() WHERE instrument=$1', [instrument]);
+    return { book, seq: state.last_applied_seq, halted: state.status === 'halted' };
   }
 }

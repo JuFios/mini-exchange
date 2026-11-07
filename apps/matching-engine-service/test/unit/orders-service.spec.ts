@@ -1,67 +1,28 @@
-import type { Repository } from 'typeorm';
-import type { Order } from '../../src/orders/entities/order.entity';
-import { OrderBookService } from '../../src/orders/order-book.service';
-import { OrdersService } from '../../src/orders/orders.service';
-
-function setup() {
-  const rows: Order[] = [];
-  const repository = {
-    create: (order: Order) => order,
-    save: async (input: Order | Order[]) => {
-      for (const order of Array.isArray(input) ? input : [input]) {
-        const index = rows.findIndex(({ id }) => id === order.id);
-        if (index < 0) rows.push(order);
-        else rows[index] = order;
-      }
-    },
-    find: async ({ where }: { where: { ownerId: string } }) =>
-      rows.filter(({ ownerId }) => ownerId === where.ownerId),
-  };
-  const book = new OrderBookService();
-  const service = new OrdersService(repository as unknown as Repository<Order>, book);
-  return { book, service, rows };
-}
+import { BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { DataSource } from 'typeorm';
+import { IntakeService } from '../../src/intake/intake.service';
+import { NoopReservationClient } from '../../src/intake/reservation.client';
+import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
 
 const sell = { instrument: 'ABC', side: 'sell' as const, price: 100, quantity: 1 };
-
-it('persists an STP cancellation and keeps fills made before the self-cross', async () => {
-  const { service, book } = setup();
-  await service.submitOrder(sell, 'X');
-  await service.submitOrder({ ...sell, price: 99 }, 'Y');
-
-  const trades = await service.submitOrder({ ...sell, side: 'buy', quantity: 2 }, 'X');
-  const [ownAsk, buy] = await service.listOwn('X');
-
-  expect(trades).toMatchObject([{ price: '99.00', quantity: '1.00000000', buyOrderId: buy.id }]);
-  // Виконаний обсяг відновлюється як quantity - remainingQuantity.
-  expect(buy).toMatchObject({ status: 'cancelled', quantity: '2.00000000', remainingQuantity: '1.00000000' });
-  expect(book.snapshot('ABC')).toEqual({ bids: [], asks: [ownAsk] });
-});
-
-it('keeps the whole quantity as the cancelled remainder when nothing was filled before the self-cross', async () => {
-  const { service } = setup();
-  await service.submitOrder(sell, 'X');
-
-  const trades = await service.submitOrder({ ...sell, side: 'buy', quantity: 2 }, 'X');
-  const [, buy] = await service.listOwn('X');
-
-  expect(trades).toEqual([]);
-  expect(buy).toMatchObject({ status: 'cancelled', quantity: '2.00000000', remainingQuantity: '2.00000000' });
-});
+const service = new IntakeService({} as DataSource,
+  new ConfigService({ REDIS_HOST: '127.0.0.1', REDIS_PORT: 6379 }),
+  { require: (symbol: string) => { if (symbol !== 'ABC') throw Object.assign(new Error(), { status: 400 }); } } as InstrumentCatalog,
+  new NoopReservationClient());
 
 it.each([
   { price: 1_000_000.01 }, { price: 100.005 }, { price: 0.001 },
   { quantity: 0.123456789 }, { quantity: 1e-9 }, { quantity: 1_000_000.00000001 },
-])('rejects invalid amounts before reading or writing the book (%j)', async (amount) => {
-  const { service, book, rows } = setup();
-  const snapshot = jest.spyOn(book, 'snapshot');
-  await expect(service.submitOrder({ ...sell, ...amount }, 'X')).rejects.toMatchObject({ status: 400 });
-  expect(snapshot).not.toHaveBeenCalled();
-  expect(rows).toEqual([]);
+])('rejects invalid amounts before accepting a request (%j)', (amount) => {
+  expect(() => service.normalize({ ...sell, ...amount })).toThrow(BadRequestException);
 });
 
-it('accepts the minimum lot sent by a client as a JSON number', async () => {
-  const { service, rows } = setup();
-  await expect(service.submitOrder({ ...sell, price: 0.01, quantity: 1e-8 }, 'X')).resolves.toEqual([]);
-  expect(rows).toMatchObject([{ price: '0.01', quantity: '0.00000001', status: 'open' }]);
+it('accepts the minimum lot sent by a client as a JSON number', () => {
+  expect(service.normalize({ ...sell, price: 0.01, quantity: 1e-8 }))
+    .toMatchObject({ price: '0.01', quantity: '0.00000001' });
+});
+
+it('enforces the instrument allowlist when called without a controller', () => {
+  expect(() => service.normalize({ ...sell, instrument: 'UNKNOWN' })).toThrow();
 });

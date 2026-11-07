@@ -6,22 +6,28 @@ import { JwtAuthGuard } from '../../src/auth/guards/jwt-auth.guard';
 import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
 import { Instrument } from '../../src/orders/entities/instrument.entity';
 import { Order } from '../../src/orders/entities/order.entity';
-import { OrderBookService } from '../../src/orders/order-book.service';
+import { DataSource } from 'typeorm';
+import { IntakeService } from '../../src/intake/intake.service';
+import { NoopReservationClient } from '../../src/intake/reservation.client';
+import { PgNotifications } from '../../src/engine/pg-notifications';
+import { SubmitOrderDto } from '../../src/orders/dto/submit-order.dto';
 import { OrdersController } from '../../src/orders/orders.controller';
 import { OrdersService } from '../../src/orders/orders.service';
 
 let app: INestApplication;
 let base: string;
 const rows: Order[] = [];
-const repository = {
-  create: (order: Order) => order,
-  save: async (input: Order | Order[]) => {
-      for (const order of Array.isArray(input) ? input : [input]) {
-        const index = rows.findIndex(({ id }) => id === order.id);
-        if (index < 0) rows.push(order);
-        else rows[index] = order;
-      }
-    },
+const repository = { findOneBy: async ({ id }: { id: string }) => rows.find((order) => order.id === id) };
+const manager = { getRepository: () => repository, query: async (sql: string) => sql.includes('applied_at') ? [{ applied_at: new Date() }] : [] };
+const source = { ...manager, transaction: async (_isolation: string, read: (db: typeof manager) => Promise<unknown>) => read(manager) };
+const catalog = { require: (symbol: string) => symbol };
+const intake = {
+  submit: async (dto: SubmitOrderDto, ownerId: string) => {
+    const normalized = new IntakeService(source as unknown as DataSource, new ConfigService({ REDIS_HOST: '127.0.0.1', REDIS_PORT: 6379 }), catalog as InstrumentCatalog, new NoopReservationClient()).normalize(dto);
+    const order = { ...normalized, ownerId, id: 'order', status: 'open', remainingQuantity: normalized.quantity } as Order;
+    rows.push(order);
+    return { orderId: order.id, seq: '1', replay: false };
+  },
 };
 
 beforeAll(async () => {
@@ -29,9 +35,11 @@ beforeAll(async () => {
     controllers: [OrdersController],
     providers: [
       OrdersService,
-      OrderBookService,
+      { provide: DataSource, useValue: source },
+      { provide: IntakeService, useValue: intake },
+      { provide: PgNotifications, useValue: { wait: () => ({ ready: Promise.resolve(), cancel: () => undefined }) } },
       InstrumentCatalog,
-      { provide: ConfigService, useValue: new ConfigService({ INSTRUMENTS: ['ABC', 'XYZ'] }) },
+      { provide: ConfigService, useValue: new ConfigService({ INSTRUMENTS: ['ABC', 'XYZ'], ORDER_SYNC_WAIT_MS: 100 }) },
       { provide: getRepositoryToken(Instrument), useValue: {
         find: async () => [{ symbol: 'ABC' }, { symbol: 'XYZ' }],
       } },

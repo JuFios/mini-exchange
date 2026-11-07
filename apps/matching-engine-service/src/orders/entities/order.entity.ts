@@ -32,18 +32,18 @@ export class Order {
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
-  @Column('numeric', { name: 'filled_quantity', precision: 18, scale: 8, default: 0, select: false })
+  @Column('numeric', { name: 'filled_quantity', precision: 18, scale: 8, default: 0 })
   filledQuantity?: string;
 
-  @Column('bigint', { name: 'priority_seq', nullable: true, select: false })
+  @Column('bigint', { name: 'priority_seq', nullable: true })
   prioritySeq?: string | null;
 
-  @Column('varchar', { name: 'cancel_reason', nullable: true, select: false })
+  @Column('varchar', { name: 'cancel_reason', nullable: true })
   cancelReason?: string | null;
 
-  @Column('integer', { default: 0, select: false })
+  @Column('integer', { default: 0 })
   version?: number;
 
-  @Column('timestamptz', { name: 'updated_at', default: () => 'now()', select: false })
+  @Column('timestamptz', { name: 'updated_at', default: () => 'now()' })
   updatedAt?: Date;
 }

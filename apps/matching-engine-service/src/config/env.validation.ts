@@ -79,6 +79,19 @@ function instruments(value: unknown, key: string): string[] {
   return symbols;
 }
 
+function boolean(value: unknown, key: string): boolean {
+  if (value !== 'true' && value !== 'false') throw new Error(`${key} must be true or false`);
+  return value === 'true';
+}
+
+function milliseconds(value: unknown, key: string): number {
+  const text = required(value, key);
+  if (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)) || Number(text) < 1 || Number(text) > 60000) {
+    throw new Error(`${key} must be an integer from 1 to 60000`);
+  }
+  return Number(text);
+}
+
 const databaseSchema = {
   DATABASE_HOST: required,
   DATABASE_PORT: port,
@@ -88,6 +101,11 @@ const databaseSchema = {
 };
 
 const schema = {
+  ENGINE_WORKER_ENABLED: boolean,
+  RESERVATIONS_ENABLED: boolean,
+  COMMAND_POLL_INTERVAL_MS: milliseconds,
+  ORDER_SYNC_WAIT_MS: milliseconds,
+  SEQ_GAP_ALERT_MS: milliseconds,
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,
