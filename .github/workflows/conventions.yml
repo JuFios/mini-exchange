@@ -1,0 +1,38 @@
+name: Conventions
+
+# Окремо від CI: перейменування PR перезапускає лише цю перевірку, а не збірку стеку.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conventions-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      COMMITLINT: npx --yes -p @commitlint/cli@19.8.1 commitlint --config commitlint.config.cjs --verbose
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Lint the pull request title
+        env:
+          # Назва PR надходить із зовнішнього введення: лише через змінну оточення.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$PR_TITLE" | $COMMITLINT
+      - name: Lint commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: $COMMITLINT --from "$BASE_SHA" --to "$HEAD_SHA"

@@ -21,9 +21,7 @@ const INSTRUMENT = 'ABC';
 // оновлення. Дивись ТЗ.
 export default function OrderBookPage() {
   const [book, setBook] = useState<BookState>({ bids: [], asks: [] });
-  const [status, setStatus] = useState<'connecting' | 'live' | 'disconnected'>(
-    'connecting',
-  );
+  const [status, setStatus] = useState<'connecting' | 'live' | 'disconnected'>('connecting');
 
   useEffect(() => {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001';

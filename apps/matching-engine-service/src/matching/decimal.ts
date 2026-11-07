@@ -13,8 +13,8 @@ const DECIMAL = /^(0|[1-9][0-9]{0,6})(?:\.([0-9]+))?$/;
 function decimalText(value: string | number, scale: number): string {
   const text = String(value);
   if (typeof value === 'number') {
-    // JSON numbers at the minimum lot size stringify with a negative exponent.
-    // Expand their shortest decimal representation without rounding.
+    // JSON-числа з мінімальним лотом серіалізуються з від’ємним експонентом.
+    // Розгортаємо їхнє найкоротше десяткове подання без округлення.
     const scientific = /^([1-9])(?:\.([0-9]+))?e-([0-9]+)$/.exec(text);
     if (scientific) {
       const [, whole, fraction = '', exponent] = scientific;
@@ -52,6 +52,7 @@ function format(units: bigint, scale: number): string {
 }
 
 export const parsePrice = (value: string | number): bigint => parse(value, PRICE_SCALE, 'price');
-export const parseQuantity = (value: string | number): bigint => parse(value, QUANTITY_SCALE, 'quantity');
+export const parseQuantity = (value: string | number): bigint =>
+  parse(value, QUANTITY_SCALE, 'quantity');
 export const formatPrice = (ticks: bigint): string => format(ticks, PRICE_SCALE);
 export const formatQuantity = (lots: bigint): string => format(lots, QUANTITY_SCALE);

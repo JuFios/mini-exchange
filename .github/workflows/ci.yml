@@ -1,13 +1,22 @@
 name: CI
 
+# Гілки перевіряє `pull_request`; `push` лише для основних гілок, щоб не дублювати прогони.
 on:
   push:
-    branches: ['**']
+    branches: [main, solution]
   pull_request:
-    branches: ['**']
+
+permissions:
+  contents: read
+
+# Новий коміт у PR скасовує застарілий прогін; прогони основних гілок не скасовуються.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   matching-engine-service:
+    name: Matching engine
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -38,8 +47,9 @@ jobs:
           cache: npm
           cache-dependency-path: apps/matching-engine-service/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint:check
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
       - run: npm test
       - name: Run, revert and reapply engine migrations
         env:
@@ -50,11 +60,10 @@ jobs:
           DATABASE_NAME: exchange
         run: |
           npm run migration:run
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
+          # Один відкат на файл міграції: нова міграція не лишиться без перевірки відкату.
+          for _ in $(seq "$(ls src/migrations/*.ts | wc -l)"); do
+            npm run migration:revert
+          done
           npm run migration:run
       - name: Run engine end-to-end tests
         env:
@@ -74,7 +83,9 @@ jobs:
           done
 
   settlement-service:
+    name: Settlement
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/settlement-service
@@ -86,11 +97,14 @@ jobs:
           cache: npm
           cache-dependency-path: apps/settlement-service/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint:check
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
 
   frontend:
+    name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/frontend
@@ -102,10 +116,13 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint
+      - run: npm run typecheck
       - run: npm run build
 
   compose-smoke:
+    name: Compose smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -113,38 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify the local and remote port bindings
-        env:
-          CI_ACCESS_SECRET: ci-only-access-secret-value-000001
-          CI_REFRESH_SECRET: ci-only-refresh-secret-value-00001
-          ADMIN_EMAILS: ci-admin@example.test
-          ADMIN_PASSWORD: ci-only-admin-password-000001
-        run: |
-          docker compose config --format json | jq -e '
-            .services as $s |
-            ($s["matching-engine-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
-            ($s.frontend.ports | length == 1 and .[0].host_ip == "127.0.0.1")'
-          remote() {
-            docker compose -f docker-compose.yml -f docker-compose.remote.yml "$@"
-          }
-          if JWT_ACCESS_SECRET= JWT_REFRESH_SECRET=refresh remote config -q; then
-            echo 'The remote settings accepted an empty JWT secret.' >&2
-            exit 1
-          fi
-          if JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
-            ADMIN_PASSWORD= remote config -q; then
-            echo 'The remote settings accepted an empty admin password.' >&2
-            exit 1
-          fi
-          JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" remote config --format json |
-            jq -e --arg access "$CI_ACCESS_SECRET" --arg refresh "$CI_REFRESH_SECRET" \
-              --arg admin "$ADMIN_EMAILS" --arg password "$ADMIN_PASSWORD" '
-              .services as $s |
-              ($s["matching-engine-service"].environment |
-                .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh and
-                .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password) and
-              ($s["engine-migrate"].ports // [] | length == 0) and
-              ($s["matching-engine-service"].ports | length == 1 and .[0].host_ip == null) and
-              ($s.frontend.ports | length == 1 and .[0].host_ip == null)'
+        run: scripts/ci/check-compose-bindings.sh
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
       - name: Verify the frontend address and Redis port
@@ -154,75 +140,7 @@ jobs:
           docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
             jq -e '(. // {}) == {}'
       - name: Verify Redis volume migration
-        env:
-          COMPOSE_PROJECT_NAME: redis-upgrade-smoke
-        run: |
-          fixture=$(mktemp -d)
-          holder=
-          source_compose() {
-            docker compose -p redis-upgrade-source -f "$fixture/compose.yml" "$@"
-          }
-          cleanup() {
-            status=$?
-            if [ "$status" -ne 0 ]; then
-              for project in redis-upgrade-source redis-upgrade-smoke; do
-                echo "::group::Compose project $project"
-                if [ "$project" = redis-upgrade-source ]; then
-                  source_compose ps -a || true
-                  source_compose logs --no-color --tail=200 || true
-                else
-                  docker compose ps -a || true
-                  docker compose logs --no-color --tail=200 || true
-                fi
-                echo '::endgroup::'
-              done
-            fi
-            if [ -n "$holder" ]; then
-              docker rm -f "$holder" || true
-            fi
-            docker compose down -v --remove-orphans || true
-            source_compose down -v --remove-orphans || true
-            rm -rf "$fixture"
-            exit "$status"
-          }
-          trap cleanup EXIT
-          cat > "$fixture/compose.yml" <<'YAML'
-          services:
-            redis:
-              image: redis:7-alpine
-              healthcheck:
-                test: ['CMD', 'redis-cli', 'ping']
-                interval: 1s
-                timeout: 2s
-                retries: 10
-          YAML
-          source_compose up -d --wait --wait-timeout 60 redis
-          source_compose exec -T redis redis-cli -e SET smoke:upgrade preserved EX 3600
-          source_compose exec -T redis redis-cli -e SAVE
-          source_compose cp redis:/data/dump.rdb "$fixture/dump.rdb"
-          # Leave the state of an import killed before it published the AOF.
-          docker compose run --rm --no-deps -T redis \
-            sh -ec 'mkdir -p /data/.redis-import/appendonlydir && echo partial > /data/.redis-import/dump.rdb'
-          # A plain container holds the lock, so the script passes its Compose check.
-          volume=$(docker volume ls -q \
-            --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" \
-            --filter label=com.docker.compose.volume=redis-data)
-          test -n "$volume"
-          holder=$(docker run -d -v "$volume:/data" redis:7-alpine sh -ec 'exec 9</data; flock 9; sleep 300')
-          timeout 30 sh -c 'until docker exec "$1" sh -c "exec 9</data; ! flock -n 9"; do sleep 1; done' \
-            sh "$holder"
-          if busy=$(sh scripts/migrate-redis-volume.sh "$fixture/dump.rdb" 2>&1); then
-            echo 'The import ran while another import held the volume.' >&2
-            exit 1
-          fi
-          printf '%s\n' "$busy" | grep -qxF 'Another Redis import is using the destination volume.'
-          docker rm -f "$holder"
-          holder=
-          sh scripts/migrate-redis-volume.sh "$fixture/dump.rdb"
-          docker compose up -d --wait --wait-timeout 60 redis
-          docker compose up -d --force-recreate --wait --wait-timeout 60 redis
-          test "$(docker compose exec -T redis redis-cli -e --raw GET smoke:upgrade)" = preserved
-          test "$(docker compose exec -T redis redis-cli -e --raw TTL smoke:upgrade)" -gt 0
+        run: scripts/ci/check-redis-migration.sh
       - name: Diagnose failure
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200

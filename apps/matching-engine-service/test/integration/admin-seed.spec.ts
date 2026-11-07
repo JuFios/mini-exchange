@@ -19,9 +19,9 @@ function seeder() {
 }
 
 async function accounts() {
-  return source.query('SELECT email, admin_seeded, password_hash FROM users ORDER BY email') as Promise<
-    { email: string; admin_seeded: boolean; password_hash: string }[]
-  >;
+  return source.query(
+    'SELECT email, admin_seeded, password_hash FROM users ORDER BY email',
+  ) as Promise<{ email: string; admin_seeded: boolean; password_hash: string }[]>;
 }
 
 beforeEach(async () => {
@@ -44,7 +44,9 @@ it('lets two replicas seed the same accounts at startup without errors or duplic
   await Promise.all([seeder().onApplicationBootstrap(), seeder().onApplicationBootstrap()]);
 
   const rows = await accounts();
-  expect(rows.map((row) => [row.email, row.admin_seeded])).toEqual(emails.map((email) => [email, true]));
+  expect(rows.map((row) => [row.email, row.admin_seeded])).toEqual(
+    emails.map((email) => [email, true]),
+  );
   for (const row of rows) expect(await bcrypt.compare(password, row.password_hash)).toBe(true);
 });
 
@@ -56,22 +58,27 @@ it('rolls back the whole seed when a regular account takes an address between th
   try {
     // Незавершена реєстрація тримає адресу: перевірка seed її ще не бачить, а вставка чекає.
     await runner.startTransaction();
-    await runner.query("INSERT INTO users (email, password_hash) VALUES ($1, 'regular-hash')", [emails[1]]);
+    await runner.query("INSERT INTO users (email, password_hash) VALUES ($1, 'regular-hash')", [
+      emails[1],
+    ]);
     seeding = seeder().onApplicationBootstrap();
     seeding.catch(() => undefined);
 
     for (let attempt = 0; ; attempt++) {
-      const [{ waiting }] = await source.query(
+      const [{ waiting }] = (await source.query(
         "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
-      ) as { waiting: number }[];
+      )) as { waiting: number }[];
       if (waiting > 0) break;
-      if (attempt >= 100) throw new Error('The seed insert never waited for the pending registration');
+      if (attempt >= 100)
+        throw new Error('The seed insert never waited for the pending registration');
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await runner.commitTransaction();
 
     await expect(seeding).rejects.toThrow(/ADMIN_EMAILS.*regular account/);
-    expect(await accounts()).toEqual([{ email: emails[1], admin_seeded: false, password_hash: 'regular-hash' }]);
+    expect(await accounts()).toEqual([
+      { email: emails[1], admin_seeded: false, password_hash: 'regular-hash' },
+    ]);
   } finally {
     if (runner.isTransactionActive) await runner.rollbackTransaction();
     await runner.release();

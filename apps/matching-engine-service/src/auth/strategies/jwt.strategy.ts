@@ -25,13 +25,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   validate(payload: JwtPayload) {
-    if (payload?.typ !== 'access' || !isUUID(payload.sub) || typeof payload.email !== 'string'
-        || !Number.isInteger(payload.exp)) {
+    if (
+      payload?.typ !== 'access' ||
+      !isUUID(payload.sub) ||
+      typeof payload.email !== 'string' ||
+      !Number.isInteger(payload.exp)
+    ) {
       throw new UnauthorizedException('Некоректний токен доступу');
     }
-    const roles: Role[] | undefined = Array.isArray(payload.roles) && payload.roles.includes('admin')
-      ? ['admin']
-      : undefined;
+    const roles: Role[] | undefined =
+      Array.isArray(payload.roles) && payload.roles.includes('admin') ? ['admin'] : undefined;
     return { userId: payload.sub, email: payload.email, roles };
   }
 }

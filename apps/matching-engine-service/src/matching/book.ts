@@ -10,7 +10,7 @@ export interface BookOrder {
   readonly prioritySeq: bigint;
 }
 
-// One instrument's active orders, with positive remaining quantities.
+// Активні заявки одного інструмента з додатними залишками.
 export interface Book {
   readonly bids: readonly BookOrder[];
   readonly asks: readonly BookOrder[];
@@ -22,7 +22,7 @@ export function compareOrders(a: BookOrder, b: BookOrder): number {
     return a.prioritySeq < b.prioritySeq ? -1 : 1;
   }
   const lowerPriceFirst = a.side === 'sell';
-  return (a.price < b.price) === lowerPriceFirst ? -1 : 1;
+  return a.price < b.price === lowerPriceFirst ? -1 : 1;
 }
 
 export interface LevelChange {
@@ -38,7 +38,10 @@ export function changedLevels(book: Book, touched: readonly BookOrder[]): LevelC
     levels[side].set(price, { side, price, quantity: 0n, orders: 0 });
   }
 
-  for (const [side, orders] of [['buy', book.bids], ['sell', book.asks]] as const) {
+  for (const [side, orders] of [
+    ['buy', book.bids],
+    ['sell', book.asks],
+  ] as const) {
     if (levels[side].size === 0) continue;
     for (const order of orders) {
       const level = levels[side].get(order.price);

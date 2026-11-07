@@ -1,8 +1,8 @@
-# Mini Exchange — стартовий репозиторій
+# Mini Exchange
 
-Це стартовий каркас для тестового завдання (`ТЗ_тестове_завдання_7`). Частина
-компонентів уже працює, частина — лише каркас або TODO. Повний опис завдання
-— у файлі ТЗ, який ви отримали окремо.
+Навчальна біржа: matching engine (NestJS, PostgreSQL, Redis), сервіс розрахунків і
+веб-клієнт (Next.js). Репозиторій розвивається поетапно: нижче сказано, що працює зараз
+і що ще попереду. Вимоги — у [ЗАВДАННЯ.md](ЗАВДАННЯ.md).
 
 ## Що вже працює
 
@@ -241,12 +241,39 @@ JSON-чисел перевіряється запис із тіла запиту
 у `.env` у каталозі пакета. Задайте адреси PostgreSQL і Redis, доступні з вашого хоста,
 і згенеруйте власні JWT-секрети командами з розділу віддаленого розгортання.
 
+## Розробка
+
+**Коміти й PR.** Формат — [Conventional Commits](https://www.conventionalcommits.org/uk/v1.0.0/):
+`type(scope): description`. Тип — `feat`, `fix`, `refactor`, `test`, `docs`, `build`, `ci`,
+`chore`, `perf`, `style` або `revert`; scope — зі списку в `commitlint.config.cjs`. Заголовок
+пишеться англійською, наказовим способом, з малої літери, без крапки, до 72 символів;
+несумісна зміна позначається `!` і footer-ом `BREAKING CHANGE:`. Назва PR має той самий
+формат, бо стає темою merge-коміту. PR мержиться merge-комітом, щоб пара «тест відтворює
+дефект» і «виправлення» лишалася в історії окремими комітами.
+
+```bash
+npx --yes -p @commitlint/cli@19.8.1 commitlint --config commitlint.config.cjs --from origin/solution
+```
+
+**Стиль.** Форматує Prettier за єдиним `.prettierrc.json`, відступи й кінці рядків
+задає `.editorconfig`. У кожному пакеті: `npm run format` виправляє файли,
+`npm run format:check` лише перевіряє (так само в CI). Щоб `git blame` пропускав
+одноразове форматування:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+**Перед PR** виконайте команди з розділу «Тести». CI повторює їх і додатково збирає стек
+у Compose. Скрипти перевірок Compose лежать у `scripts/ci/` і запускаються локально так
+само, як у CI.
+
 ## Тести
 
 ```bash
-(cd apps/matching-engine-service && npm ci && npm run lint:check && npx tsc --noEmit && npm test)
-(cd apps/settlement-service && npm ci && npm run lint:check && npx tsc --noEmit)
-(cd apps/frontend && npm ci && npm run lint && npm run build)
+(cd apps/matching-engine-service && npm ci && npm run format:check && npm run lint:check && npm run typecheck && npm test)
+(cd apps/settlement-service && npm ci && npm run format:check && npm run lint:check && npm run typecheck)
+(cd apps/frontend && npm ci && npm run format:check && npm run lint && npm run typecheck && npm run build)
 docker compose up -d --build --wait --wait-timeout 240
 curl -fsS http://localhost:3001/health
 curl -fsS http://localhost:3002/health

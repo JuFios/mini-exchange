@@ -11,7 +11,11 @@ function levels(orders: readonly BookOrder[]): BookLevel[] {
     level.orders++;
     result.set(order.price, level);
   }
-  return [...result].map(([price, level]) => ({ price: formatPrice(price), quantity: formatQuantity(level.quantity), orders: level.orders }));
+  return [...result].map(([price, level]) => ({
+    price: formatPrice(price),
+    quantity: formatQuantity(level.quantity),
+    orders: level.orders,
+  }));
 }
 
 @Injectable()
@@ -22,7 +26,10 @@ export class OrderBookService {
   // Нові рівні встановлює лише worker після успішного COMMIT або перевіреного recovery.
   commit(instrument: string, book: Book, seq: string): void {
     this.quarantined.delete(instrument);
-    this.books.set(instrument, { seq, depth: { bids: levels(book.bids), asks: levels(book.asks) } });
+    this.books.set(instrument, {
+      seq,
+      depth: { bids: levels(book.bids), asks: levels(book.asks) },
+    });
   }
 
   quarantine(instrument: string): void {
@@ -30,11 +37,20 @@ export class OrderBookService {
     this.quarantined.add(instrument);
   }
 
-  sequence(instrument: string): string { return this.books.get(instrument)?.seq ?? '0'; }
+  sequence(instrument: string): string {
+    return this.books.get(instrument)?.seq ?? '0';
+  }
 
   depth(instrument: string, limit = DEFAULT_BOOK_DEPTH): BookDepth {
-    if (this.quarantined.has(instrument)) throw new ServiceUnavailableException({ code: 'INSTRUMENT_HALTED', message: 'Стан книги не підтверджено' });
+    if (this.quarantined.has(instrument))
+      throw new ServiceUnavailableException({
+        code: 'INSTRUMENT_HALTED',
+        message: 'Стан книги не підтверджено',
+      });
     const depth = this.books.get(instrument)?.depth ?? { bids: [], asks: [] };
-    return { bids: depth.bids.slice(0, limit).map((level) => ({ ...level })), asks: depth.asks.slice(0, limit).map((level) => ({ ...level })) };
+    return {
+      bids: depth.bids.slice(0, limit).map((level) => ({ ...level })),
+      asks: depth.asks.slice(0, limit).map((level) => ({ ...level })),
+    };
   }
 }

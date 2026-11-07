@@ -15,14 +15,18 @@ it('accepts the example and declares exactly the same keys', () => {
   expect(parsed.REFRESH_REUSE_GRACE_MS).toBe(10000);
 });
 
-it.each(['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'])('requires a distinct %s of at least 32 characters', (key) => {
-  expect(() => validateEnv({ ...example, [key]: 'a'.repeat(31) })).toThrow(key);
-  expect(() => validateEnv({ ...example, [key]: undefined })).toThrow(key);
-});
+it.each(['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'])(
+  'requires a distinct %s of at least 32 characters',
+  (key) => {
+    expect(() => validateEnv({ ...example, [key]: 'a'.repeat(31) })).toThrow(key);
+    expect(() => validateEnv({ ...example, [key]: undefined })).toThrow(key);
+  },
+);
 
 it('rejects equal JWT secrets and names both settings', () => {
-  expect(() => validateEnv({ ...example, JWT_REFRESH_SECRET: example.JWT_ACCESS_SECRET }))
-    .toThrow(/JWT_REFRESH_SECRET.*JWT_ACCESS_SECRET/);
+  expect(() => validateEnv({ ...example, JWT_REFRESH_SECRET: example.JWT_ACCESS_SECRET })).toThrow(
+    /JWT_REFRESH_SECRET.*JWT_ACCESS_SECRET/,
+  );
 });
 
 it.each(['ABC,,XYZ', 'ABC,ABC', 'abc', 'USD'])('rejects invalid instruments %s', (symbols) => {
@@ -30,9 +34,13 @@ it.each(['ABC,,XYZ', 'ABC,ABC', 'abc', 'USD'])('rejects invalid instruments %s',
 });
 
 it('requires ADMIN_PASSWORD to have at least twelve characters and fit in bcrypt', () => {
-  expect(() => validateEnv({ ...example, ADMIN_PASSWORD: 'a'.repeat(11) })).toThrow('ADMIN_PASSWORD');
+  expect(() => validateEnv({ ...example, ADMIN_PASSWORD: 'a'.repeat(11) })).toThrow(
+    'ADMIN_PASSWORD',
+  );
   expect(() => validateEnv({ ...example, ADMIN_PASSWORD: undefined })).toThrow('ADMIN_PASSWORD');
-  expect(() => validateEnv({ ...example, ADMIN_PASSWORD: 'а'.repeat(37) })).toThrow('ADMIN_PASSWORD');
+  expect(() => validateEnv({ ...example, ADMIN_PASSWORD: 'а'.repeat(37) })).toThrow(
+    'ADMIN_PASSWORD',
+  );
 });
 
 it.each([
@@ -47,11 +55,14 @@ it.each([
   expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
 });
 
-
 it.each(['ENGINE_WORKER_ENABLED', 'RESERVATIONS_ENABLED'])('requires a boolean %s', (key) => {
   expect(() => validateEnv({ ...example, [key]: 'yes' })).toThrow(key);
 });
 
-it.each(['COMMAND_POLL_INTERVAL_MS', 'ORDER_SYNC_WAIT_MS', 'SEQ_GAP_ALERT_MS'])('bounds %s', (key) => {
-  for (const value of ['0', '-1', '60001', '1.5']) expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
-});
+it.each(['COMMAND_POLL_INTERVAL_MS', 'ORDER_SYNC_WAIT_MS', 'SEQ_GAP_ALERT_MS'])(
+  'bounds %s',
+  (key) => {
+    for (const value of ['0', '-1', '60001', '1.5'])
+      expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
+  },
+);

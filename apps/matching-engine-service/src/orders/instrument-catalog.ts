@@ -16,14 +16,20 @@ export class InstrumentCatalog implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     const configured = this.config.getOrThrow<string[]>('INSTRUMENTS');
     const instruments = await this.repository.find({ order: { symbol: 'ASC' } });
-    if (configured.length !== instruments.length || instruments.some(({ symbol }) => !configured.includes(symbol))) {
+    if (
+      configured.length !== instruments.length ||
+      instruments.some(({ symbol }) => !configured.includes(symbol))
+    ) {
       throw new Error('INSTRUMENTS must match the symbols in the instruments table');
     }
     this.instruments = instruments;
   }
 
   has(symbol: unknown): symbol is string {
-    return typeof symbol === 'string' && this.instruments.some((instrument) => instrument.symbol === symbol);
+    return (
+      typeof symbol === 'string' &&
+      this.instruments.some((instrument) => instrument.symbol === symbol)
+    );
   }
 
   require(symbol: unknown): string {
@@ -32,8 +38,17 @@ export class InstrumentCatalog implements OnModuleInit {
   }
 
   list() {
-    return this.instruments.map(({ symbol, baseAsset, quoteAsset, tickSize, lotSize, minQty, maxQty, maxPrice }) => ({
-      symbol, baseAsset, quoteAsset, tickSize, lotSize, minQty, maxQty, maxPrice,
-    }));
+    return this.instruments.map(
+      ({ symbol, baseAsset, quoteAsset, tickSize, lotSize, minQty, maxQty, maxPrice }) => ({
+        symbol,
+        baseAsset,
+        quoteAsset,
+        tickSize,
+        lotSize,
+        minQty,
+        maxQty,
+        maxPrice,
+      }),
+    );
   }
 }

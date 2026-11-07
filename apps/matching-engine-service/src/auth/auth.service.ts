@@ -1,8 +1,4 @@
-import {
-  ConflictException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
@@ -12,7 +8,12 @@ import { randomUUID } from 'node:crypto';
 import { User } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { hashRefreshToken, matchesRefreshHash, readRefreshClaims, RefreshClaims } from './refresh-session';
+import {
+  hashRefreshToken,
+  matchesRefreshHash,
+  readRefreshClaims,
+  RefreshClaims,
+} from './refresh-session';
 
 interface TokenPair {
   accessToken: string;
@@ -33,7 +34,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<TokenPair> {
-    if (this.isAdminEmail(dto.email) || await this.users.existsBy({ email: dto.email })) {
+    if (this.isAdminEmail(dto.email) || (await this.users.existsBy({ email: dto.email }))) {
       throw new ConflictException('Email вже зареєстровано');
     }
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -41,8 +42,11 @@ export class AuthService {
     try {
       user = await this.users.save(this.users.create({ email: dto.email, passwordHash }));
     } catch (error) {
-      if (error instanceof QueryFailedError
-          && error.driverError.code === '23505' && error.driverError.constraint === 'users_email_key') {
+      if (
+        error instanceof QueryFailedError &&
+        error.driverError.code === '23505' &&
+        error.driverError.constraint === 'users_email_key'
+      ) {
         throw new ConflictException('Email вже зареєстровано');
       }
       throw error;
@@ -54,7 +58,7 @@ export class AuthService {
     const email = this.isAdminEmail(dto.email) ? dto.email.toLowerCase() : dto.email;
     const user = await this.users.findOneBy({ email });
     // Невідомий email теж платить за bcrypt: час відповіді не розкриває, чи є акаунт.
-    const hash = user?.passwordHash ?? await this.absentPasswordHash;
+    const hash = user?.passwordHash ?? (await this.absentPasswordHash);
     const valid = await bcrypt.compare(dto.password, hash);
     if (!user || !valid) {
       throw new UnauthorizedException('Невірний email або пароль');
@@ -76,7 +80,8 @@ export class AuthService {
           refreshRotatedAt: () => 'clock_timestamp()',
         },
       );
-      if (update.affected === 1) return { accessToken: this.issueAccessToken(session.user), refreshToken };
+      if (update.affected === 1)
+        return { accessToken: this.issueAccessToken(session.user), refreshToken };
 
       // Після невдалого CAS читаємо стан, який записав паралельний запит.
       session = await this.readSession(claims);
@@ -108,25 +113,35 @@ export class AuthService {
 
   private issueAccessToken(user: User): string {
     const roles = user.adminSeeded && this.isAdminEmail(user.email) ? ['admin'] : undefined;
-    return this.jwt.sign({ sub: user.id, email: user.email, typ: 'access', roles }, {
-      algorithm: 'HS256',
-      secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-      expiresIn: this.config.getOrThrow<number>('JWT_ACCESS_TTL'),
-      jwtid: randomUUID(),
-    });
+    return this.jwt.sign(
+      { sub: user.id, email: user.email, typ: 'access', roles },
+      {
+        algorithm: 'HS256',
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        expiresIn: this.config.getOrThrow<number>('JWT_ACCESS_TTL'),
+        jwtid: randomUUID(),
+      },
+    );
   }
 
   private issueRefreshToken(sub: string, sid: string): string {
-    return this.jwt.sign({ sub, sid, typ: 'refresh' }, {
-      algorithm: 'HS256',
-      secret: this.refreshSecret(),
-      expiresIn: this.config.getOrThrow<number>('JWT_REFRESH_TTL'),
-      jwtid: randomUUID(),
-    });
+    return this.jwt.sign(
+      { sub, sid, typ: 'refresh' },
+      {
+        algorithm: 'HS256',
+        secret: this.refreshSecret(),
+        expiresIn: this.config.getOrThrow<number>('JWT_REFRESH_TTL'),
+        jwtid: randomUUID(),
+      },
+    );
   }
 
   private async readSession(claims: RefreshClaims) {
-    const { entities: [user], raw: [state] } = await this.users.createQueryBuilder('account')
+    const {
+      entities: [user],
+      raw: [state],
+    } = await this.users
+      .createQueryBuilder('account')
       .where({ id: claims.sub, refreshSessionId: claims.sid })
       .addSelect(
         "account.refreshRotatedAt >= statement_timestamp() - CAST(:graceMs AS integer) * interval '1 millisecond'",
@@ -141,7 +156,12 @@ export class AuthService {
   private async revokeSession(claims: RefreshClaims): Promise<void> {
     await this.users.update(
       { id: claims.sub, refreshSessionId: claims.sid },
-      { refreshSessionId: null, refreshTokenHash: null, refreshPrevHash: null, refreshRotatedAt: null },
+      {
+        refreshSessionId: null,
+        refreshTokenHash: null,
+        refreshPrevHash: null,
+        refreshRotatedAt: null,
+      },
     );
   }
 

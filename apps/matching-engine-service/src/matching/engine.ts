@@ -5,8 +5,10 @@ import { cancelNewest, StpPolicy } from './stp';
 export const TRADE_ID_NAMESPACE = 'f9e78716-da87-438a-9f3b-597adb11b678';
 
 export function uuidv5(namespace: string, name: string): string {
-  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(namespace) ||
-      namespace.length !== 36) {
+  if (
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(namespace) ||
+    namespace.length !== 36
+  ) {
     throw new Error('Invalid UUID namespace');
   }
   const bytes = createHash('sha1')
@@ -31,17 +33,18 @@ export interface SubmitCommand {
 export interface CancelCommand {
   readonly type: 'cancel';
   readonly orderId: string;
-  // Supply the persisted terminal status when the order is no longer in the active book.
+  // Віддаємо збережений термінальний статус, коли заявки вже немає в активній книзі.
   readonly terminalStatus?: 'filled' | 'cancelled';
 }
 
 export type Command = SubmitCommand | CancelCommand;
 type CancelReason = 'user' | 'self_trade_prevented';
 
-export type OrderChange = BookOrder & (
-  | { status: 'open' | 'partially_filled' | 'filled' }
-  | { status: 'cancelled'; cancelReason: CancelReason }
-);
+export type OrderChange = BookOrder &
+  (
+    | { status: 'open' | 'partially_filled' | 'filled' }
+    | { status: 'cancelled'; cancelReason: CancelReason }
+  );
 
 export interface Fill {
   tradeId: string;
@@ -56,7 +59,7 @@ export interface Fill {
 interface ClosedOrder {
   orderId: string;
   reason: CancelReason;
-  // Quote units for buys, base lots for sells.
+  // Одиниці котирування для buy, базові лоти для sell.
   releasedAmount: bigint;
 }
 
@@ -83,8 +86,9 @@ function close(order: BookOrder, reason: CancelReason): ClosedOrder {
 }
 
 function cancel(book: Book, command: CancelCommand): ApplyResult {
-  const order = book.bids.find(({ id }) => id === command.orderId)
-    ?? book.asks.find(({ id }) => id === command.orderId);
+  const order =
+    book.bids.find(({ id }) => id === command.orderId) ??
+    book.asks.find(({ id }) => id === command.orderId);
   if (!order) {
     return {
       book,
@@ -96,9 +100,10 @@ function cancel(book: Book, command: CancelCommand): ApplyResult {
     };
   }
 
-  const nextBook = order.side === 'buy'
-    ? { ...book, bids: book.bids.filter(({ id }) => id !== order.id) }
-    : { ...book, asks: book.asks.filter(({ id }) => id !== order.id) };
+  const nextBook =
+    order.side === 'buy'
+      ? { ...book, bids: book.bids.filter(({ id }) => id !== order.id) }
+      : { ...book, asks: book.asks.filter(({ id }) => id !== order.id) };
   return {
     book: nextBook,
     outcome: 'applied',
@@ -134,7 +139,8 @@ export function apply(
       break;
     }
 
-    const quantity = incoming.remaining < resting.remaining ? incoming.remaining : resting.remaining;
+    const quantity =
+      incoming.remaining < resting.remaining ? incoming.remaining : resting.remaining;
     trades.push({
       tradeId: uuidv5(TRADE_ID_NAMESPACE, `${command.instrument}:${command.seq}:${trades.length}`),
       instrument: command.instrument,

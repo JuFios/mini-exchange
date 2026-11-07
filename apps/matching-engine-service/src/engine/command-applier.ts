@@ -16,15 +16,25 @@ export class CommandApplier {
 }
 
 export function toRejectedInternal(book: Book, order: BookOrder, terminal = false): WorkerResult {
-  const next = { bids: book.bids.filter(({ id }) => id !== order.id), asks: book.asks.filter(({ id }) => id !== order.id) };
+  const next = {
+    bids: book.bids.filter(({ id }) => id !== order.id),
+    asks: book.asks.filter(({ id }) => id !== order.id),
+  };
   const removed = [...book.bids, ...book.asks].filter(({ id }) => id === order.id);
   return {
     book: next,
-    outcome: 'rejected_internal', trades: [], levelChanges: changedLevels(next, removed),
+    outcome: 'rejected_internal',
+    trades: [],
+    levelChanges: changedLevels(next, removed),
     orderChanges: terminal ? [] : [{ ...order, status: 'cancelled', cancelReason: 'rejected' }],
-    closed: terminal ? [] : [{
-      orderId: order.id, reason: 'rejected',
-      releasedAmount: order.side === 'buy' ? order.price * order.remaining : order.remaining,
-    }],
+    closed: terminal
+      ? []
+      : [
+          {
+            orderId: order.id,
+            reason: 'rejected',
+            releasedAmount: order.side === 'buy' ? order.price * order.remaining : order.remaining,
+          },
+        ],
   };
 }

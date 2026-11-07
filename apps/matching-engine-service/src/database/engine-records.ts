@@ -14,10 +14,28 @@ export const InstrumentState = new EntitySchema({
     lastAppliedSeq: { name: 'last_applied_seq', type: 'bigint', default: 0 },
     restingBidCount: { name: 'resting_bid_count', type: 'bigint', default: 0 },
     restingAskCount: { name: 'resting_ask_count', type: 'bigint', default: 0 },
-    restingBidLots: { name: 'resting_bid_lots', type: 'numeric', precision: 38, scale: 0, default: 0 },
-    restingAskLots: { name: 'resting_ask_lots', type: 'numeric', precision: 38, scale: 0, default: 0 },
+    restingBidLots: {
+      name: 'resting_bid_lots',
+      type: 'numeric',
+      precision: 38,
+      scale: 0,
+      default: 0,
+    },
+    restingAskLots: {
+      name: 'resting_ask_lots',
+      type: 'numeric',
+      precision: 38,
+      scale: 0,
+      default: 0,
+    },
     restingCount: { name: 'resting_count', type: 'bigint', default: 0 },
-    restingQuantity: { name: 'resting_quantity', type: 'numeric', precision: 38, scale: 0, default: 0 },
+    restingQuantity: {
+      name: 'resting_quantity',
+      type: 'numeric',
+      precision: 38,
+      scale: 0,
+      default: 0,
+    },
   },
 });
 

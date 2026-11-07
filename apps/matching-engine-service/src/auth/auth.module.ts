@@ -10,11 +10,7 @@ import { AdminSeedService } from './admin-seed.service';
 import { RolesGuard } from './guards/roles.guard';
 
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([User]),
-    PassportModule,
-    JwtModule.register({}),
-  ],
+  imports: [TypeOrmModule.forFeature([User]), PassportModule, JwtModule.register({})],
   controllers: [AuthController],
   providers: [AdminSeedService, AuthService, JwtStrategy, RolesGuard],
   exports: [JwtStrategy, PassportModule, RolesGuard],

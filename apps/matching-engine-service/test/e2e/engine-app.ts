@@ -54,16 +54,25 @@ export function engineApp() {
     }
   });
 
-  async function build(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
+  async function build(
+    overrides?: Partial<EngineEnv>,
+    customize?: (builder: TestingModuleBuilder) => void,
+  ) {
     const { AppModule } = await import('../../src/app.module');
     const builder = Test.createTestingModule({ imports: [AppModule] });
     if (overrides) {
       const config = { ...validateEnv(process.env), ...overrides };
-      builder.overrideProvider(ConfigService).useValue({ getOrThrow: (key: keyof EngineEnv) => config[key] });
+      builder
+        .overrideProvider(ConfigService)
+        .useValue({ getOrThrow: (key: keyof EngineEnv) => config[key] });
     }
     customize?.(builder);
     const module = await builder.compile();
-    const instance = module.createNestApplication({ rawBody: true, logger: ['error'], abortOnError: false });
+    const instance = module.createNestApplication({
+      rawBody: true,
+      logger: ['error'],
+      abortOnError: false,
+    });
     try {
       configureApp(instance);
       await instance.listen(0, '127.0.0.1');
@@ -74,7 +83,10 @@ export function engineApp() {
     }
   }
 
-  async function start(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
+  async function start(
+    overrides?: Partial<EngineEnv>,
+    customize?: (builder: TestingModuleBuilder) => void,
+  ) {
     app = await build(overrides, customize);
     baseUrl = await app.getUrl();
   }
@@ -85,7 +97,10 @@ export function engineApp() {
     await instance?.close();
   }
 
-  async function restart(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
+  async function restart(
+    overrides?: Partial<EngineEnv>,
+    customize?: (builder: TestingModuleBuilder) => void,
+  ) {
     await close();
     await start(overrides, customize);
   }
@@ -99,9 +114,13 @@ export function engineApp() {
     try {
       // Worker зупинено до TRUNCATE, тому жодна команда не відновить книгу під час cleanup.
       await cleanup.query('TRUNCATE orders,order_commands,order_requests,trades,outbox');
-      await cleanup.query("UPDATE instruments SET next_seq=0");
-      await cleanup.query("UPDATE instrument_state SET status='active',last_applied_seq=0,resting_count=0,resting_quantity=0,resting_bid_count=0,resting_ask_count=0,resting_bid_lots=0,resting_ask_lots=0");
-    } finally { await cleanup.destroy(); }
+      await cleanup.query('UPDATE instruments SET next_seq=0');
+      await cleanup.query(
+        "UPDATE instrument_state SET status='active',last_applied_seq=0,resting_count=0,resting_quantity=0,resting_bid_count=0,resting_ask_count=0,resting_bid_lots=0,resting_ask_lots=0",
+      );
+    } finally {
+      await cleanup.destroy();
+    }
   });
 
   afterAll(async () => {
@@ -112,7 +131,14 @@ export function engineApp() {
     await database.destroy();
   });
 
-  function request(path: string, method = 'GET', token?: string, body?: unknown, headers: Record<string, string> = {}, timeoutMs = 5000) {
+  function request(
+    path: string,
+    method = 'GET',
+    token?: string,
+    body?: unknown,
+    headers: Record<string, string> = {},
+    timeoutMs = 5000,
+  ) {
     return fetch(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -151,5 +177,15 @@ export function engineApp() {
     return (await response.json()) as Order[];
   }
 
-  return { build, app: () => app!, request, register, submit, list, restart, database: () => app!.get(DataSource), url: () => baseUrl };
+  return {
+    build,
+    app: () => app!,
+    request,
+    register,
+    submit,
+    list,
+    restart,
+    database: () => app!.get(DataSource),
+    url: () => baseUrl,
+  };
 }

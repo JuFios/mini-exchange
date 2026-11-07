@@ -2,7 +2,9 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 
 export class LegacyOrdersAndTradeLookups1793980800003 implements MigrationInterface {
   async up(runner: QueryRunner): Promise<void> {
-    await runner.query(`LOCK TABLE instruments,instrument_state,orders,order_commands IN ACCESS EXCLUSIVE MODE`);
+    await runner.query(
+      `LOCK TABLE instruments,instrument_state,orders,order_commands IN ACCESS EXCLUSIVE MODE`,
+    );
     // Старий matcher не зберігав історію trades. Імпортуємо знімок, а не вигадуємо виконання.
     await runner.query(`DO $$ BEGIN
       IF EXISTS (

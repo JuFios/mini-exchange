@@ -16,7 +16,9 @@ export async function migrate(
   const runner = source.createQueryRunner();
   try {
     await runner.startTransaction('READ COMMITTED');
-    await runner.query("SELECT set_config('statement_timeout', $1, true)", [`${statementTimeoutMs}ms`]);
+    await runner.query("SELECT set_config('statement_timeout', $1, true)", [
+      `${statementTimeoutMs}ms`,
+    ]);
     // Блокуємо читання історії міграцій і DDL однією транзакцією на тому самому з’єднанні.
     await lockForTransaction(runner, advisoryLocks.migrations, lockTimeoutMs);
     const executor = new MigrationExecutor(source, runner);

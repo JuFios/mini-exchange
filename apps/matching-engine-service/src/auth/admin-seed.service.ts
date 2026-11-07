@@ -21,7 +21,8 @@ export class AdminSeedService implements OnApplicationBootstrap {
     await this.users.manager.transaction(async (manager) => {
       await lockForTransaction(manager, advisoryLocks.adminSeed, seedLockTimeoutMs);
       const users = manager.getRepository(User);
-      const existing = await users.createQueryBuilder('account')
+      const existing = await users
+        .createQueryBuilder('account')
         .select(['account.email', 'account.adminSeeded'])
         .where('LOWER(account.email COLLATE "C") IN (:...emails)', { emails })
         .getMany();
@@ -35,13 +36,20 @@ export class AdminSeedService implements OnApplicationBootstrap {
 
       const password = this.config.getOrThrow<string>('ADMIN_PASSWORD');
       // Кожен акаунт отримує окрему сіль, навіть зі спільним початковим паролем.
-      const accounts = await Promise.all(missing.map(async (email) => ({
-        email,
-        passwordHash: await bcrypt.hash(password, 10),
-        adminSeeded: true,
-      })));
-      const { raw: inserted } = await users.createQueryBuilder().insert().values(accounts)
-        .orIgnore().returning('email').execute();
+      const accounts = await Promise.all(
+        missing.map(async (email) => ({
+          email,
+          passwordHash: await bcrypt.hash(password, 10),
+          adminSeeded: true,
+        })),
+      );
+      const { raw: inserted } = await users
+        .createQueryBuilder()
+        .insert()
+        .values(accounts)
+        .orIgnore()
+        .returning('email')
+        .execute();
       if (inserted.length !== accounts.length) throw new Error(adminEmailCollision);
     });
   }

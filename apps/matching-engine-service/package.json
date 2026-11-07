@@ -1,7 +1,9 @@
 {
   "name": "matching-engine-service",
   "version": "0.1.0",
+  "description": "Matching engine: sequenced order intake, order book and persistence",
   "private": true,
+  "license": "UNLICENSED",
   "engines": {
     "node": ">=20.12"
   },
@@ -15,7 +17,10 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
     "test": "jest",
-    "test:e2e": "jest --config test/jest-e2e.json --runInBand"
+    "test:e2e": "jest --config test/jest-e2e.json --runInBand",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"{src,test}/**/*.ts\"",
+    "format:check": "prettier --check \"{src,test}/**/*.ts\""
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",
@@ -57,7 +62,8 @@
     "socket.io-client": "4.8.4",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "prettier": "^3.9.10"
   },
   "overrides": {
     "@nestjs/config": { "lodash": "^4.18.1" },
