@@ -76,9 +76,7 @@ export class OrdersService {
 
   async cancelOrder(orderId: string, userId: string, instrumentHint?: string): Promise<void> {
     const order = await this.orders.findOne({ where: { id: orderId, ownerId: userId } });
-    if (!order) {
-      throw new NotFoundException('Заявку не знайдено');
-    }
+    if (!order) throw new NotFoundException('Заявку не знайдено');
     if (instrumentHint !== undefined && instrumentHint !== order.instrument) {
       throw new BadRequestException('Інструмент не збігається з інструментом заявки');
     }
@@ -87,11 +85,9 @@ export class OrdersService {
     }
     const { affected } = await this.orders.update(
       { id: order.id, ownerId: userId, status: order.status },
-      { status: 'cancelled', remainingQuantity: '0' },
+      { status: 'cancelled' },
     );
-    if (affected !== 1) {
-      throw new ConflictException('Стан заявки змінився');
-    }
+    if (affected !== 1) throw new ConflictException('Стан заявки змінився');
     this.orderBook.removeOrder(order.instrument, order.id);
   }
 
