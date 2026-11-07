@@ -117,6 +117,7 @@ const databaseSchema = {
 };
 
 const schema = {
+  LEASE_TTL_MS: milliseconds,
   ENGINE_WORKER_ENABLED: boolean,
   RESERVATIONS_ENABLED: boolean,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
