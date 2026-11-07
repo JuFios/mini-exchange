@@ -1,0 +1,28 @@
+{
+  "name": "exchange-system-tests",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "System checks for instrument ownership and recovery",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "chaos:sigterm": "ts-node chaos-sigterm.ts TERM",
+    "ownership:kill": "ts-node chaos-sigterm.ts KILL",
+    "typecheck": "tsc --noEmit",
+    "format:check": "prettier --check \"*.ts\"",
+    "format": "prettier --write \"*.ts\"",
+    "ownership:hooks": "ts-node chaos-hooks.ts"
+  },
+  "dependencies": {
+    "pg": "^8.11.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "@types/node": "^20.11.0",
+    "prettier": "^3.9.10"
+  }
+}
