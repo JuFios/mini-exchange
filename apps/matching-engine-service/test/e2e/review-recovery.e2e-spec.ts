@@ -11,10 +11,17 @@ it('halts after the final issued command is lost without requiring a later submi
   const { order } = await (await submit(owner)).json();
   await database().query('DELETE FROM order_commands WHERE seq=1');
   await restart({ SEQ_GAP_ALERT_MS: 30, COMMAND_POLL_INTERVAL_MS: 10 });
-  await waitFor(async () => (await database().query("SELECT status FROM instrument_state WHERE instrument='ABC'"))[0].status === 'halted', 1000);
+  await waitFor(
+    async () =>
+      (await database().query("SELECT status FROM instrument_state WHERE instrument='ABC'"))[0]
+        .status === 'halted',
+    1000,
+  );
   expect((await submit(owner)).status).toBe(503);
   expect((await request(`/orders/${order.id}`, 'DELETE', owner)).status).toBe(503);
-  expect(await database().query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).toEqual([{ next_seq: '1' }]);
+  expect(await database().query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).toEqual([
+    { next_seq: '1' },
+  ]);
 });
 
 it('replays an accepted request without Redis and still rejects new intake or a mismatched hash', async () => {
@@ -31,13 +38,20 @@ it('replays an accepted request without Redis and still rejects new intake or a 
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toEqual(accepted);
     expect(failure).not.toHaveBeenCalled();
-    expect((await request('/orders', 'POST', owner, { ...body, quantity: 2 }, headers)).status).toBe(409);
+    expect(
+      (await request('/orders', 'POST', owner, { ...body, quantity: 2 }, headers)).status,
+    ).toBe(409);
     expect((await submit(owner)).status).toBe(503);
-    expect(await database().query('SELECT count(*)::int AS n FROM order_commands')).toEqual([{ n: 1 }]);
-    expect(await database().query('SELECT count(*)::int AS n FROM order_requests')).toEqual([{ n: 1 }]);
-  } finally { failure.mockRestore(); }
+    expect(await database().query('SELECT count(*)::int AS n FROM order_commands')).toEqual([
+      { n: 1 },
+    ]);
+    expect(await database().query('SELECT count(*)::int AS n FROM order_requests')).toEqual([
+      { n: 1 },
+    ]);
+  } finally {
+    failure.mockRestore();
+  }
 });
-
 
 it('rolls back matching if the journal update does not persist the applied command', async () => {
   const owner = await register();
@@ -48,10 +62,24 @@ it('rolls back matching if the journal update does not persist the applied comma
   try {
     expect((await submit(owner)).status).toBe(202);
     expect(await database().query('SELECT status FROM orders')).toEqual([{ status: 'pending' }]);
-    expect(await database().query("SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'")).toEqual([{ last_applied_seq: '0' }]);
-    expect(await (await request('/orders/book?instrument=ABC')).json()).toMatchObject({ seq: '0', asks: [] });
-  } finally { await database().query('DROP TRIGGER skip_applied ON order_commands; DROP FUNCTION skip_applied()'); }
+    expect(
+      await database().query(
+        "SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'",
+      ),
+    ).toEqual([{ last_applied_seq: '0' }]);
+    expect(await (await request('/orders/book?instrument=ABC')).json()).toMatchObject({
+      seq: '0',
+      asks: [],
+    });
+  } finally {
+    await database().query(
+      'DROP TRIGGER skip_applied ON order_commands; DROP FUNCTION skip_applied()',
+    );
+  }
   await app().get(InstrumentWorker).kick('ABC');
-  await waitFor(async () => (await database().query('SELECT applied_at FROM order_commands'))[0].applied_at !== null);
+  await waitFor(
+    async () =>
+      (await database().query('SELECT applied_at FROM order_commands'))[0].applied_at !== null,
+  );
   expect(await database().query('SELECT status FROM orders')).toEqual([{ status: 'open' }]);
 });

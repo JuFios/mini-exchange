@@ -16,6 +16,8 @@ export class RecoveryCounters1793980800002 implements MigrationInterface {
   }
 
   async down(runner: QueryRunner): Promise<void> {
-    await runner.query('ALTER TABLE instrument_state DROP COLUMN resting_bid_count,DROP COLUMN resting_ask_count,DROP COLUMN resting_bid_lots,DROP COLUMN resting_ask_lots');
+    await runner.query(
+      'ALTER TABLE instrument_state DROP COLUMN resting_bid_count,DROP COLUMN resting_ask_count,DROP COLUMN resting_bid_lots,DROP COLUMN resting_ask_lots',
+    );
   }
 }

@@ -52,6 +52,7 @@ function format(units: bigint, scale: number): string {
 }
 
 export const parsePrice = (value: string | number): bigint => parse(value, PRICE_SCALE, 'price');
-export const parseQuantity = (value: string | number): bigint => parse(value, QUANTITY_SCALE, 'quantity');
+export const parseQuantity = (value: string | number): bigint =>
+  parse(value, QUANTITY_SCALE, 'quantity');
 export const formatPrice = (ticks: bigint): string => format(ticks, PRICE_SCALE);
 export const formatQuantity = (lots: bigint): string => format(lots, QUANTITY_SCALE);

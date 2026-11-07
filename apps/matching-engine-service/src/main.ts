@@ -10,6 +10,8 @@ async function bootstrap() {
   const port = config.getOrThrow<number>('PORT');
   await app.listen(port);
   // eslint-disable-next-line no-console
-  console.log(`matching-engine-service (${config.getOrThrow<string>('INSTANCE_ID')}) listening on ${port}`);
+  console.log(
+    `matching-engine-service (${config.getOrThrow<string>('INSTANCE_ID')}) listening on ${port}`,
+  );
 }
 bootstrap();

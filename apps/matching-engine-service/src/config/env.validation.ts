@@ -25,13 +25,20 @@ function jwtSecret(value: unknown, key: string): string {
 }
 
 function adminEmails(value: unknown, key: string): string[] {
-  const entries = required(value, key).split(',').map((email) => email.trim());
+  const entries = required(value, key)
+    .split(',')
+    .map((email) => email.trim());
   // Регістр порівнюють і JS (`toLowerCase`), і PostgreSQL (`LOWER ... COLLATE "C"`, лише ASCII).
   // Для ASCII-адрес обидва дають однаковий результат; IDN-домен записують у punycode.
   // ASCII перевіряємо до `toLowerCase`: він перетворює, наприклад, знак Кельвіна на `k`.
   const emails = entries.map((email) => email.toLowerCase());
-  if (entries.some((email) => !/^[ -~]+$/.test(email) || !isEmail(email.toLowerCase(), { allow_utf8_local_part: false }))
-      || new Set(emails).size !== emails.length) {
+  if (
+    entries.some(
+      (email) =>
+        !/^[ -~]+$/.test(email) || !isEmail(email.toLowerCase(), { allow_utf8_local_part: false }),
+    ) ||
+    new Set(emails).size !== emails.length
+  ) {
     throw new Error(`${key} must contain unique ASCII email addresses`);
   }
   return emails;
@@ -71,9 +78,13 @@ function refreshGrace(value: unknown, key: string): number {
 }
 
 function instruments(value: unknown, key: string): string[] {
-  const symbols = required(value, key).split(',').map((symbol) => symbol.trim());
-  if (symbols.some((symbol) => !/^[A-Z][A-Z0-9]{0,15}$/.test(symbol) || symbol === 'USD')
-      || new Set(symbols).size !== symbols.length) {
+  const symbols = required(value, key)
+    .split(',')
+    .map((symbol) => symbol.trim());
+  if (
+    symbols.some((symbol) => !/^[A-Z][A-Z0-9]{0,15}$/.test(symbol) || symbol === 'USD') ||
+    new Set(symbols).size !== symbols.length
+  ) {
     throw new Error(`${key} must contain unique instrument symbols with USD as quote asset`);
   }
   return symbols;
@@ -86,7 +97,12 @@ function boolean(value: unknown, key: string): boolean {
 
 function milliseconds(value: unknown, key: string): number {
   const text = required(value, key);
-  if (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(Number(text)) || Number(text) < 1 || Number(text) > 60000) {
+  if (
+    !/^[0-9]+$/.test(text) ||
+    !Number.isSafeInteger(Number(text)) ||
+    Number(text) < 1 ||
+    Number(text) > 60000
+  ) {
     throw new Error(`${key} must be an integer from 1 to 60000`);
   }
   return Number(text);

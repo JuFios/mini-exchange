@@ -25,9 +25,11 @@ export default function OrdersPage() {
       });
       if (!res.ok) throw new Error('Не вдалося подати заявку');
       const { order, trades } = await res.json();
-      setResult(order.status === 'pending'
-        ? `Заявку ${order.id} прийнято. Очікує виконання.`
-        : `Заявку прийнято. Стан: ${order.status}. Угод: ${trades.length}`);
+      setResult(
+        order.status === 'pending'
+          ? `Заявку ${order.id} прийнято. Очікує виконання.`
+          : `Заявку прийнято. Стан: ${order.status}. Угод: ${trades.length}`,
+      );
     } catch (err) {
       setResult((err as Error).message);
     }
@@ -48,11 +50,7 @@ export default function OrdersPage() {
           <option value="sell">Sell</option>
         </select>
         <br />
-        <input
-          value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          placeholder="Ціна"
-        />
+        <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Ціна" />
         <br />
         <input
           value={quantity}

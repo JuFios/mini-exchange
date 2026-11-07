@@ -13,8 +13,13 @@ export interface RefreshClaims {
 export function readRefreshClaims(jwt: JwtService, token: string, secret: string): RefreshClaims {
   try {
     const claims = jwt.verify<RefreshClaims>(token, { secret, algorithms: ['HS256'] });
-    if (claims?.typ === 'refresh' && isUUID(claims.sub) && isUUID(claims.sid)
-        && Number.isInteger(claims.exp)) return claims;
+    if (
+      claims?.typ === 'refresh' &&
+      isUUID(claims.sub) &&
+      isUUID(claims.sid) &&
+      Number.isInteger(claims.exp)
+    )
+      return claims;
   } catch {
     // Усі помилки перевірки токена мають однакову відповідь.
   }

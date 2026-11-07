@@ -9,7 +9,11 @@ export const acceptedAt = '2026-01-01T00:00:00.000Z';
 export const lot = 100_000_000n;
 
 export function submit(
-  seq: bigint, side: Side, price: bigint, quantity: bigint, ownerId: string,
+  seq: bigint,
+  side: Side,
+  price: bigint,
+  quantity: bigint,
+  ownerId: string,
 ): SubmitCommand {
   return {
     type: 'submit',

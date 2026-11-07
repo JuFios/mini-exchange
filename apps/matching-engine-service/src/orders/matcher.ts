@@ -27,24 +27,27 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
   const rank = (order: MatcherOrder, index: number): bigint => {
     if (sequenced) return order.priority_seq!;
     const createdAt = order.createdAt.getTime();
-    if (!Number.isFinite(createdAt)) throw new Error(`Order ${order.id} has an invalid creation time`);
+    if (!Number.isFinite(createdAt))
+      throw new Error(`Order ${order.id} has an invalid creation time`);
     return BigInt(createdAt) * BigInt(orders.length) + BigInt(index);
   };
-  const byId = new Map(orders.map((order, index) => [
-    order.id,
-    {
-      original: order,
-      state: {
-        id: order.id,
-        ownerId: order.ownerId,
-        side: order.side,
-        price: parsePrice(order.price),
-        quantity: parseQuantity(order.quantity),
-        remaining: parseQuantity(order.remainingQuantity),
-        prioritySeq: rank(order, index),
+  const byId = new Map(
+    orders.map((order, index) => [
+      order.id,
+      {
+        original: order,
+        state: {
+          id: order.id,
+          ownerId: order.ownerId,
+          side: order.side,
+          price: parsePrice(order.price),
+          quantity: parseQuantity(order.quantity),
+          remaining: parseQuantity(order.remainingQuantity),
+          prioritySeq: rank(order, index),
+        },
       },
-    },
-  ]));
+    ]),
+  );
   const toBookOrder = (order: Order) => byId.get(order.id)!.state;
   const fromBookOrder = (state: BookOrder): Order => ({
     ...byId.get(state.id)!.original,
@@ -67,8 +70,9 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
   );
   const updatedBids = result.book.bids.map(fromBookOrder);
   const updatedAsks = result.book.asks.map(fromBookOrder);
-  const restingOrder = (incoming.side === 'buy' ? updatedBids : updatedAsks)
-    .find(({ id }) => id === incoming.id) ?? null;
+  const restingOrder =
+    (incoming.side === 'buy' ? updatedBids : updatedAsks).find(({ id }) => id === incoming.id) ??
+    null;
   const cancelled = result.orderChanges.find(
     (change) => change.id === incoming.id && change.status === 'cancelled',
   );
@@ -77,7 +81,10 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
     // A legacy priority rank is local to a snapshot, so it cannot identify a fill.
     id: sequenced
       ? tradeId
-      : uuidv5(UNSEQUENCED_TRADE_NAMESPACE, JSON.stringify([incoming.instrument, incoming.id, index])),
+      : uuidv5(
+          UNSEQUENCED_TRADE_NAMESPACE,
+          JSON.stringify([incoming.instrument, incoming.id, index]),
+        ),
     price: formatPrice(price),
     quantity: formatQuantity(quantity),
     executedAt: new Date(executedAt),

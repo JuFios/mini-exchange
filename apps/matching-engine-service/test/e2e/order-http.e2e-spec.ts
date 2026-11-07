@@ -8,16 +8,22 @@ it('requires a JWT for the private order list', async () => {
 });
 
 it('rejects a correctly signed token without a valid owner identifier', async () => {
-  const token = new JwtService().sign({ email: 'no-owner@example.test', typ: 'access' }, {
-    secret: process.env.JWT_ACCESS_SECRET,
-    expiresIn: '15m',
-  });
+  const token = new JwtService().sign(
+    { email: 'no-owner@example.test', typ: 'access' },
+    {
+      secret: process.env.JWT_ACCESS_SECRET,
+      expiresIn: '15m',
+    },
+  );
   expect((await request('/orders', 'GET', token)).status).toBe(401);
 });
 
-it.each(['__proto__', 'constructor', 'toString', 'ownerId'])('rejects the extra request field %s', async (field) => {
-  const owner = await register();
-  const response = await submit(owner, { [field]: {} });
-  expect(response.status).toBe(400);
-  expect(await response.json()).toMatchObject({ message: [`Зайве поле ${field}`] });
-});
+it.each(['__proto__', 'constructor', 'toString', 'ownerId'])(
+  'rejects the extra request field %s',
+  async (field) => {
+    const owner = await register();
+    const response = await submit(owner, { [field]: {} });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ message: [`Зайве поле ${field}`] });
+  },
+);

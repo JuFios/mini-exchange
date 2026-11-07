@@ -7,7 +7,8 @@ import { migrate } from './database/migrate';
 
 async function main() {
   const action = process.argv[2];
-  if (action !== 'run' && action !== 'revert') throw new Error('Expected migration action: run or revert');
+  if (action !== 'run' && action !== 'revert')
+    throw new Error('Expected migration action: run or revert');
   if (existsSync('.env')) loadEnvFile('.env');
   const source = new DataSource({
     ...engineDataSourceOptions(validateDatabaseEnv(process.env)),

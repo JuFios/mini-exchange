@@ -56,7 +56,9 @@ describe('self-trade prevention', () => {
         const result = matchWithNoStp(book, incomingBuy);
 
         expect(result).toBeTruthy();
-        expect(result.trades).toMatchObject([{ buyOrderId: incomingBuy.id, sellOrderId: restingSell.id }]);
+        expect(result.trades).toMatchObject([
+          { buyOrderId: incomingBuy.id, sellOrderId: restingSell.id },
+        ]);
         expect(() => assertPreventsSelfTrade(result)).toThrow();
       });
     } finally {

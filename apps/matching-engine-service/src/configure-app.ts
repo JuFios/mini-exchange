@@ -1,6 +1,10 @@
 import { DatabaseExceptionFilter } from './database/database-exception.filter';
 import {
-  ArgumentMetadata, BadRequestException, INestApplication, ValidationError, ValidationPipe,
+  ArgumentMetadata,
+  BadRequestException,
+  INestApplication,
+  ValidationError,
+  ValidationPipe,
 } from '@nestjs/common';
 
 const reservedFields = new Set(Object.getOwnPropertyNames(Object.prototype));
@@ -29,11 +33,13 @@ class RequestValidationPipe extends ValidationPipe {
 }
 
 export function configureApp(app: INestApplication): void {
-  app.useGlobalPipes(new RequestValidationPipe({
-    whitelist: true,
-    forbidNonWhitelisted: true,
-    transform: true,
-  }));
+  app.useGlobalPipes(
+    new RequestValidationPipe({
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
+    }),
+  );
   app.useGlobalFilters(new DatabaseExceptionFilter(app.getHttpAdapter()));
   app.enableCors();
 }

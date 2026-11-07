@@ -59,11 +59,20 @@ export class OrdersController {
   ) {}
 
   @Post()
-  async submit(@Body() dto: SubmitOrderDto, @Request() req: AuthenticatedRequest,
-    @Headers('idempotency-key') key: string | undefined, @Headers('traceparent') traceparent: string | undefined,
-    @Res({ passthrough: true }) response: Response) {
+  async submit(
+    @Body() dto: SubmitOrderDto,
+    @Request() req: AuthenticatedRequest,
+    @Headers('idempotency-key') key: string | undefined,
+    @Headers('traceparent') traceparent: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
     this.instruments.require(dto.instrument);
-    const result = await this.orders.submitOrder(withExactAmounts(dto, req.rawBody), req.user.userId, key, traceparent);
+    const result = await this.orders.submitOrder(
+      withExactAmounts(dto, req.rawBody),
+      req.user.userId,
+      key,
+      traceparent,
+    );
     response.status(result.status);
     return result.body;
   }
@@ -74,21 +83,39 @@ export class OrdersController {
   }
 
   @Get(':id')
-  getOwn(@Param('id', new ParseUUIDPipe({ exceptionFactory: () => new BadRequestException('Некоректний ідентифікатор заявки') })) id: string, @Request() req: AuthenticatedRequest) {
+  getOwn(
+    @Param(
+      'id',
+      new ParseUUIDPipe({
+        exceptionFactory: () => new BadRequestException('Некоректний ідентифікатор заявки'),
+      }),
+    )
+    id: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
     return this.orders.getOwn(id, req.user.userId);
   }
 
   @Delete(':id')
   async cancel(
-    @Param('id', new ParseUUIDPipe({
-      exceptionFactory: () => new BadRequestException('Некоректний ідентифікатор заявки'),
-    })) id: string,
+    @Param(
+      'id',
+      new ParseUUIDPipe({
+        exceptionFactory: () => new BadRequestException('Некоректний ідентифікатор заявки'),
+      }),
+    )
+    id: string,
     @Query() query: CancelOrderQueryDto,
     @Request() req: AuthenticatedRequest,
     @Headers('traceparent') traceparent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.orders.cancelOrder(id, req.user.userId, query.instrument, traceparent);
+    const result = await this.orders.cancelOrder(
+      id,
+      req.user.userId,
+      query.instrument,
+      traceparent,
+    );
     response.status(result.status);
     return result.body;
   }

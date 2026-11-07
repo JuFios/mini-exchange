@@ -7,5 +7,7 @@ it('persists the remaining quantity and status of every matched resting order', 
   const buyer = await register();
   await submit(seller, { quantity: 2 });
   await submit(buyer, { side: 'buy' });
-  expect(await list(seller)).toMatchObject([{ status: 'partially_filled', remainingQuantity: '1.00000000' }]);
+  expect(await list(seller)).toMatchObject([
+    { status: 'partially_filled', remainingQuantity: '1.00000000' },
+  ]);
 });

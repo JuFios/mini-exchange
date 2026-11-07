@@ -2,7 +2,10 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
 
-interface Waiter { seq: string; finish: () => void }
+interface Waiter {
+  seq: string;
+  finish: () => void;
+}
 
 @Injectable()
 export class PgNotifications implements OnModuleInit, OnModuleDestroy {
@@ -22,9 +25,12 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
 
   private async connect(): Promise<void> {
     const client = new Client({
-      host: this.config.getOrThrow('DATABASE_HOST'), port: this.config.getOrThrow('DATABASE_PORT'),
-      user: this.config.getOrThrow('DATABASE_USER'), password: this.config.getOrThrow('DATABASE_PASSWORD'),
-      database: this.config.getOrThrow('DATABASE_NAME'), connectionTimeoutMillis: 3000,
+      host: this.config.getOrThrow('DATABASE_HOST'),
+      port: this.config.getOrThrow('DATABASE_PORT'),
+      user: this.config.getOrThrow('DATABASE_USER'),
+      password: this.config.getOrThrow('DATABASE_PASSWORD'),
+      database: this.config.getOrThrow('DATABASE_NAME'),
+      connectionTimeoutMillis: 3000,
       application_name: `engine-listen:${this.config.getOrThrow('INSTANCE_ID')}`,
     });
     this.client = client;
@@ -32,10 +38,13 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
       if (this.client !== client) return;
       this.client = undefined;
       void client.end().catch(() => undefined);
-      if (!this.stopped && !this.reconnect) this.reconnect = setTimeout(() => {
-        this.reconnect = undefined;
-        this.connecting = this.connect().finally(() => { this.connecting = undefined; });
-      }, 100);
+      if (!this.stopped && !this.reconnect)
+        this.reconnect = setTimeout(() => {
+          this.reconnect = undefined;
+          this.connecting = this.connect().finally(() => {
+            this.connecting = undefined;
+          });
+        }, 100);
     };
     client.on('error', lost);
     client.on('end', lost);
@@ -62,9 +71,17 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
 
   wait(orderId: string, seq: string, milliseconds: number) {
     let finish!: () => void;
-    const ready = new Promise<void>((resolve) => { finish = resolve; });
+    const ready = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
     const set = this.waiters.get(orderId) ?? new Set<Waiter>();
-    const waiter: Waiter = { seq, finish: () => { cleanup(); finish(); } };
+    const waiter: Waiter = {
+      seq,
+      finish: () => {
+        cleanup();
+        finish();
+      },
+    };
     const cleanup = () => {
       clearTimeout(timer);
       set.delete(waiter);

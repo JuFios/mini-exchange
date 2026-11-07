@@ -4,7 +4,9 @@ const { list, register, request, submit } = engineApp();
 
 it('keeps all fifty concurrent resting orders in the book', async () => {
   const owner = await register();
-  const responses = await Promise.all(Array.from({ length: 50 }, (_, i) => submit(owner, { price: 100 + i })));
+  const responses = await Promise.all(
+    Array.from({ length: 50 }, (_, i) => submit(owner, { price: 100 + i })),
+  );
   expect(responses.every(({ status }) => status === 201 || status === 202)).toBe(true);
   const orders = await list(owner);
   expect(orders).toHaveLength(50);
@@ -20,7 +22,10 @@ it('fills a resting lot at most once under concurrent buys', async () => {
   await submit(seller);
   await Promise.all([submit(buyer, { side: 'buy' }), submit(buyer, { side: 'buy' })]);
   const buys = await list(buyer);
-  const filled = buys.reduce((sum, order) => sum + Number(order.quantity) - Number(order.remainingQuantity), 0);
+  const filled = buys.reduce(
+    (sum, order) => sum + Number(order.quantity) - Number(order.remainingQuantity),
+    0,
+  );
   expect(filled).toBe(1);
 });
 

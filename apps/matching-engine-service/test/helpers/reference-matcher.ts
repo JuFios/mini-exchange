@@ -19,12 +19,12 @@ interface Entry extends ReferenceOrder {
 
 type ReferenceCommand =
   | {
-    type: 'submit';
-    instrument: string;
-    seq: bigint;
-    acceptedAt: string;
-    order: Omit<ReferenceOrder, 'prioritySeq'>;
-  }
+      type: 'submit';
+      instrument: string;
+      seq: bigint;
+      acceptedAt: string;
+      order: Omit<ReferenceOrder, 'prioritySeq'>;
+    }
   | { type: 'cancel'; orderId: string };
 
 interface Trade {
@@ -71,7 +71,15 @@ export class ReferenceMatcher {
     for (const entry of this.orders.values()) {
       if (active(entry)) {
         const { id, ownerId, side, price, quantity, remaining, prioritySeq } = entry;
-        (side === 'buy' ? bids : asks).push({ id, ownerId, side, price, quantity, remaining, prioritySeq });
+        (side === 'buy' ? bids : asks).push({
+          id,
+          ownerId,
+          side,
+          price,
+          quantity,
+          remaining,
+          prioritySeq,
+        });
       }
     }
     return { bids: bids.sort(bestFirst), asks: asks.sort(bestFirst) };
@@ -93,7 +101,8 @@ export class ReferenceMatcher {
       // Search the full set again for each fill, independently of the active book layout.
       for (const order of this.orders.values()) {
         if (!active(order) || order.side === incoming.side) continue;
-        const eligible = order.side === 'sell' ? order.price <= incoming.price : order.price >= incoming.price;
+        const eligible =
+          order.side === 'sell' ? order.price <= incoming.price : order.price >= incoming.price;
         if (eligible && (!maker || bestFirst(order, maker) < 0)) maker = order;
       }
       if (!maker) break;

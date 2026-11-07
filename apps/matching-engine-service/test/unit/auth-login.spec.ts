@@ -20,14 +20,19 @@ function service(user: object | null) {
 beforeEach(() => compare.mockClear());
 
 it('spends a password comparison on an unknown email, as it does for a known one', async () => {
-  await expect(service(null).login({ email: 'nobody@example.test', password: 'password-1234' }))
-    .rejects.toBeInstanceOf(UnauthorizedException);
+  await expect(
+    service(null).login({ email: 'nobody@example.test', password: 'password-1234' }),
+  ).rejects.toBeInstanceOf(UnauthorizedException);
   expect(compare).toHaveBeenCalledTimes(1);
   expect(compare).toHaveBeenCalledWith('password-1234', 'absent-account-hash');
 });
 
 it('compares against the stored hash for an existing account', async () => {
-  await expect(service({ passwordHash: 'stored-hash' }).login({ email: 'user@example.test', password: 'wrong-password' }))
-    .rejects.toBeInstanceOf(UnauthorizedException);
+  await expect(
+    service({ passwordHash: 'stored-hash' }).login({
+      email: 'user@example.test',
+      password: 'wrong-password',
+    }),
+  ).rejects.toBeInstanceOf(UnauthorizedException);
   expect(compare).toHaveBeenCalledWith('wrong-password', 'stored-hash');
 });

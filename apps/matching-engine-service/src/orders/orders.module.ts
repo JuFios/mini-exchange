@@ -22,12 +22,27 @@ import { RedisLockService } from '../locks/redis-lock.service';
   imports: [TypeOrmModule.forFeature([Order, Instrument])],
   controllers: [MarketController, OrdersController],
   providers: [
-    CommandApplier, InstrumentWorker, LocalOwnership, PgNotifications, IntakeService,
-    { provide: ReservationClient, inject: [ConfigService], useFactory: (config: ConfigService) => {
-      if (config.getOrThrow('RESERVATIONS_ENABLED')) throw new Error('RESERVATIONS_ENABLED requires an HTTP reservation client');
-      return new NoopReservationClient();
-    } },
-    BookLoader, OrdersService, OrderBookService, OrdersGateway, RedisLockService, InstrumentCatalog],
+    CommandApplier,
+    InstrumentWorker,
+    LocalOwnership,
+    PgNotifications,
+    IntakeService,
+    {
+      provide: ReservationClient,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        if (config.getOrThrow('RESERVATIONS_ENABLED'))
+          throw new Error('RESERVATIONS_ENABLED requires an HTTP reservation client');
+        return new NoopReservationClient();
+      },
+    },
+    BookLoader,
+    OrdersService,
+    OrderBookService,
+    OrdersGateway,
+    RedisLockService,
+    InstrumentCatalog,
+  ],
   exports: [OrderBookService],
 })
 export class OrdersModule {}

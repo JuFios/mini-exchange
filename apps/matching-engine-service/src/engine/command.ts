@@ -15,9 +15,13 @@ export interface CommandRow {
 
 export function bookOrder(order: Order): BookOrder {
   return {
-    id: order.id, ownerId: order.ownerId, side: order.side,
-    price: parsePrice(order.price), quantity: parseQuantity(order.quantity),
-    remaining: order.remainingQuantity === '0.00000000' ? 0n : parseQuantity(order.remainingQuantity),
+    id: order.id,
+    ownerId: order.ownerId,
+    side: order.side,
+    price: parsePrice(order.price),
+    quantity: parseQuantity(order.quantity),
+    remaining:
+      order.remainingQuantity === '0.00000000' ? 0n : parseQuantity(order.remainingQuantity),
     prioritySeq: BigInt(order.prioritySeq!),
   };
 }
