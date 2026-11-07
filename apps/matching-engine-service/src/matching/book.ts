@@ -10,7 +10,7 @@ export interface BookOrder {
   readonly prioritySeq: bigint;
 }
 
-// One instrument's active orders, with positive remaining quantities.
+// Активні заявки одного інструмента з додатними залишками.
 export interface Book {
   readonly bids: readonly BookOrder[];
   readonly asks: readonly BookOrder[];

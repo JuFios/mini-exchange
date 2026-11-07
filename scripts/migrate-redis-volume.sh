@@ -13,8 +13,8 @@ if [ -n "$running_redis" ]; then
 fi
 
 import_script=$(cat <<'SH'
-  # One import at a time per volume. The kernel releases the lock when the
-  # process dies, including after SIGKILL.
+  # Один імпорт за раз на том. Ядро знімає блокування, коли процес завершується,
+  # зокрема після SIGKILL.
   exec 9</data
   if ! flock -n 9; then
     echo "Another Redis import is using the destination volume." >&2
@@ -28,7 +28,7 @@ import_script=$(cat <<'SH'
     exit 1
   fi
 
-  # A previous import stopped before it published the AOF.
+  # Попередній імпорт зупинився до публікації AOF.
   rm -rf "$stage"
   mkdir "$stage"
   redis_pid=
@@ -77,7 +77,7 @@ import_script=$(cat <<'SH'
   wait "$redis_pid"
   redis_pid=
   test -s "$stage/appendonlydir/appendonly.aof.manifest"
-  # Publish the complete AOF in one rename on the destination volume.
+  # Публікуємо повний AOF одним rename на цільовому томі.
   mv -nT "$stage/appendonlydir" /data/appendonlydir
   if [ -e "$stage/appendonlydir" ]; then
     echo "The destination AOF directory already exists." >&2

@@ -98,7 +98,7 @@ export class ReferenceMatcher {
     const trades: Trade[] = [];
     while (incoming.remaining > 0n) {
       let maker: Entry | undefined;
-      // Search the full set again for each fill, independently of the active book layout.
+      // Для кожного виконання шукаємо знову у всій множині, незалежно від структури книги.
       for (const order of this.orders.values()) {
         if (!active(order) || order.side === incoming.side) continue;
         const eligible =

@@ -25,7 +25,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      # Failed checks do not count while Redis replays its AOF.
+      # Невдалі перевірки не враховуються, поки Redis відтворює AOF.
       start_period: ${REDIS_HEALTH_START_PERIOD:-120s}
       start_interval: 1s
 

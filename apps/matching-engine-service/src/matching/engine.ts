@@ -33,7 +33,7 @@ export interface SubmitCommand {
 export interface CancelCommand {
   readonly type: 'cancel';
   readonly orderId: string;
-  // Supply the persisted terminal status when the order is no longer in the active book.
+  // Віддаємо збережений термінальний статус, коли заявки вже немає в активній книзі.
   readonly terminalStatus?: 'filled' | 'cancelled';
 }
 
@@ -59,7 +59,7 @@ export interface Fill {
 interface ClosedOrder {
   orderId: string;
   reason: CancelReason;
-  // Quote units for buys, base lots for sells.
+  // Одиниці котирування для buy, базові лоти для sell.
   releasedAmount: bigint;
 }
 

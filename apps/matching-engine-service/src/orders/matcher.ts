@@ -78,7 +78,7 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
   );
   const trades = result.trades.map(({ tradeId, price, quantity, executedAt, ...fill }, index) => ({
     ...fill,
-    // A legacy priority rank is local to a snapshot, so it cannot identify a fill.
+    // Ранг пріоритету зі старого знімка локальний, тож не ідентифікує виконання.
     id: sequenced
       ? tradeId
       : uuidv5(
