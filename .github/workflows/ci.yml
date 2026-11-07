@@ -1,13 +1,22 @@
 name: CI
 
+# Гілки перевіряє `pull_request`; `push` лише для основних гілок, щоб не дублювати прогони.
 on:
   push:
-    branches: ['**']
+    branches: [main, solution]
   pull_request:
-    branches: ['**']
+
+permissions:
+  contents: read
+
+# Новий коміт у PR скасовує застарілий прогін; прогони основних гілок не скасовуються.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   matching-engine-service:
+    name: Matching engine
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -38,8 +47,9 @@ jobs:
           cache: npm
           cache-dependency-path: apps/matching-engine-service/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint:check
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
       - run: npm test
       - name: Run, revert and reapply engine migrations
         env:
@@ -50,11 +60,10 @@ jobs:
           DATABASE_NAME: exchange
         run: |
           npm run migration:run
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
-          npm run migration:revert
+          # Один відкат на файл міграції: нова міграція не лишиться без перевірки відкату.
+          for _ in $(seq "$(ls src/migrations/*.ts | wc -l)"); do
+            npm run migration:revert
+          done
           npm run migration:run
       - name: Run engine end-to-end tests
         env:
@@ -74,7 +83,9 @@ jobs:
           done
 
   settlement-service:
+    name: Settlement
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/settlement-service
@@ -86,11 +97,14 @@ jobs:
           cache: npm
           cache-dependency-path: apps/settlement-service/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint:check
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
 
   frontend:
+    name: Frontend
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/frontend
@@ -102,10 +116,13 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - run: npm ci
+      - run: npm run format:check
       - run: npm run lint
+      - run: npm run typecheck
       - run: npm run build
 
   compose-smoke:
+    name: Compose smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
