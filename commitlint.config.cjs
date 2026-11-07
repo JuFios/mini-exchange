@@ -2,6 +2,15 @@
 // Правила задано явно, без `extends`: так перевірка працює через `npx` без встановлення
 // пакетів у репозиторій.
 module.exports = {
+  // Стандартний парсер не знає `!` перед двокрапкою, тому `feat(engine)!: ...` давав би
+  // помилки type-empty і subject-empty. Шаблон такий самий, як у пресеті conventionalcommits.
+  parserPreset: {
+    parserOpts: {
+      headerPattern: /^(\w*)(?:\((.*)\))?!?: (.*)$/,
+      headerCorrespondence: ['type', 'scope', 'subject'],
+      noteKeywords: ['BREAKING CHANGE', 'BREAKING-CHANGE'],
+    },
+  },
   rules: {
     'type-enum': [
       2,
