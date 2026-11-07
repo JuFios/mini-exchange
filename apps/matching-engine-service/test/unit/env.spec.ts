@@ -46,3 +46,12 @@ it.each([
 ])('rejects invalid %s configuration', (key, value) => {
   expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
 });
+
+
+it.each(['ENGINE_WORKER_ENABLED', 'RESERVATIONS_ENABLED'])('requires a boolean %s', (key) => {
+  expect(() => validateEnv({ ...example, [key]: 'yes' })).toThrow(key);
+});
+
+it.each(['COMMAND_POLL_INTERVAL_MS', 'ORDER_SYNC_WAIT_MS', 'SEQ_GAP_ALERT_MS'])('bounds %s', (key) => {
+  for (const value of ['0', '-1', '60001', '1.5']) expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
+});

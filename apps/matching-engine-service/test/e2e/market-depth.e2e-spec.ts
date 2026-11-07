@@ -15,7 +15,7 @@ it('exposes the best aggregated bid and ask through the public market route', as
   const response = await request('/instruments/ABC/book?depth=1');
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({
-    instrument: 'ABC',
+    instrument: 'ABC', seq: '4',
     bids: [{ price: '98.00', quantity: '1.00000000', orders: 1 }],
     asks: [{ price: '101.00', quantity: '1.00000000', orders: 1 }],
   });

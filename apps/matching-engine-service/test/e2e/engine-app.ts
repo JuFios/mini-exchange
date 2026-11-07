@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Test } from '@nestjs/testing';
+import { Test, TestingModuleBuilder } from '@nestjs/testing';
 import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import { migrate } from '../../src/database/migrate';
@@ -54,24 +54,29 @@ export function engineApp() {
     }
   });
 
-  async function start(overrides?: Partial<EngineEnv>) {
+  async function build(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
     const { AppModule } = await import('../../src/app.module');
     const builder = Test.createTestingModule({ imports: [AppModule] });
     if (overrides) {
       const config = { ...validateEnv(process.env), ...overrides };
       builder.overrideProvider(ConfigService).useValue({ getOrThrow: (key: keyof EngineEnv) => config[key] });
     }
+    customize?.(builder);
     const module = await builder.compile();
     const instance = module.createNestApplication({ rawBody: true, logger: ['error'], abortOnError: false });
     try {
       configureApp(instance);
       await instance.listen(0, '127.0.0.1');
-      baseUrl = await instance.getUrl();
-      app = instance;
+      return instance;
     } catch (error) {
       await instance.close();
       throw error;
     }
+  }
+
+  async function start(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
+    app = await build(overrides, customize);
+    baseUrl = await app.getUrl();
   }
 
   async function close() {
@@ -80,20 +85,23 @@ export function engineApp() {
     await instance?.close();
   }
 
-  async function restart(overrides?: Partial<EngineEnv>) {
+  async function restart(overrides?: Partial<EngineEnv>, customize?: (builder: TestingModuleBuilder) => void) {
     await close();
-    await start(overrides);
+    await start(overrides, customize);
   }
 
   beforeEach(() => start());
 
   afterEach(async () => {
-    // Заявки одного тесту не повинні потрапити в книгу наступного після її відновлення при старті.
+    await close();
+    const cleanup = database.source();
+    await cleanup.initialize();
     try {
-      await app?.get(DataSource).query('TRUNCATE TABLE orders');
-    } finally {
-      await close();
-    }
+      // Worker зупинено до TRUNCATE, тому жодна команда не відновить книгу під час cleanup.
+      await cleanup.query('TRUNCATE orders,order_commands,order_requests,trades,outbox');
+      await cleanup.query("UPDATE instruments SET next_seq=0");
+      await cleanup.query("UPDATE instrument_state SET status='active',last_applied_seq=0,resting_count=0,resting_quantity=0,resting_bid_count=0,resting_ask_count=0,resting_bid_lots=0,resting_ask_lots=0");
+    } finally { await cleanup.destroy(); }
   });
 
   afterAll(async () => {
@@ -104,15 +112,16 @@ export function engineApp() {
     await database.destroy();
   });
 
-  function request(path: string, method = 'GET', token?: string, body?: unknown) {
+  function request(path: string, method = 'GET', token?: string, body?: unknown, headers: Record<string, string> = {}, timeoutMs = 5000) {
     return fetch(`${baseUrl}${path}`, {
       method,
       headers: {
+        ...headers,
         ...(token && { Authorization: `Bearer ${token}` }),
         ...(body !== undefined && { 'Content-Type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 
@@ -142,5 +151,5 @@ export function engineApp() {
     return (await response.json()) as Order[];
   }
 
-  return { request, register, submit, list, restart, database: () => app!.get(DataSource), url: () => baseUrl };
+  return { build, app: () => app!, request, register, submit, list, restart, database: () => app!.get(DataSource), url: () => baseUrl };
 }

@@ -19,13 +19,15 @@ export default function OrdersPage() {
         body: JSON.stringify({
           instrument,
           side,
-          price: Number(price),
-          quantity: Number(quantity),
+          price,
+          quantity,
         }),
       });
       if (!res.ok) throw new Error('Не вдалося подати заявку');
-      const trades = await res.json();
-      setResult(`Заявку прийнято. Угод: ${trades.length}`);
+      const { order, trades } = await res.json();
+      setResult(order.status === 'pending'
+        ? `Заявку ${order.id} прийнято. Очікує виконання.`
+        : `Заявку прийнято. Стан: ${order.status}. Угод: ${trades.length}`);
     } catch (err) {
       setResult((err as Error).message);
     }
