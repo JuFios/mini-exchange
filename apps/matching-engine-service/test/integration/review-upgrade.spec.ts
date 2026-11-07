@@ -31,7 +31,7 @@ it('upgrades legacy resting orders with deterministic priorities and consistent 
   expect(await source.query("SELECT resting_count,resting_quantity,resting_ask_count,resting_ask_lots FROM instrument_state WHERE instrument='ABC'"))
     .toEqual([{ resting_count: '2', resting_quantity: '300000000', resting_ask_count: '2', resting_ask_lots: '300000000' }]);
   const settings = { ...parseEnv(readFileSync('.env.example', 'utf8')), ...database.env,
-    REDIS_HOST: process.env.REDIS_HOST!, REDIS_PORT: process.env.REDIS_PORT! };
+    REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1', REDIS_PORT: process.env.REDIS_PORT ?? '6379' };
   const original = new Map(Object.keys(settings).map((key) => [key, process.env[key]]));
   Object.assign(process.env, settings);
   try {

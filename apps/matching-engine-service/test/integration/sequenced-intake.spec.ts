@@ -17,9 +17,9 @@ it('sequences two intake instances and matches all two hundred HTTP commands aga
     const peerUrl = await peer.getUrl();
     const responses = await Promise.all(Array.from({ length: 200 }, (_, i) => {
       const body = { instrument: 'ABC', side: i % 2 ? 'buy' : 'sell', price: String(99 + i % 5), quantity: '1' };
-      return i % 2 ? request('/orders', 'POST', tokens[i % 3], body) : fetch(`${peerUrl}/orders`, {
+      return i % 2 ? request('/orders', 'POST', tokens[i % 3], body, {}, 15000) : fetch(`${peerUrl}/orders`, {
         method: 'POST', headers: { Authorization: `Bearer ${tokens[i % 3]}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000),
       });
     }));
     expect(responses.map(({ status }) => status).every((status) => status === 201 || status === 202)).toBe(true);

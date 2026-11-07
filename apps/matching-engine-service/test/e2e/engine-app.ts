@@ -112,7 +112,7 @@ export function engineApp() {
     await database.destroy();
   });
 
-  function request(path: string, method = 'GET', token?: string, body?: unknown, headers: Record<string, string> = {}) {
+  function request(path: string, method = 'GET', token?: string, body?: unknown, headers: Record<string, string> = {}, timeoutMs = 5000) {
     return fetch(`${baseUrl}${path}`, {
       method,
       headers: {
@@ -121,7 +121,7 @@ export function engineApp() {
         ...(body !== undefined && { 'Content-Type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 
