@@ -6,6 +6,7 @@ export const InstrumentState = new EntitySchema({
   columns: {
     instrument: { type: 'varchar', primary: true },
     status: { type: 'varchar', default: 'active' },
+    legacyVerified: { name: 'legacy_verified', type: 'boolean', default: true },
     ownerEpoch: { name: 'owner_epoch', type: 'bigint', default: 0 },
     ownerInstance: { name: 'owner_instance', type: 'varchar', nullable: true },
     ownerSince: { name: 'owner_since', type: 'timestamptz', nullable: true },

@@ -49,8 +49,8 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async assertActive(db: Pick<EntityManager, 'query'>, instrument: string, lock = false): Promise<void> {
-    const [state] = await db.query(`SELECT status FROM instrument_state WHERE instrument=$1${lock ? ' FOR SHARE' : ''}`, [instrument]);
-    if (state?.status !== 'active') {
+    const [state] = await db.query(`SELECT status,legacy_verified FROM instrument_state WHERE instrument=$1${lock ? ' FOR SHARE' : ''}`, [instrument]);
+    if (state?.status !== 'active' || state.legacy_verified !== true) {
       throw new ServiceUnavailableException({ code: 'INSTRUMENT_HALTED', message: 'Інструмент зупинено' });
     }
   }
@@ -60,12 +60,22 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     if (key !== undefined && /^[A-Za-z0-9_-]{1,64}$/.exec(key)?.[0] !== key) {
       throw new BadRequestException('Некоректний Idempotency-Key');
     }
+    const idempotencyKey = key ?? randomUUID();
+    const requestHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    if (key !== undefined) {
+      const [previous]: RequestRow[] = await this.source.query('SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2', [userId, key]);
+      if (previous) {
+        if (previous.request_hash !== requestHash) {
+          throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED', message: 'Ключ уже використано з іншими даними' });
+        }
+        const completed = await this.existing(previous);
+        if (completed) return completed;
+      }
+    }
     try { await this.redis.ping(); } catch {
       throw new ServiceUnavailableException('Сервіс прийому заявок недоступний');
     }
     await this.assertActive(this.source.manager, dto.instrument);
-    const idempotencyKey = key ?? randomUUID();
-    const requestHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
     const [row]: RequestRow[] = await this.source.transaction(async (db) => {
       await db.query(`INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
         VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING`,
@@ -108,6 +118,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
   private async existing(row: RequestRow): Promise<Acceptance | undefined> {
     if (row.status === 'accepted') {
       const [command] = await this.source.query("SELECT seq FROM order_commands WHERE order_id=$1 AND type='submit'", [row.order_id]);
+      if (!command) throw new ServiceUnavailableException('Журнал заявки тимчасово недоступний');
       return { orderId: row.order_id, seq: command.seq, replay: true };
     }
     if (row.status === 'rejected') throw new UnprocessableEntityException(row.response as object);

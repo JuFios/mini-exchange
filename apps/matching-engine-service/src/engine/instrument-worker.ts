@@ -52,7 +52,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       return this.loader.load(db, instrument);
     });
     this.owned.set(instrument, owned);
-    this.books.commit(instrument, owned.book, owned.seq);
+    if (owned.quarantined) this.books.quarantine(instrument);
+    else this.books.commit(instrument, owned.book, owned.seq);
   }
 
   private async poll(): Promise<void> {
@@ -77,16 +78,17 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     for (let count = 0; count < 100 && !this.stopped; count++) {
       const owned = this.owned.get(instrument)!;
       if (owned.halted) return;
-      const [row]: CommandRow[] = await this.source.query(`SELECT * FROM order_commands
-        WHERE instrument=$1 AND seq>$2 ORDER BY seq LIMIT 1`, [instrument, owned.seq]);
-      if (!row) return;
-      if (BigInt(row.seq) !== BigInt(owned.seq) + 1n) {
+      const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(`SELECT c.*,i.next_seq FROM instruments i
+        LEFT JOIN LATERAL (SELECT * FROM order_commands WHERE instrument=i.symbol AND seq>$2 ORDER BY seq LIMIT 1) c ON true
+        WHERE i.symbol=$1`, [instrument, owned.seq]);
+      if (!row.seq && BigInt(row.next_seq) === BigInt(owned.seq)) { this.gaps.delete(instrument); return; }
+      if (!row.seq || BigInt(row.seq) !== BigInt(owned.seq) + 1n) {
         const since = this.gaps.get(instrument) ?? performance.now();
         this.gaps.set(instrument, since);
         if (performance.now() - since >= this.config.getOrThrow<number>('SEQ_GAP_ALERT_MS')) {
           await this.source.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [instrument]);
           owned.halted = true;
-          this.logger.error({ alert: 'engine_seq_gap', instrument, seq: row.seq });
+          this.logger.error({ alert: 'engine_seq_gap', instrument, seq: (BigInt(owned.seq) + 1n).toString() });
         }
         return;
       }
@@ -102,7 +104,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   private async applyOne(db: EntityManager, owned: OwnedBook, row: CommandRow): Promise<WorkerResult | undefined> {
     await db.query("SET LOCAL lock_timeout='3s'");
     const [state] = await db.query('SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE', [row.instrument]);
-    if (state.status === 'halted') return;
+    if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });
     const command: Command = row.type === 'submit' ? {
@@ -139,8 +141,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     if (result.outcome === 'rejected_internal') {
       await this.rejectionEvents(db, row, target, result);
     }
-    await db.query(`UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
+    const [, applied] = await db.query(`UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
       [row.instrument, row.seq, { status: result.outcome, tradeIds: result.trades.map(({ tradeId }) => tradeId), epoch: state.owner_epoch, instance: this.config.getOrThrow('INSTANCE_ID') }]);
+    if (applied !== 1) throw new Error('Command journal row changed');
     const totals = counters(result.book);
     const updated = await db.query(`UPDATE instrument_state
       SET last_applied_seq=$2,resting_count=$3,resting_quantity=$4,

@@ -1,3 +1,4 @@
+import { InstrumentWorker } from '../../src/engine/instrument-worker';
 import { IntakeService } from '../../src/intake/intake.service';
 import { engineApp } from './engine-app';
 import { waitFor } from '../helpers/wait-for';
@@ -35,4 +36,22 @@ it('replays an accepted request without Redis and still rejects new intake or a 
     expect(await database().query('SELECT count(*)::int AS n FROM order_commands')).toEqual([{ n: 1 }]);
     expect(await database().query('SELECT count(*)::int AS n FROM order_requests')).toEqual([{ n: 1 }]);
   } finally { failure.mockRestore(); }
+});
+
+
+it('rolls back matching if the journal update does not persist the applied command', async () => {
+  const owner = await register();
+  await restart({ ORDER_SYNC_WAIT_MS: 30 });
+  await database().query(`CREATE FUNCTION skip_applied() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RETURN NULL; END; $$;
+    CREATE TRIGGER skip_applied BEFORE UPDATE ON order_commands FOR EACH ROW EXECUTE FUNCTION skip_applied()`);
+  try {
+    expect((await submit(owner)).status).toBe(202);
+    expect(await database().query('SELECT status FROM orders')).toEqual([{ status: 'pending' }]);
+    expect(await database().query("SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'")).toEqual([{ last_applied_seq: '0' }]);
+    expect(await (await request('/orders/book?instrument=ABC')).json()).toMatchObject({ seq: '0', asks: [] });
+  } finally { await database().query('DROP TRIGGER skip_applied ON order_commands; DROP FUNCTION skip_applied()'); }
+  await app().get(InstrumentWorker).kick('ABC');
+  await waitFor(async () => (await database().query('SELECT applied_at FROM order_commands'))[0].applied_at !== null);
+  expect(await database().query('SELECT status FROM orders')).toEqual([{ status: 'open' }]);
 });

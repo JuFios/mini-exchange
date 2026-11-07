@@ -18,8 +18,13 @@ export function counters(book: Book) {
 export class BookLoader {
   private readonly logger = new Logger(BookLoader.name);
 
-  async load(db: EntityManager, instrument: string): Promise<{ book: Book; seq: string; halted: boolean }> {
+  async load(db: EntityManager, instrument: string): Promise<{ book: Book; seq: string; halted: boolean; quarantined?: boolean }> {
     const [state] = await db.query('SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE', [instrument]);
+    if (state.legacy_verified !== true) {
+      await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [instrument]);
+      this.logger.error({ alert: 'engine_legacy_state_unverified', instrument });
+      return { book: { bids: [], asks: [] }, seq: state.last_applied_seq, halted: true, quarantined: true };
+    }
     const rows = await db.getRepository(Order).find({ where: { instrument, status: In(['open', 'partially_filled']) } });
     const orders = rows.map(bookOrder);
     const book = {

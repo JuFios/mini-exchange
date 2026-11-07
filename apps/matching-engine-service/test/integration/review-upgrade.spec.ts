@@ -1,3 +1,4 @@
+import { OrderBookService } from '../../src/orders/order-book.service';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { ConfigService } from '@nestjs/config';
@@ -14,7 +15,7 @@ const source = database.source();
 beforeAll(async () => { await database.create(); await source.initialize(); });
 afterAll(async () => { await source.destroy(); await database.destroy(); });
 
-it('upgrades legacy resting orders with deterministic priorities and consistent sequence and counters', async () => {
+it('quarantines legacy resting orders while preserving deterministic forensic records', async () => {
   const migrations = [...source.migrations];
   source.migrations.splice(2);
   await migrate(source, 'run');
@@ -25,8 +26,8 @@ it('upgrades legacy resting orders with deterministic priorities and consistent 
   source.migrations.splice(0, source.migrations.length, ...migrations);
   await migrate(source, 'run');
   const loaded = await source.transaction((db) => new BookLoader().load(db, 'ABC'));
-  expect(loaded).toMatchObject({ halted: false, seq: '2', book: { asks: [{ id: ids[0], prioritySeq: 1n }, { id: ids[1], prioritySeq: 2n }] } });
-  expect(await source.query('SELECT seq,result FROM order_commands ORDER BY seq')).toMatchObject([{ seq: '1', result: { status: 'imported_snapshot' } }, { seq: '2', result: { status: 'imported_snapshot' } }]);
+  expect(loaded).toMatchObject({ halted: true, seq: '2', book: { bids: [], asks: [] } });
+  expect(await source.query('SELECT seq,result FROM order_commands ORDER BY seq')).toMatchObject([{ seq: '1', result: { status: 'unverified_snapshot' } }, { seq: '2', result: { status: 'unverified_snapshot' } }]);
   expect(await source.query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).toEqual([{ next_seq: '2' }]);
   expect(await source.query("SELECT resting_count,resting_quantity,resting_ask_count,resting_ask_lots FROM instrument_state WHERE instrument='ABC'"))
     .toEqual([{ resting_count: '2', resting_quantity: '300000000', resting_ask_count: '2', resting_ask_lots: '300000000' }]);
@@ -42,9 +43,10 @@ it('upgrades legacy resting orders with deterministic priorities and consistent 
     const app = module.createNestApplication({ logger: false });
     try {
       await app.init();
-      const result = await app.get(OrdersService).submitOrder({ instrument: 'ABC', side: 'sell', price: 101, quantity: 1 }, owner);
-      expect(result.status).toBe(201);
-      expect(result.body.order.prioritySeq).toBe('3');
+      expect(() => app.get(OrderBookService).depth('ABC')).toThrow(expect.objectContaining({ status: 503 }));
+      await source.query("UPDATE instrument_state SET status='active' WHERE instrument='ABC'");
+      await expect(app.get(OrdersService).submitOrder({ instrument: 'ABC', side: 'buy', price: 100, quantity: 1 }, owner)).rejects.toMatchObject({ status: 503 });
+      expect(await source.query('SELECT count(*)::int AS n FROM trades')).toEqual([{ n: 0 }]);
     } finally { await app.close(); }
   } finally {
     for (const [key, value] of original) {
