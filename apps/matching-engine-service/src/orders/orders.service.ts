@@ -43,13 +43,19 @@ export class OrdersService {
     // Скасований залишок зберігаємо як є: різниця quantity і remainingQuantity
     // показує, скільки вже виконано до скасування.
     const settled = result.cancelledIncoming ?? result.restingOrder;
-    await this.orders.save(
+    const nextResting = new Map([...result.updatedBids, ...result.updatedAsks].map((order) => [order.id, order]));
+    const touchedIds = new Set(result.trades.flatMap(({ buyOrderId, sellOrderId }) => [buyOrderId, sellOrderId]));
+    const touched = [...book.bids, ...book.asks].filter(({ id }) => touchedIds.has(id)).map((order) =>
+      nextResting.get(order.id) ?? { ...order, status: 'filled' as const, remainingQuantity: '0.00000000' });
+    // Масив save зберігається однією транзакцією: incoming і всі змінені resting.
+    await this.orders.save([
+      ...touched,
       this.orders.create({
         ...incoming,
         remainingQuantity: settled?.remainingQuantity ?? '0',
         status: settled?.status ?? 'filled',
       }),
-    );
+    ]);
 
     // Застосовуємо результат зіставлення (обчислений зі знімку книги,
     // знятого до await вище) до поточного стану книги інструмента.

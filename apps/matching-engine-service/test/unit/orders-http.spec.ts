@@ -15,7 +15,13 @@ let base: string;
 const rows: Order[] = [];
 const repository = {
   create: (order: Order) => order,
-  save: async (order: Order) => { rows.push(order); },
+  save: async (input: Order | Order[]) => {
+      for (const order of Array.isArray(input) ? input : [input]) {
+        const index = rows.findIndex(({ id }) => id === order.id);
+        if (index < 0) rows.push(order);
+        else rows[index] = order;
+      }
+    },
 };
 
 beforeAll(async () => {
