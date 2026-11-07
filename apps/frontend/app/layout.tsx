@@ -1,5 +1,5 @@
 export const metadata = {
-  title: 'Mini Exchange — starter',
+  title: 'Mini Exchange',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
