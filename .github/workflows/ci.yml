@@ -100,6 +100,7 @@ jobs:
       - run: npm run format:check
       - run: npm run lint:check
       - run: npm run typecheck
+      - run: npm test
 
   frontend:
     name: Frontend
@@ -145,5 +146,35 @@ jobs:
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200
       - name: Remove smoke containers and volumes
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+
+  system:
+    name: Ownership system checks
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/solution'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: exchange-system-${{ github.run_id }}
+      COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and check the system runner
+        run: |
+          docker compose build system-tests
+          docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
+      - name: Start isolated system stack
+        run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Check graceful ownership transfer
+        run: docker compose run --rm system-tests npm run chaos:sigterm
+      - name: Check ownership after a crash
+        run: docker compose run --rm system-tests npm run ownership:kill
+      - name: Check crashes before and after commit
+        run: docker compose run --rm system-tests npm run ownership:hooks
+      - name: Diagnose failure before cleanup
+        if: failure()
+        run: docker compose ps -a && docker compose logs --no-color --tail=200
+      - name: Remove system containers and volumes
         if: always()
         run: docker compose down -v --remove-orphans
