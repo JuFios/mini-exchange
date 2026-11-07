@@ -1,3 +1,4 @@
+import { BookLoader } from '../engine/book-loader';
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersService } from './orders.service';
@@ -13,7 +14,7 @@ import { RedisLockService } from '../locks/redis-lock.service';
 @Module({
   imports: [TypeOrmModule.forFeature([Order, Instrument])],
   controllers: [MarketController, OrdersController],
-  providers: [OrdersService, OrderBookService, OrdersGateway, RedisLockService, InstrumentCatalog],
+  providers: [BookLoader, OrdersService, OrderBookService, OrdersGateway, RedisLockService, InstrumentCatalog],
   exports: [OrderBookService],
 })
 export class OrdersModule {}
