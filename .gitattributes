@@ -1,0 +1,6 @@
+# Єдині переноси рядків незалежно від ОС. Скрипти виконуються в Linux-контейнерах.
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Lockfiles згортаються в diff на GitHub, але лишаються видимими в git.
+package-lock.json linguist-generated=true

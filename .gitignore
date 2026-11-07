@@ -1,5 +1,19 @@
 node_modules/
 dist/
 .next/
+coverage/
+*.tsbuildinfo
 *.log
+
+# Генерується Next.js під час збірки.
+next-env.d.ts
+
+# Секрети: у репозиторії лише приклади.
 .env
+.env.*
+!.env.example
+
+# Файли ОС і редакторів.
+.DS_Store
+.idea/
+.vscode/
