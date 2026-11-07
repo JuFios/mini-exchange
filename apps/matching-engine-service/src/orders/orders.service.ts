@@ -89,7 +89,7 @@ export class OrdersService {
       try {
         const decoded = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8')) as { createdAt: string; id: string };
         if (!isUUID(decoded.id) || new Date(decoded.createdAt).toISOString() !== decoded.createdAt) throw new Error();
-        builder.andWhere('(o.created_at,o.id)<(:createdAt,:id)', decoded);
+        builder.andWhere('(o.created_at,o.id)<(:createdAt,:id)', { createdAt: decoded.createdAt, id: decoded.id });
       } catch { throw new BadRequestException('Некоректний курсор'); }
     }
     return builder.orderBy('o.created_at', 'DESC').addOrderBy('o.id', 'DESC').take(Number(query.limit ?? 50)).getMany();

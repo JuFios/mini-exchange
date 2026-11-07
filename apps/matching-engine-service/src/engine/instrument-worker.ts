@@ -154,7 +154,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
 
   private async rejectionEvents(db: EntityManager, row: CommandRow, target: Order, result: WorkerResult): Promise<void> {
     const events: [string, string, object][] = [
-      [`exchange:market:{${row.instrument}}`, 'book.delta', { instrument: row.instrument, seq: row.seq, changes: [] }],
+      [`exchange:market:{${row.instrument}}`, 'book.delta', { instrument: row.instrument, seq: row.seq, changes: result.levelChanges.map((level) => ({ side: level.side === 'buy' ? 'bid' : 'ask', price: formatPrice(level.price), quantity: level.quantity === 0n ? '0' : formatQuantity(level.quantity), orders: level.orders })) }],
       ...result.closed.map((closed): [string, string, object] => [
         `exchange:settlement:{${row.instrument}}`, 'order.closed', {
           orderId: target.id, userId: target.ownerId, instrument: row.instrument, side: target.side,

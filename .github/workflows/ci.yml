@@ -53,6 +53,7 @@ jobs:
           npm run migration:revert
           npm run migration:revert
           npm run migration:revert
+          npm run migration:revert
           npm run migration:run
       - name: Run engine end-to-end tests
         env:

@@ -14,10 +14,10 @@ it('does not let cursor parameters replace the authenticated owner or instrument
   expect((await response.json()).map((order: { id: string }) => order.id)).toEqual([own.id]);
 });
 
-it('publishes the remaining level when a failed cancellation removes one of two resting orders', async () => {
+it.each([true, false])('publishes the actual level after a failed cancellation (another order: %s)', async (keepSecond) => {
   const owner = await register();
   const first = (await (await submit(owner)).json()).order;
-  await submit(owner, { quantity: 2 });
+  if (keepSecond) await submit(owner, { quantity: 2 });
   const applier = new CommandApplier();
   await restart({}, (builder) => builder.overrideProvider(CommandApplier).useValue({
     apply: (...args: Parameters<CommandApplier['apply']>) => {
@@ -27,6 +27,6 @@ it('publishes the remaining level when a failed cancellation removes one of two 
   }));
   expect((await request(`/orders/${first.id}`, 'DELETE', owner)).status).toBe(200);
   expect(await database().query("SELECT payload FROM outbox WHERE type='book.delta'"))
-    .toEqual([{ payload: { instrument: 'ABC', seq: '3', changes: [{ side: 'ask', price: '100.00', quantity: '2.00000000', orders: 1 }] } }]);
-  expect(await (await request('/orders/book?instrument=ABC')).json()).toMatchObject({ asks: [{ quantity: '2.00000000', orders: 1 }] });
+    .toEqual([{ payload: { instrument: 'ABC', seq: keepSecond ? '3' : '2', changes: [{ side: 'ask', price: '100.00', quantity: keepSecond ? '2.00000000' : '0', orders: keepSecond ? 1 : 0 }] } }]);
+  expect(await (await request('/orders/book?instrument=ABC')).json()).toMatchObject({ asks: keepSecond ? [{ quantity: '2.00000000', orders: 1 }] : [] });
 });
