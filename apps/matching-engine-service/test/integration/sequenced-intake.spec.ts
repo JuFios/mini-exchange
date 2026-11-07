@@ -12,7 +12,7 @@ const units = (text: string, scale: number) => {
 it('sequences two intake instances and matches all two hundred HTTP commands against an independent replay', async () => {
   const [a, b, c] = await Promise.all([register(), register(), register()]);
   const tokens = [a, b, c];
-  const peer = await build({ ENGINE_WORKER_ENABLED: false, INSTANCE_ID: 'intake-peer' });
+  const peer = await build({ ENGINE_WORKER_ENABLED: true, INSTANCE_ID: 'intake-peer' });
   try {
     const peerUrl = await peer.getUrl();
     const responses = await Promise.all(

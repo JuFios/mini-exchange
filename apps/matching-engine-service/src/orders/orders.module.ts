@@ -1,7 +1,13 @@
+import { CommittedBook } from '../engine/committed-book';
 import { ConfigService } from '@nestjs/config';
 import { CommandApplier } from '../engine/command-applier';
 import { InstrumentWorker } from '../engine/instrument-worker';
-import { LocalOwnership } from '../engine/local-ownership';
+import { LeaseManager } from '../ownership/lease-manager';
+import { OwnershipCoordinator } from '../ownership/ownership-coordinator';
+import { AdminInstrumentsController } from '../ownership/admin-instruments.controller';
+import { ReadinessController } from '../ownership/readiness.controller';
+import { ChaosHooks } from '../chaos/chaos-hooks';
+import { ChaosController } from '../chaos/chaos.controller';
 import { PgNotifications } from '../engine/pg-notifications';
 import { IntakeService } from '../intake/intake.service';
 import { NoopReservationClient, ReservationClient } from '../intake/reservation.client';
@@ -16,15 +22,23 @@ import { Order } from './entities/order.entity';
 import { Instrument } from './entities/instrument.entity';
 import { MarketController } from './market.controller';
 import { InstrumentCatalog } from './instrument-catalog';
-import { RedisLockService } from '../locks/redis-lock.service';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Order, Instrument])],
-  controllers: [MarketController, OrdersController],
+  controllers: [
+    MarketController,
+    OrdersController,
+    AdminInstrumentsController,
+    ReadinessController,
+    ...(process.env.CHAOS_ENABLED === 'true' ? [ChaosController] : []),
+  ],
   providers: [
+    CommittedBook,
     CommandApplier,
     InstrumentWorker,
-    LocalOwnership,
+    OwnershipCoordinator,
+    LeaseManager,
+    ChaosHooks,
     PgNotifications,
     IntakeService,
     {
@@ -40,7 +54,6 @@ import { RedisLockService } from '../locks/redis-lock.service';
     OrdersService,
     OrderBookService,
     OrdersGateway,
-    RedisLockService,
     InstrumentCatalog,
   ],
   exports: [OrderBookService],

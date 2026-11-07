@@ -118,6 +118,11 @@ const databaseSchema = {
 
 const schema = {
   LEASE_TTL_MS: milliseconds,
+  LEASE_RENEW_INTERVAL_MS: milliseconds,
+  LEASE_SAFETY_MS: milliseconds,
+  ACQUIRE_INTERVAL_MS: milliseconds,
+  CHAOS_ENABLED: boolean,
+  CHAOS_STALL_BEFORE_COMMIT_MS: milliseconds,
   ENGINE_WORKER_ENABLED: boolean,
   RESERVATIONS_ENABLED: boolean,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
@@ -153,6 +158,12 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
   ) as EngineEnv;
   if (parsed.JWT_ACCESS_SECRET === parsed.JWT_REFRESH_SECRET) {
     throw new Error('JWT_REFRESH_SECRET must differ from JWT_ACCESS_SECRET');
+  }
+  if (parsed.LEASE_RENEW_INTERVAL_MS * 3 > parsed.LEASE_TTL_MS) {
+    throw new Error('LEASE_RENEW_INTERVAL_MS * 3 must not exceed LEASE_TTL_MS');
+  }
+  if (parsed.LEASE_SAFETY_MS >= parsed.LEASE_RENEW_INTERVAL_MS) {
+    throw new Error('LEASE_SAFETY_MS must be less than LEASE_RENEW_INTERVAL_MS');
   }
   return parsed;
 }

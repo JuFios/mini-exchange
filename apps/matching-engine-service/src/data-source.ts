@@ -21,6 +21,10 @@ export function engineDataSourceOptions(
 ): Extract<DataSourceOptions, { type: 'postgres' }> {
   return {
     type: 'postgres',
+    extra: {
+      options: '-c idle_in_transaction_session_timeout=2000 -c statement_timeout=5000',
+      connectionTimeoutMillis: 3000,
+    },
     host: env.DATABASE_HOST,
     port: env.DATABASE_PORT,
     username: env.DATABASE_USER,

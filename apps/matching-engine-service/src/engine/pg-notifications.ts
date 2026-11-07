@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
+import { randomUUID } from 'node:crypto';
 
 interface Waiter {
   seq: string;
@@ -14,7 +15,11 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
   private reconnect?: NodeJS.Timeout;
   private connecting?: Promise<void>;
   private stopped = false;
+  private ready = false;
+  private publishing = Promise.resolve();
   private readonly waiters = new Map<string, Set<Waiter>>();
+  readonly resumeListeners = new Set<(request: { instrument: string; id: string }) => void>();
+  private readonly resumeWaiters = new Map<string, (ok: boolean) => void>();
   readonly commandListeners = new Set<(instrument: string) => void>();
 
   constructor(private readonly config: ConfigService) {}
@@ -31,12 +36,14 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
       password: this.config.getOrThrow('DATABASE_PASSWORD'),
       database: this.config.getOrThrow('DATABASE_NAME'),
       connectionTimeoutMillis: 3000,
+      options: '-c idle_in_transaction_session_timeout=2000 -c statement_timeout=5000',
       application_name: `engine-listen:${this.config.getOrThrow('INSTANCE_ID')}`,
     });
     this.client = client;
     const lost = () => {
       if (this.client !== client) return;
       this.client = undefined;
+      this.ready = false;
       void client.end().catch(() => undefined);
       if (!this.stopped && !this.reconnect)
         this.reconnect = setTimeout(() => {
@@ -49,6 +56,16 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     client.on('error', lost);
     client.on('end', lost);
     client.on('notification', ({ channel, payload }) => {
+      if ((channel === 'engine_resume' || channel === 'engine_resume_result') && payload) {
+        try {
+          const request = JSON.parse(payload);
+          if (channel === 'engine_resume')
+            for (const listener of this.resumeListeners) listener(request);
+          else this.resumeWaiters.get(request.id)?.(request.ok);
+        } catch {
+          /* Некоректне сповіщення не впливає на worker. */
+        }
+      }
       if (channel === 'engine_commands' && payload) {
         for (const listener of this.commandListeners) listener(payload);
       }
@@ -61,8 +78,11 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     });
     try {
       await client.connect();
-      await client.query('LISTEN order_applied; LISTEN engine_commands');
+      await client.query(
+        'LISTEN order_applied; LISTEN engine_commands; LISTEN engine_resume; LISTEN engine_resume_result',
+      );
       if (this.stopped) await client.end();
+      else if (this.client === client) this.ready = true;
     } catch {
       this.logger.error({ alert: 'notification_connection_lost' });
       lost();
@@ -93,10 +113,45 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     return { ready, cancel: cleanup };
   }
 
+  private publish(channel: string, payload: unknown): Promise<void> {
+    const client = this.client;
+    const task = this.publishing.then(async () => {
+      if (!client || !this.ready || this.client !== client)
+        throw new Error('Notification connection unavailable');
+      await client.query('SELECT pg_notify($1,$2)', [channel, JSON.stringify(payload)]);
+    });
+    this.publishing = task.catch(() => undefined);
+    return task;
+  }
+
+  async requestResume(instrument: string): Promise<boolean | undefined> {
+    const id = randomUUID();
+    let finish!: (ok: boolean | undefined) => void;
+    const result = new Promise<boolean | undefined>((resolve) => {
+      finish = resolve;
+    });
+    const timer = setTimeout(() => finish(undefined), 3000);
+    this.resumeWaiters.set(id, finish);
+    try {
+      await this.publish('engine_resume', { instrument, id });
+      return await result;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+      this.resumeWaiters.delete(id);
+    }
+  }
+
+  async answerResume(id: string, ok: boolean): Promise<void> {
+    await this.publish('engine_resume_result', { id, ok });
+  }
+
   async onModuleDestroy(): Promise<void> {
     this.stopped = true;
     clearTimeout(this.reconnect);
     await this.connecting;
+    await this.publishing;
     const client = this.client;
     this.client = undefined;
     await client?.end().catch(() => undefined);

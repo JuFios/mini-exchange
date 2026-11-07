@@ -5,25 +5,18 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { OrderBookService } from '../order-book.service';
+import { CommittedBook } from '../../engine/committed-book';
 import { InstrumentCatalog } from '../instrument-catalog';
 
-/**
- * Трансляція оновлень order book підписаним клієнтам. Кожен клієнт
- * підписується на конкретний інструмент і отримує знімок глибини ринку
- * після кожної зміни.
- *
- * NOTE (стартовий код): повідомлення не мають номера послідовності —
- * клієнт не може самостійно виявити, що пропустив оновлення під час
- * розриву з'єднання. Це відповідає одній з категорій проблем у ТЗ.
- */
+// Legacy-підписка повертає committed snapshot без номера послідовності.
+// Для виявлення пропущених оновлень потрібен sequence-протокол.
 @WebSocketGateway({ cors: { origin: '*' } })
 export class OrdersGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
 
   constructor(
-    private readonly orderBook: OrderBookService,
+    private readonly orderBook: CommittedBook,
     private readonly instruments: InstrumentCatalog,
   ) {}
 
@@ -32,15 +25,21 @@ export class OrdersGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage('subscribe')
-  subscribe(client: Socket, instrument: unknown) {
+  async subscribe(client: Socket, instrument: unknown) {
     if (!this.instruments.has(instrument)) {
       return { ok: false, error: 'Невідомий інструмент' };
     }
     client.join(instrument);
-    client.emit('book', this.orderBook.depth(instrument));
+    try {
+      const { bids, asks } = await this.orderBook.read(instrument);
+      client.emit('book', { bids, asks });
+    } catch {
+      return { ok: false, error: 'Книга тимчасово недоступна' };
+    }
   }
 
-  broadcastDepth(instrument: string) {
-    this.server.to(instrument).emit('book', this.orderBook.depth(instrument));
+  async broadcastDepth(instrument: string) {
+    const { bids, asks } = await this.orderBook.read(instrument);
+    this.server.to(instrument).emit('book', { bids, asks });
   }
 }

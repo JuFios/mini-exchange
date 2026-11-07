@@ -11,10 +11,15 @@ import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { BookLoader, counters } from './book-loader';
 import { bookOrder, CommandRow } from './command';
 import { CommandApplier, toRejectedInternal, WorkerResult } from './command-applier';
-import { LocalOwnership } from './local-ownership';
+import { OwnershipCoordinator } from '../ownership/ownership-coordinator';
+import { InstrumentLease } from '../ownership/lease-manager';
+import { FencedOutError, assertEpoch, lockEpoch } from '../ownership/fencing';
+import { ChaosHooks } from '../chaos/chaos-hooks';
 import { PgNotifications } from './pg-notifications';
 
 interface OwnedBook {
+  epoch: string;
+  lease: InstrumentLease;
   book: Book;
   seq: string;
   halted: boolean;
@@ -38,32 +43,75 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     private readonly catalog: InstrumentCatalog,
     private readonly books: OrderBookService,
     private readonly loader: BookLoader,
-    private readonly ownership: LocalOwnership,
+    private readonly ownership: OwnershipCoordinator,
+    private readonly chaos: ChaosHooks,
     private readonly notifications: PgNotifications,
     private readonly applier: CommandApplier,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    if (!this.ownership.enabled()) return;
-    for (const { symbol } of this.catalog.list()) {
-      await this.reload(symbol);
-    }
+    this.ownership.leases.beforeShutdown.add(() => this.onModuleDestroy());
+    this.ownership.leases.lost.add((instrument) => {
+      this.owned.delete(instrument);
+      this.books.forget(instrument);
+    });
+    if (!this.config.getOrThrow<boolean>('ENGINE_WORKER_ENABLED')) return;
+    this.notifications.resumeListeners.add(this.resume);
     this.notifications.commandListeners.add(this.wake);
     await this.poll();
   }
 
   private async reload(instrument: string): Promise<void> {
-    const owned = await this.source.transaction(async (db) => {
-      await db.query("SET LOCAL lock_timeout='3s'");
-      return this.loader.load(db, instrument);
-    });
-    this.owned.set(instrument, owned);
-    if (owned.quarantined) this.books.quarantine(instrument);
-    else this.books.commit(instrument, owned.book, owned.seq);
+    const lease = await this.ownership.leases.acquire(instrument);
+    if (!lease) return;
+    try {
+      const owned = await this.ownership.recover(instrument, lease);
+      this.owned.set(instrument, owned);
+      if (owned.quarantined) this.books.quarantine(instrument);
+      else this.books.commit(instrument, owned.book, owned.seq);
+    } catch (error) {
+      this.ownership.leases.drop(lease);
+      throw error;
+    }
   }
 
+  private readonly resume = (request: { instrument: string; id: string }) => {
+    const owned = this.owned.get(request.instrument);
+    if (!owned || !this.ownership.leases.valid(owned.lease)) return;
+    const previous = this.running.get(request.instrument);
+    const task = (async () => {
+      await previous;
+      const recovered = await this.ownership.recover(request.instrument, owned.lease, true);
+      this.owned.set(request.instrument, recovered);
+      if (recovered.quarantined) this.books.quarantine(request.instrument);
+      else this.books.commit(request.instrument, recovered.book, recovered.seq);
+      await this.notifications.answerResume(request.id, !recovered.halted);
+    })()
+      .catch((error: unknown) => {
+        this.logger.error({
+          alert: 'engine_resume_failed',
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      })
+      .finally(() => {
+        if (this.running.get(request.instrument) === task) this.running.delete(request.instrument);
+      });
+    this.running.set(request.instrument, task);
+  };
+
   private async poll(): Promise<void> {
-    await Promise.all([...this.owned.keys()].map((symbol) => this.kick(symbol)));
+    await Promise.all(
+      this.catalog.list().map(async ({ symbol }) => {
+        if (!this.owned.has(symbol)) {
+          try {
+            await this.reload(symbol);
+          } catch {
+            /* Наступний poll повторить acquire. */
+          }
+        }
+        await this.kick(symbol);
+      }),
+    );
     if (!this.stopped)
       this.timer = setTimeout(() => {
         void this.poll();
@@ -81,6 +129,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           instrument,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
+        if (error instanceof FencedOutError) {
+          this.ownership.fencedWrites++;
+          const owned = this.owned.get(instrument);
+          if (owned) this.ownership.leases.drop(owned.lease);
+          this.logger.warn(`fenced out instrument=${instrument}`);
+          return;
+        }
         // COMMIT міг відбутися без підтвердження: наступна спроба відновить книгу з БД.
         try {
           await this.reload(instrument);
@@ -89,7 +144,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         }
       })
       .finally(() => {
-        this.running.delete(instrument);
+        if (this.running.get(instrument) === task) this.running.delete(instrument);
       });
     this.running.set(instrument, task);
     return task;
@@ -97,7 +152,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
 
   private async drain(instrument: string): Promise<void> {
     for (let count = 0; count < 100 && !this.stopped; count++) {
-      const owned = this.owned.get(instrument)!;
+      const owned = this.owned.get(instrument);
+      if (!owned) return;
+      this.ownership.leases.assert(owned.lease);
       if (owned.halted) return;
       const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(
         `SELECT c.*,i.next_seq FROM instruments i
@@ -113,10 +170,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         const since = this.gaps.get(instrument) ?? performance.now();
         this.gaps.set(instrument, since);
         if (performance.now() - since >= this.config.getOrThrow<number>('SEQ_GAP_ALERT_MS')) {
-          await this.source.query(
-            "UPDATE instrument_state SET status='halted' WHERE instrument=$1",
-            [instrument],
-          );
+          await this.source.transaction(async (db) => {
+            await lockEpoch(db, instrument, owned.epoch);
+            this.ownership.leases.assert(owned.lease);
+            await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
+              instrument,
+            ]);
+          });
           owned.halted = true;
           this.logger.error({
             alert: 'engine_seq_gap',
@@ -132,6 +192,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         owned.halted = true;
         return;
       }
+      await this.chaos.reach('after_commit_before_memory', row.seq, result.trades.length);
+      this.ownership.leases.assert(owned.lease);
       owned.book = result.book;
       owned.seq = row.seq;
       this.books.commit(instrument, result.book, row.seq);
@@ -148,6 +210,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       'SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE',
       [row.instrument],
     );
+    this.ownership.leases.assert(owned.lease);
+    assertEpoch(state.owner_epoch, owned.epoch);
     if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });
@@ -248,7 +312,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       `UPDATE instrument_state
       SET last_applied_seq=$2,resting_count=$3,resting_quantity=$4,
           resting_bid_count=$6,resting_ask_count=$7,resting_bid_lots=$8,resting_ask_lots=$9
-      WHERE instrument=$1 AND last_applied_seq=$5 RETURNING instrument`,
+      WHERE instrument=$1 AND last_applied_seq=$5 AND owner_epoch=$10 RETURNING instrument`,
       [
         row.instrument,
         row.seq,
@@ -259,10 +323,14 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         totals.askCount,
         totals.bidLots,
         totals.askLots,
+        owned.epoch,
       ],
     );
-    if (updated[1] !== 1) throw new Error('Committed sequence changed');
+    if (updated[1] !== 1) throw new FencedOutError();
     await db.query("SELECT pg_notify('order_applied',$1)", [`${row.order_id}:${row.seq}`]);
+    await this.chaos.reach('after_writes_before_commit', row.seq, result.trades.length);
+    await this.chaos.reach('stall_before_commit', row.seq, result.trades.length);
+    this.ownership.leases.assert(owned.lease);
     return result;
   }
 
@@ -317,6 +385,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.stopped = true;
     clearTimeout(this.timer);
     this.notifications.commandListeners.delete(this.wake);
+    this.notifications.resumeListeners.delete(this.resume);
     await Promise.all(this.running.values());
   }
 }

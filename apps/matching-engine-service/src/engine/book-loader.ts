@@ -19,11 +19,13 @@ export function counters(book: Book) {
 
 @Injectable()
 export class BookLoader {
+  recoveryMismatches = 0;
   private readonly logger = new Logger(BookLoader.name);
 
   async load(
     db: EntityManager,
     instrument: string,
+    resume = false,
   ): Promise<{ book: Book; seq: string; halted: boolean; quarantined?: boolean }> {
     const [state] = await db.query(
       'SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE',
@@ -64,12 +66,19 @@ export class BookLoader {
       await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
         instrument,
       ]);
+      this.recoveryMismatches++;
       this.logger.error({ alert: 'engine_recovery_mismatch', instrument });
       state.status = 'halted';
+    } else if (resume) {
+      await db.query("UPDATE instrument_state SET status='active' WHERE instrument=$1", [
+        instrument,
+      ]);
+      state.status = 'active';
     }
-    await db.query('UPDATE instrument_state SET recovered_at=now() WHERE instrument=$1', [
-      instrument,
-    ]);
+    await db.query(
+      'UPDATE instrument_state SET recovered_at=clock_timestamp() WHERE instrument=$1',
+      [instrument],
+    );
     return { book, seq: state.last_applied_seq, halted: state.status === 'halted' };
   }
 }

@@ -32,6 +32,11 @@ export class OrderBookService {
     });
   }
 
+  forget(instrument: string): void {
+    this.books.delete(instrument);
+    this.quarantined.delete(instrument);
+  }
+
   quarantine(instrument: string): void {
     this.books.delete(instrument);
     this.quarantined.add(instrument);
