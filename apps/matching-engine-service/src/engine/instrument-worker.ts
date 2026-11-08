@@ -80,11 +80,22 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   private async load(instrument: string): Promise<void> {
     const lease = await this.ownership.leases.acquire(instrument);
     if (!lease) return;
+    await this.install(instrument, lease);
+  }
+
+  // Єдиний шлях запису результату recovery. Помилка не доводить, що COMMIT не застосувався,
+  // тому локальний стан відкидається, а наступний poll читає фактичний стан із БД.
+  private async install(
+    instrument: string,
+    lease: InstrumentLease,
+    resume = false,
+  ): Promise<OwnedBook> {
     try {
-      const owned = await this.ownership.recover(instrument, lease);
+      const owned = await this.ownership.recover(instrument, lease, resume);
       this.owned.set(instrument, owned);
       if (owned.quarantined) this.books.quarantine(instrument);
       else this.books.commit(instrument, owned.book, owned.seq);
+      return owned;
     } catch (error) {
       this.ownership.leases.drop(lease);
       throw error;
@@ -98,10 +109,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     const task = (async () => {
       await this.notifications.ackResume(request.id).catch(() => undefined);
       await previous;
-      const recovered = await this.ownership.recover(request.instrument, owned.lease, true);
-      this.owned.set(request.instrument, recovered);
-      if (recovered.quarantined) this.books.quarantine(request.instrument);
-      else this.books.commit(request.instrument, recovered.book, recovered.seq);
+      const recovered = await this.install(request.instrument, owned.lease, true);
       await this.notifications.answerResume(request.id, !recovered.halted);
     })()
       .catch((error: unknown) => {
