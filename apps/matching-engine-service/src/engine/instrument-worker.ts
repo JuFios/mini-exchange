@@ -63,7 +63,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     if (!this.config.getOrThrow<boolean>('ENGINE_WORKER_ENABLED')) return;
     this.notifications.resumeListeners.add(this.resume);
     this.notifications.commandListeners.add(this.wake);
-    await this.poll();
+    await this.poll(true);
   }
 
   // Одне завантаження на інструмент: poll і повтор після збою drain не змагаються за lease.
@@ -118,15 +118,17 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
 
   // Наступний poll планується до початку роботи: довгий drain або повільний recovery одного
   // інструмента не відкладає захоплення lease іншого, інакше failover перевищить заявлені 7–10 с.
-  private poll(): Promise<void> {
+  private poll(initial = false): Promise<void> {
     if (this.stopped) return Promise.resolve();
     this.timer = setTimeout(() => {
       void this.poll();
     }, this.config.getOrThrow('COMMAND_POLL_INTERVAL_MS'));
-    return this.sweep();
+    return this.sweep(initial);
   }
 
-  private async sweep(): Promise<void> {
+  // Старт чекає на перший drain; наступні poll його лише запускають, щоб не накопичувати
+  // очікувачів поки drain триває.
+  private async sweep(waitForDrain: boolean): Promise<void> {
     await Promise.all(
       this.catalog.list().map(async ({ symbol }) => {
         if (!this.owned.has(symbol) && !this.loading.has(symbol)) {
@@ -141,7 +143,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
             });
           }
         }
-        await this.kick(symbol);
+        const drain = this.kick(symbol);
+        if (waitForDrain) await drain;
       }),
     );
   }
