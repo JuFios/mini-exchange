@@ -21,6 +21,7 @@ x-engine: &engine
 
 services:
   exchange-db:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: exchange
@@ -35,6 +36,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     volumes: ['redis-data:/data']
@@ -72,6 +74,7 @@ services:
     ports: ['127.0.0.1:3102:3001']
 
   engine-lb:
+    restart: unless-stopped
     image: nginx:1.28.0-alpine
     volumes: ['./deploy/nginx/engine-lb.conf:/etc/nginx/conf.d/default.conf:ro']
     ports: ['127.0.0.1:3001:3001']
@@ -87,6 +90,7 @@ services:
       retries: 10
 
   settlement-service:
+    restart: unless-stopped
     build: ./apps/settlement-service
     env_file: ./apps/settlement-service/.env.example
     depends_on:
@@ -100,6 +104,7 @@ services:
       retries: 10
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./apps/frontend
       args:

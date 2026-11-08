@@ -8,9 +8,11 @@ x-test-engine: &test-engine
 
 services:
   exchange-db:
+    restart: 'no'
     ports: !reset []
     volumes: !override ['system-db-data:/var/lib/postgresql/data']
   redis:
+    restart: 'no'
     ports: !reset []
     volumes: !override ['system-redis-data:/data']
   matching-engine-1:
@@ -20,11 +22,13 @@ services:
     <<: *test-engine
     ports: !reset []
   engine-lb:
+    restart: 'no'
     ports: !reset []
   settlement-service:
     restart: 'no'
     ports: !reset []
   frontend:
+    restart: 'no'
     ports: !reset []
   system-tests:
     profiles: [test]
