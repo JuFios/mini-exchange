@@ -128,6 +128,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     if (this.stopped || !this.owned.has(instrument)) return;
     const running = this.running.get(instrument);
     if (running) return running;
+    // Lease цього drain: до завершення запису owned міг змінитися на нову епоху.
+    const lease = this.owned.get(instrument)?.lease;
     const task = this.drain(instrument)
       .catch(async (error: unknown) => {
         this.logger.error({
@@ -136,9 +138,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           error: error instanceof Error ? error.message : 'Unknown error',
         });
         if (error instanceof FencedOutError) {
-          this.ownership.fencedWrites++;
-          const owned = this.owned.get(instrument);
-          if (owned) this.ownership.leases.drop(owned.lease);
+          // Протермінований lease локально не є відхиленим записом: PG його не бачив.
+          if (lease?.active) this.ownership.fencedWrites++;
+          if (lease) this.ownership.leases.drop(lease);
           this.logger.warn(`fenced out instrument=${instrument}`);
           return;
         }
