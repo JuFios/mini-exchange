@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,13 +17,14 @@ import { ListOrdersQueryDto } from './dto/list-orders-query.dto';
 import { InstrumentCatalog } from './instrument-catalog';
 import { ConcurrencyLimit } from '../database/concurrency-limit';
 
-// З 10 з'єднань пулу 3 мають читання книги, 5 — заявки, решта гарантовано лишається worker.
+// Разом із межею читання книги лишає worker вільні з'єднання з 10 під потоком заявок.
 const MAX_CONCURRENT_ORDERS = 5;
 const MAX_WAITING_ORDERS = 500;
 const MAX_ORDER_WAIT_MS = 5000;
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
   private readonly limit = new ConcurrencyLimit(
     MAX_CONCURRENT_ORDERS,
     MAX_WAITING_ORDERS,
@@ -37,6 +40,21 @@ export class OrdersService {
     private readonly catalog: InstrumentCatalog,
   ) {}
 
+  // Команда вже в журналі. Відмова тут збрехала б клієнту, а повтор без ключа створив би дубль.
+  private async afterAcceptance<T, P>(
+    orderId: string,
+    read: () => Promise<T>,
+    pending: () => P,
+  ): Promise<T | P> {
+    try {
+      return await read();
+    } catch (error) {
+      if (error instanceof HttpException && error.getStatus() < 500) throw error;
+      this.logger.warn({ alert: 'order_read_after_accept_failed', orderId });
+      return pending();
+    }
+  }
+
   async submitOrder(dto: SubmitOrderDto, ownerId: string, key?: string, traceparent?: string) {
     // NOTIFY міг прийти до встановлення waiter: applied_at закриває це вікно.
     const accepted = await this.limit.run(() => this.intake.submit(dto, ownerId, key, traceparent));
@@ -46,30 +64,53 @@ export class OrdersService {
       this.config.getOrThrow('ORDER_SYNC_WAIT_MS'),
     );
     try {
-      if (!accepted.replay) {
-        const [command] = await this.limit.run(() =>
-          this.source.query(
-            "SELECT applied_at FROM order_commands WHERE order_id=$1 AND type='submit'",
-            [accepted.orderId],
-          ),
-        );
-        if (!command.applied_at) await wait.ready;
-      }
-      const body = await this.limit.run(() =>
-        this.source.transaction('REPEATABLE READ', async (db) => {
-          await db.query('SET TRANSACTION READ ONLY');
-          const order = await db.getRepository(Order).findOneBy({ id: accepted.orderId, ownerId });
-          if (!order) throw new NotFoundException('Заявку не знайдено');
-          const trades = await db.query(
-            `SELECT trade_id AS "tradeId",instrument,seq,price,quantity,
+      return await this.afterAcceptance(
+        accepted.orderId,
+        async () => {
+          if (!accepted.replay) {
+            const [command] = await this.limit.run(() =>
+              this.source.query(
+                "SELECT applied_at FROM order_commands WHERE order_id=$1 AND type='submit'",
+                [accepted.orderId],
+              ),
+            );
+            if (!command.applied_at) await wait.ready;
+          }
+          const body = await this.limit.run(() =>
+            this.source.transaction('REPEATABLE READ', async (db) => {
+              await db.query('SET TRANSACTION READ ONLY');
+              const order = await db
+                .getRepository(Order)
+                .findOneBy({ id: accepted.orderId, ownerId });
+              if (!order) throw new NotFoundException('Заявку не знайдено');
+              const trades = await db.query(
+                `SELECT trade_id AS "tradeId",instrument,seq,price,quantity,
           buyer_order_id AS "buyOrderId",seller_order_id AS "sellOrderId",taker_side AS "takerSide",executed_at AS "executedAt"
           FROM trades WHERE buyer_order_id=$1 OR seller_order_id=$1 ORDER BY seq,fill_index`,
-            [order.id],
+                [order.id],
+              );
+              return { order, trades };
+            }),
           );
-          return { order, trades };
+          return {
+            status: accepted.replay ? 200 : body.order.status === 'pending' ? 202 : 201,
+            body,
+          };
+        },
+        () => ({
+          status: 202,
+          body: {
+            order: {
+              id: accepted.orderId,
+              ownerId,
+              instrument: dto.instrument,
+              side: dto.side,
+              status: 'pending' as const,
+            },
+            trades: [],
+          },
         }),
       );
-      return { status: accepted.replay ? 200 : body.order.status === 'pending' ? 202 : 201, body };
     } finally {
       wait.cancel();
     }
@@ -93,30 +134,36 @@ export class OrdersService {
       accepted.seq,
       this.config.getOrThrow('ORDER_SYNC_WAIT_MS'),
     );
+    const pending = { status: 202, body: { orderId: order.id, cancelSeq: accepted.seq } };
     try {
-      const read = async () => {
-        const [command] = await this.limit.run(() =>
-          this.source.query(
-            "SELECT applied_at,result FROM order_commands WHERE order_id=$1 AND type='cancel'",
-            [order.id],
-          ),
-        );
-        return command;
-      };
-      let command = await read();
-      if (!command.applied_at) {
-        await wait.ready;
-        command = await read();
-      }
-      if (!command.applied_at)
-        return { status: 202, body: { orderId: order.id, cancelSeq: accepted.seq } };
-      const final = await this.limit.run(() => this.getOwn(order.id, userId));
-      if (
-        command.result.status === 'already_filled' ||
-        command.result.status === 'already_cancelled'
-      )
-        this.terminal(final);
-      return { status: 200, body: { order: final } };
+      return await this.afterAcceptance(
+        order.id,
+        async () => {
+          const read = async () => {
+            const [command] = await this.limit.run(() =>
+              this.source.query(
+                "SELECT applied_at,result FROM order_commands WHERE order_id=$1 AND type='cancel'",
+                [order.id],
+              ),
+            );
+            return command;
+          };
+          let command = await read();
+          if (!command.applied_at) {
+            await wait.ready;
+            command = await read();
+          }
+          if (!command.applied_at) return pending;
+          const final = await this.limit.run(() => this.getOwn(order.id, userId));
+          if (
+            command.result.status === 'already_filled' ||
+            command.result.status === 'already_cancelled'
+          )
+            this.terminal(final);
+          return { status: 200, body: { order: final } };
+        },
+        () => pending,
+      );
     } finally {
       wait.cancel();
     }
