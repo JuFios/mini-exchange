@@ -63,3 +63,40 @@ it('releases the slot when a read fails', async () => {
   const book = new CommittedBook(failing);
   for (let i = 0; i < 10; i++) await expect(book.read('ABC')).rejects.toThrow('unavailable');
 });
+
+it('refuses a public read of an instrument whose legacy state is unverified', async () => {
+  const source = {
+    transaction: async (_level: string, run: (db: unknown) => Promise<unknown>) =>
+      run({
+        query: async (sql: string) =>
+          sql.includes('FROM instrument_state')
+            ? [{ last_applied_seq: '7', legacy_verified: false }]
+            : [],
+      }),
+  } as unknown as DataSource;
+  await expect(new CommittedBook(source).read('ABC')).rejects.toMatchObject({
+    status: 503,
+    response: { code: 'INSTRUMENT_HALTED' },
+  });
+});
+
+it('stops waiting for a slot after the queue deadline and leaves the queue', async () => {
+  jest.useFakeTimers();
+  try {
+    const stuck = {
+      transaction: () => new Promise<never>(() => undefined),
+    } as unknown as DataSource;
+    const book = new CommittedBook(stuck);
+    for (let i = 0; i < 3; i++) void book.read('ABC');
+    const queued = book.read('ABC');
+    const outcome = expect(queued).rejects.toMatchObject({
+      status: 503,
+      response: { code: 'BOOK_BUSY' },
+    });
+    await jest.advanceTimersByTimeAsync(2500);
+    await outcome;
+    expect(book['waiting']).toHaveLength(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
