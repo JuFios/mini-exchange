@@ -4,7 +4,6 @@ import {
   container,
   database,
   docker,
-  request,
   submit,
   token,
   until,
@@ -84,15 +83,8 @@ async function main() {
     );
     const takeoverMs = Math.round(performance.now() - started);
     assert.equal(`matching-${current.owner_instance}`, standby);
-    // Запит напряму до резерву: балансувальник ще може обрати відрізану репліку.
-    const response = await request(
-      '/orders',
-      'POST',
-      user,
-      { ...body, side: 'buy' },
-      `http://${standby}:3001`,
-      { 'Idempotency-Key': randomUUID() },
-    );
+    // Через балансувальник: відрізана репліка має дати повторюваний 503, а не 500.
+    const response = await submit(user, { ...body, side: 'buy' });
     assert([200, 201, 202].includes(response.status), await response.text());
     await until(read, (r) => r.last_applied_seq === r.next_seq);
     console.log(
