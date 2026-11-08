@@ -7,8 +7,11 @@ export class DatabaseExceptionFilter extends BaseExceptionFilter {
   override catch(error: unknown, host: ArgumentsHost): void {
     const failure = error as { code?: string; driverError?: { code?: string } };
     const code = failure?.driverError?.code ?? failure?.code ?? '';
+    const message = error instanceof Error ? error.message : '';
     if (
       /^08/.test(code) ||
+      // Пул і клієнт pg повідомляють про ці збої без коду.
+      /^Connection terminated|^timeout exceeded when trying to connect/.test(message) ||
       [
         'ECONNREFUSED',
         'ECONNRESET',
