@@ -14,7 +14,7 @@ export class CommittedBook {
       if (!state.legacy_verified)
         throw new ServiceUnavailableException({ code: 'INSTRUMENT_HALTED' });
       const levels = await db.query(
-        `SELECT side,price,sum(remaining_quantity)::numeric(18,8)::text AS quantity,count(*)::int AS orders
+        `SELECT side,price,sum(remaining_quantity)::text AS quantity,count(*)::int AS orders
         FROM orders WHERE instrument=$1 AND status IN ('open','partially_filled') GROUP BY side,price`,
         [instrument],
       );
