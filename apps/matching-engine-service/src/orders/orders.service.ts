@@ -13,9 +13,22 @@ import { Order } from './entities/order.entity';
 import { SubmitOrderDto } from './dto/submit-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders-query.dto';
 import { InstrumentCatalog } from './instrument-catalog';
+import { ConcurrencyLimit } from '../database/concurrency-limit';
+
+// З 10 з'єднань пулу 3 мають читання книги, 5 — заявки, решта гарантовано лишається worker.
+const MAX_CONCURRENT_ORDERS = 5;
+const MAX_WAITING_ORDERS = 500;
+const MAX_ORDER_WAIT_MS = 5000;
 
 @Injectable()
 export class OrdersService {
+  private readonly limit = new ConcurrencyLimit(
+    MAX_CONCURRENT_ORDERS,
+    MAX_WAITING_ORDERS,
+    MAX_ORDER_WAIT_MS,
+    'ORDERS_BUSY',
+  );
+
   constructor(
     private readonly source: DataSource,
     private readonly intake: IntakeService,
@@ -26,7 +39,7 @@ export class OrdersService {
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string, key?: string, traceparent?: string) {
     // NOTIFY міг прийти до встановлення waiter: applied_at закриває це вікно.
-    const accepted = await this.intake.submit(dto, ownerId, key, traceparent);
+    const accepted = await this.limit.run(() => this.intake.submit(dto, ownerId, key, traceparent));
     const wait = this.notifications.wait(
       accepted.orderId,
       accepted.seq,
@@ -34,24 +47,28 @@ export class OrdersService {
     );
     try {
       if (!accepted.replay) {
-        const [command] = await this.source.query(
-          "SELECT applied_at FROM order_commands WHERE order_id=$1 AND type='submit'",
-          [accepted.orderId],
+        const [command] = await this.limit.run(() =>
+          this.source.query(
+            "SELECT applied_at FROM order_commands WHERE order_id=$1 AND type='submit'",
+            [accepted.orderId],
+          ),
         );
         if (!command.applied_at) await wait.ready;
       }
-      const body = await this.source.transaction('REPEATABLE READ', async (db) => {
-        await db.query('SET TRANSACTION READ ONLY');
-        const order = await db.getRepository(Order).findOneBy({ id: accepted.orderId, ownerId });
-        if (!order) throw new NotFoundException('Заявку не знайдено');
-        const trades = await db.query(
-          `SELECT trade_id AS "tradeId",instrument,seq,price,quantity,
+      const body = await this.limit.run(() =>
+        this.source.transaction('REPEATABLE READ', async (db) => {
+          await db.query('SET TRANSACTION READ ONLY');
+          const order = await db.getRepository(Order).findOneBy({ id: accepted.orderId, ownerId });
+          if (!order) throw new NotFoundException('Заявку не знайдено');
+          const trades = await db.query(
+            `SELECT trade_id AS "tradeId",instrument,seq,price,quantity,
           buyer_order_id AS "buyOrderId",seller_order_id AS "sellOrderId",taker_side AS "takerSide",executed_at AS "executedAt"
           FROM trades WHERE buyer_order_id=$1 OR seller_order_id=$1 ORDER BY seq,fill_index`,
-          [order.id],
-        );
-        return { order, trades };
-      });
+            [order.id],
+          );
+          return { order, trades };
+        }),
+      );
       return { status: accepted.replay ? 200 : body.order.status === 'pending' ? 202 : 201, body };
     } finally {
       wait.cancel();
@@ -64,13 +81,13 @@ export class OrdersService {
     instrumentHint?: string,
     traceparent?: string,
   ) {
-    const order = await this.getOwn(orderId, userId);
+    const order = await this.limit.run(() => this.getOwn(orderId, userId));
     if (instrumentHint !== undefined && instrumentHint !== order.instrument) {
       throw new BadRequestException('Інструмент не збігається з інструментом заявки');
     }
-    await this.intake.assertActive(this.source.manager, order.instrument);
+    await this.limit.run(() => this.intake.assertActive(this.source.manager, order.instrument));
     if (order.status === 'filled' || order.status === 'cancelled') this.terminal(order);
-    const accepted = await this.intake.cancel(order, traceparent);
+    const accepted = await this.limit.run(() => this.intake.cancel(order, traceparent));
     const wait = this.notifications.wait(
       order.id,
       accepted.seq,
@@ -78,9 +95,11 @@ export class OrdersService {
     );
     try {
       const read = async () => {
-        const [command] = await this.source.query(
-          "SELECT applied_at,result FROM order_commands WHERE order_id=$1 AND type='cancel'",
-          [order.id],
+        const [command] = await this.limit.run(() =>
+          this.source.query(
+            "SELECT applied_at,result FROM order_commands WHERE order_id=$1 AND type='cancel'",
+            [order.id],
+          ),
         );
         return command;
       };
@@ -91,7 +110,7 @@ export class OrdersService {
       }
       if (!command.applied_at)
         return { status: 202, body: { orderId: order.id, cancelSeq: accepted.seq } };
-      const final = await this.getOwn(order.id, userId);
+      const final = await this.limit.run(() => this.getOwn(order.id, userId));
       if (
         command.result.status === 'already_filled' ||
         command.result.status === 'already_cancelled'
