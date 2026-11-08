@@ -1,5 +1,6 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { ConcurrencyLimit } from '../database/concurrency-limit';
 
 // Публічні читання ділять пул PG із worker. Ліміт залишає worker вільні з’єднання.
 const MAX_CONCURRENT_READS = 3;
@@ -14,44 +15,14 @@ interface Level {
 }
 
 @Injectable()
-export class CommittedBook {
-  private active = 0;
-  private readonly waiting: (() => void)[] = [];
-
-  constructor(private readonly source: DataSource) {}
-
-  private async acquireSlot(): Promise<void> {
-    if (this.active < MAX_CONCURRENT_READS) {
-      this.active++;
-      return;
-    }
-    if (this.waiting.length >= MAX_WAITING_READS)
-      throw new ServiceUnavailableException({ code: 'BOOK_BUSY' });
-    // Слот передається напряму, тож `active` не змінюється між release і resume.
-    await new Promise<void>((resolve, reject) => {
-      const entry = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        const index = this.waiting.indexOf(entry);
-        if (index >= 0) this.waiting.splice(index, 1);
-        reject(new ServiceUnavailableException({ code: 'BOOK_BUSY' }));
-      }, MAX_QUEUE_WAIT_MS);
-      this.waiting.push(entry);
-    });
+export class CommittedBook extends ConcurrencyLimit {
+  constructor(private readonly source: DataSource) {
+    super(MAX_CONCURRENT_READS, MAX_WAITING_READS, MAX_QUEUE_WAIT_MS, 'BOOK_BUSY');
   }
 
-  private releaseSlot(): void {
-    const next = this.waiting.shift();
-    if (next) next();
-    else this.active--;
-  }
-
-  async read(instrument: string, limit = 50) {
-    await this.acquireSlot();
-    try {
-      return await this.source.transaction('REPEATABLE READ', async (db) => {
+  read(instrument: string, limit = 50) {
+    return this.run(() =>
+      this.source.transaction('REPEATABLE READ', async (db) => {
         await db.query('SET TRANSACTION READ ONLY');
         const [state] = await db.query(
           'SELECT last_applied_seq,legacy_verified FROM instrument_state WHERE instrument=$1',
@@ -76,9 +47,7 @@ export class CommittedBook {
           bids: bids.map(pick),
           asks: asks.map(pick),
         };
-      });
-    } finally {
-      this.releaseSlot();
-    }
+      }),
+    );
   }
 }
