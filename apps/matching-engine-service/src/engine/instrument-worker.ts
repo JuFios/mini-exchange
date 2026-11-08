@@ -21,7 +21,8 @@ import { PgNotifications } from './pg-notifications';
 // Решту backlog забере наступний poll або NOTIFY.
 const DRAIN_BUDGET_MS = 1000;
 // Renew у Redis не залежить від PostgreSQL: запит у мертву мережу тримав би lease без роботи.
-// Межа більша за легальні очікування операції: черга пулу 10 с, lock 3 с, statement 10 с.
+// Рахується час без прогресу, а не вся операція: великий sweep легально триває довше.
+// Межа більша за очікування одного кроку: черга пулу 10 с, lock 3 с, statement 10 с.
 const WORKER_STALL_MS = 30000;
 // Довше за інтервал acquire: резерв встигає забрати lease раніше за відрізаного власника.
 const STALL_BACK_OFF_MS = 5000;
@@ -41,6 +42,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   private readonly running = new Map<string, Promise<void>>();
   private readonly loading = new Map<string, Promise<void>>();
   private readonly gaps = new Map<string, number>();
+  private readonly progress = new WeakMap<InstrumentLease, number>();
   private timer?: NodeJS.Timeout;
   private stopped = false;
   private readonly wake = (instrument: string) => {
@@ -118,15 +120,32 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     work: Promise<T>,
   ): Promise<T> {
     if (!lease) return work;
+    this.beat(lease);
     let timer: NodeJS.Timeout;
     const stalled = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
+      const check = () => {
+        const idle = performance.now() - this.progress.get(lease)!;
+        if (idle < WORKER_STALL_MS) {
+          timer = setTimeout(check, WORKER_STALL_MS - idle);
+          return;
+        }
         this.logger.error({ alert: 'engine_worker_stalled', instrument });
         this.ownership.leases.drop(lease, STALL_BACK_OFF_MS);
         reject(new FencedOutError());
-      }, WORKER_STALL_MS);
+      };
+      timer = setTimeout(check, WORKER_STALL_MS);
     });
     return Promise.race([work, stalled]).finally(() => clearTimeout(timer));
+  }
+
+  private beat(lease: InstrumentLease): void {
+    this.progress.set(lease, performance.now());
+  }
+
+  // Великий sweep триває довго: застарілий власник має швидко відпустити блокування рядка.
+  private step(lease: InstrumentLease): void {
+    this.ownership.leases.assert(lease);
+    this.beat(lease);
   }
 
   private readonly resume = (request: { instrument: string; id: string }) => {
@@ -230,7 +249,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     ) {
       const owned = this.owned.get(instrument);
       if (!owned || owned.lease !== lease) return;
-      this.ownership.leases.assert(owned.lease);
+      this.step(owned.lease);
       if (owned.halted) return;
       const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(
         `SELECT c.*,i.next_seq FROM instruments i
@@ -320,6 +339,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       });
     }
     for (const change of result.orderChanges) {
+      this.step(owned.lease);
       const previous =
         change.id === target.id
           ? target
@@ -338,6 +358,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       if (updated.affected !== 1) throw new Error('Order version changed');
     }
     for (const [index, fill] of result.trades.entries()) {
+      this.step(owned.lease);
       const buy = await db.getRepository(Order).findOneByOrFail({ id: fill.buyOrderId });
       const sell = await db.getRepository(Order).findOneByOrFail({ id: fill.sellOrderId });
       await db.query(
