@@ -13,7 +13,7 @@ import { bookOrder, CommandRow } from './command';
 import { CommandApplier, toRejectedInternal, WorkerResult } from './command-applier';
 import { OwnershipCoordinator } from '../ownership/ownership-coordinator';
 import { InstrumentLease } from '../ownership/lease-manager';
-import { FencedOutError, assertEpoch, lockEpoch } from '../ownership/fencing';
+import { FencedOutError, lockEpoch } from '../ownership/fencing';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { PgNotifications } from './pg-notifications';
 
@@ -80,6 +80,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     if (!owned || !this.ownership.leases.valid(owned.lease)) return;
     const previous = this.running.get(request.instrument);
     const task = (async () => {
+      await this.notifications.ackResume(request.id).catch(() => undefined);
       await previous;
       const recovered = await this.ownership.recover(request.instrument, owned.lease, true);
       this.owned.set(request.instrument, recovered);
@@ -105,8 +106,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         if (!this.owned.has(symbol)) {
           try {
             await this.reload(symbol);
-          } catch {
-            /* Наступний poll повторить acquire. */
+          } catch (error) {
+            // Наступний poll повторить acquire; причину видно в журналі.
+            this.logger.warn({
+              alert: 'engine_reload_failed',
+              instrument: symbol,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
           }
         }
         await this.kick(symbol);
@@ -205,13 +211,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     owned: OwnedBook,
     row: CommandRow,
   ): Promise<WorkerResult | undefined> {
-    await db.query("SET LOCAL lock_timeout='3s'");
-    const [state] = await db.query(
-      'SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE',
-      [row.instrument],
-    );
+    const state = await lockEpoch(db, row.instrument, owned.epoch);
     this.ownership.leases.assert(owned.lease);
-    assertEpoch(state.owner_epoch, owned.epoch);
     if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });

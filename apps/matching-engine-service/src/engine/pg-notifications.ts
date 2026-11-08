@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
 import { randomUUID } from 'node:crypto';
 
+// Recovery тримає lock_timeout 3 с і журнал до 10 с; nginx читає відповідь до 15 с.
+const RESUME_ACK_WAIT_MS = 3000;
+const RESUME_RESULT_WAIT_MS = 12000;
+
 interface Waiter {
   seq: string;
   finish: () => void;
@@ -20,6 +24,7 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
   private readonly waiters = new Map<string, Set<Waiter>>();
   readonly resumeListeners = new Set<(request: { instrument: string; id: string }) => void>();
   private readonly resumeWaiters = new Map<string, (ok: boolean) => void>();
+  private readonly resumeAcks = new Map<string, () => void>();
   readonly commandListeners = new Set<(instrument: string) => void>();
 
   constructor(private readonly config: ConfigService) {}
@@ -61,6 +66,7 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
           const request = JSON.parse(payload);
           if (channel === 'engine_resume')
             for (const listener of this.resumeListeners) listener(request);
+          else if (request.ack) this.resumeAcks.get(request.id)?.();
           else this.resumeWaiters.get(request.id)?.(request.ok);
         } catch {
           /* Некоректне сповіщення не впливає на worker. */
@@ -124,14 +130,20 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     return task;
   }
 
+  // Власник підтверджує отримання одразу: відсутній власник дає 503 за RESUME_ACK_WAIT_MS,
+  // а довге recovery не обривається через той самий короткий таймаут.
   async requestResume(instrument: string): Promise<boolean | undefined> {
     const id = randomUUID();
     let finish!: (ok: boolean | undefined) => void;
     const result = new Promise<boolean | undefined>((resolve) => {
       finish = resolve;
     });
-    const timer = setTimeout(() => finish(undefined), 3000);
+    let timer = setTimeout(() => finish(undefined), RESUME_ACK_WAIT_MS);
     this.resumeWaiters.set(id, finish);
+    this.resumeAcks.set(id, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(undefined), RESUME_RESULT_WAIT_MS);
+    });
     try {
       await this.publish('engine_resume', { instrument, id });
       return await result;
@@ -140,7 +152,12 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     } finally {
       clearTimeout(timer);
       this.resumeWaiters.delete(id);
+      this.resumeAcks.delete(id);
     }
+  }
+
+  async ackResume(id: string): Promise<void> {
+    await this.publish('engine_resume_result', { id, ack: true });
   }
 
   async answerResume(id: string, ok: boolean): Promise<void> {

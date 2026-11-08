@@ -53,6 +53,8 @@ export class BookLoader {
     };
     let journalValid = true;
     if (resume) {
+      // Журнал росте без межі, тож цей запит отримує більший ліміт, ніж решта сесії.
+      await db.query("SET LOCAL statement_timeout='10s'");
       // Один MVCC snapshot узгоджує лічильник intake з журналом без зворотного порядку блокувань.
       const [journal] = await db.query(
         `SELECT i.next_seq >= $2::bigint

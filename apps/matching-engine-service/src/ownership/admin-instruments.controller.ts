@@ -40,7 +40,10 @@ export class AdminInstrumentsController {
     return Promise.all(
       rows.map(async (row: { instrument: string }) => ({
         ...row,
-        leaseTtlMs: await this.leases.locks.client.pttl(`lease:instrument:{${row.instrument}}`),
+        // Збій Redis не повинен ховати дані з PostgreSQL.
+        leaseTtlMs: await this.leases.locks.client
+          .pttl(`lease:instrument:{${row.instrument}}`)
+          .catch(() => null),
       })),
     );
   }

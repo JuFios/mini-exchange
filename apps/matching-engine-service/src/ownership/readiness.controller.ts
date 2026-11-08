@@ -13,12 +13,26 @@ export class ReadinessController {
     private readonly ownership: OwnershipCoordinator,
   ) {}
 
+  // showMigrations() створює таблицю міграцій і не звільняє з’єднання після помилки.
+  private async hasPendingMigrations(): Promise<boolean> {
+    const table = this.source.options.migrationsTableName ?? 'migrations';
+    const [{ exists }] = await this.source.query('SELECT to_regclass($1) IS NOT NULL AS exists', [
+      `"${table}"`,
+    ]);
+    if (!exists) return true;
+    const rows: { name: string }[] = await this.source.query(`SELECT name FROM "${table}"`);
+    const applied = new Set(rows.map(({ name }) => name));
+    return this.source.migrations.some(
+      (migration) => !applied.has(migration.name ?? migration.constructor.name),
+    );
+  }
+
   @Get('ready') async ready() {
     try {
       const [ping, policy, pending] = await Promise.all([
         this.leases.locks.client.ping(),
         this.leases.locks.client.config('GET', 'maxmemory-policy'),
-        this.source.showMigrations(),
+        this.hasPendingMigrations(),
       ]);
       if (ping !== 'PONG' || !Array.isArray(policy) || policy[1] !== 'noeviction' || pending)
         throw new Error();

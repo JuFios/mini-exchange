@@ -54,3 +54,27 @@ it.each(['after_writes_before_commit', 'after_commit_before_memory'])(
     }
   },
 );
+
+it('stalls once at stall_before_commit without killing the process', async () => {
+  const values: Record<string, unknown> = {
+    CHAOS_ENABLED: true,
+    CHAOS_STALL_BEFORE_COMMIT_MS: 30,
+  };
+  const hooks = new ChaosHooks({ getOrThrow: (key: string) => values[key] } as ConfigService);
+  const kill = jest.spyOn(process, 'kill').mockReturnValue(true);
+  try {
+    hooks.arm({ point: 'stall_before_commit', fromSeq: 2 });
+    const early = performance.now();
+    await hooks.reach('stall_before_commit', '1', 0);
+    expect(performance.now() - early).toBeLessThan(25);
+    const started = performance.now();
+    await hooks.reach('stall_before_commit', '2', 0);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(25);
+    const again = performance.now();
+    await hooks.reach('stall_before_commit', '3', 0);
+    expect(performance.now() - again).toBeLessThan(25);
+    expect(kill).not.toHaveBeenCalled();
+  } finally {
+    kill.mockRestore();
+  }
+});
