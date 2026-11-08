@@ -1,0 +1,52 @@
+x-test-engine: &test-engine
+  restart: 'no'
+  ports: !reset []
+  environment:
+    CHAOS_ENABLED: 'true'
+    ADMIN_EMAILS: admin@system.test
+    ADMIN_PASSWORD: system-test-password-only
+
+services:
+  exchange-db:
+    restart: 'no'
+    ports: !reset []
+    volumes: !override ['system-db-data:/var/lib/postgresql/data']
+  redis:
+    restart: 'no'
+    ports: !reset []
+    volumes: !override ['system-redis-data:/data']
+  matching-engine-1:
+    <<: *test-engine
+    ports: !reset []
+  matching-engine-2:
+    <<: *test-engine
+    ports: !reset []
+  engine-lb:
+    restart: 'no'
+    ports: !reset []
+  settlement-service:
+    restart: 'no'
+    ports: !reset []
+  frontend:
+    restart: 'no'
+    ports: !reset []
+  system-tests:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: tests/system/Dockerfile
+    volumes: ['/var/run/docker.sock:/var/run/docker.sock']
+    environment:
+      DATABASE_HOST: exchange-db
+      DATABASE_PORT: '5432'
+      DATABASE_USER: exchange
+      DATABASE_PASSWORD: exchange
+      DATABASE_NAME: exchange
+      ENGINE_URL: http://engine-lb:3001
+      ADMIN_EMAIL: admin@system.test
+      ADMIN_PASSWORD: system-test-password-only
+
+# Ці томи відокремлені від локальних навіть без зміни імені проєкту.
+volumes: !override
+  system-db-data:
+  system-redis-data:

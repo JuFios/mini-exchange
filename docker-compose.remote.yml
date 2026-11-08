@@ -1,13 +1,16 @@
-# Віддалений запуск вимагає власних секретів, бо демо-значення є публічними.
-services:
-  matching-engine-service:
-    ports: !override ['3001:3001']
-    environment:
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set a unique JWT_REFRESH_SECRET}
-      ADMIN_EMAILS: ${ADMIN_EMAILS:?Set ADMIN_EMAILS for the remote deployment}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique ADMIN_PASSWORD}
+# Віддалений запуск вимагає власних секретів на кожній репліці.
+x-remote-engine: &remote-engine
+  environment:
+    JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
+    JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set a unique JWT_REFRESH_SECRET}
+    ADMIN_EMAILS: ${ADMIN_EMAILS:?Set ADMIN_EMAILS for the remote deployment}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique ADMIN_PASSWORD}
 
+services:
+  matching-engine-1: *remote-engine
+  matching-engine-2: *remote-engine
+  engine-lb:
+    ports: !override ['3001:3001']
   frontend:
     ports: !override ['3000:3000']
     build:

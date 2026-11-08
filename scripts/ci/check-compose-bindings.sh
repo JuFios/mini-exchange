@@ -15,8 +15,9 @@ export NEXT_PUBLIC_WS_URL=wss://exchange.example.test
 
 docker compose config --format json | jq -e '
   .services as $s |
-  ($s["matching-engine-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
-  ($s.frontend.ports | length == 1 and .[0].host_ip == "127.0.0.1")'
+  (["matching-engine-1","matching-engine-2","engine-lb"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
+  ($s.frontend.ports | length == 1 and .[0].host_ip == "127.0.0.1") and
+  (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
   docker compose -f docker-compose.yml -f docker-compose.remote.yml "$@"
 }
@@ -44,9 +45,22 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
   jq -e --arg access "$CI_ACCESS_SECRET" --arg refresh "$CI_REFRESH_SECRET" \
     --arg admin "$ADMIN_EMAILS" --arg password "$ADMIN_PASSWORD" '
     .services as $s |
-    ($s["matching-engine-service"].environment |
+    (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].environment |
       .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh and
-      .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password) and
+      .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password)) and
     ($s["engine-migrate"].ports // [] | length == 0) and
-    ($s["matching-engine-service"].ports | length == 1 and .[0].host_ip == null) and
+    ($s["engine-lb"].ports | length == 1 and .[0].host_ip == null) and
+    (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
     ($s.frontend.ports | length == 1 and .[0].host_ip == null)'
+
+# Test-overlay не публікує портів і не використовує локальні томи.
+docker compose -f docker-compose.yml -f docker-compose.test.yml config --format json | jq -e '
+  .services as $s |
+  (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] |
+    all(. as $name | ($s[$name].ports // []) | length == 0)) and
+  (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] |
+    all(. as $name | $s[$name].restart == "no")) and
+  (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].init == true)) and
+  ($s.frontend.environment.MATCHING_ENGINE_URL == "http://engine-lb:8080") and
+  ($s["matching-engine-1"].environment.LEASE_TTL_MS == "5000") and
+  (.volumes | keys == ["system-db-data","system-redis-data"])'

@@ -50,3 +50,29 @@ it('caches aggregate levels after a commit and protects them from callers', () =
   expect(service.depth('ABC').asks[0].quantity).toBe('2.00000000');
   expect(service.sequence('ABC')).toBe('7');
 });
+
+it('does not rebuild aggregate levels on commit and builds them once on first read', () => {
+  const service = new OrderBookService();
+  let reads = 0;
+  const order = {
+    id: 'id',
+    ownerId: 'u',
+    side: 'sell' as const,
+    price: 10000n,
+    quantity: 100000000n,
+    remaining: 100000000n,
+    prioritySeq: 1n,
+  };
+  const book = {
+    bids: [],
+    get asks() {
+      reads++;
+      return [order];
+    },
+  };
+  service.commit('ABC', book, '1');
+  expect(reads).toBe(0);
+  service.depth('ABC');
+  service.depth('ABC');
+  expect(reads).toBe(1);
+});

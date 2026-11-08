@@ -15,12 +15,19 @@ import {
 import { InitialSchema1793980800000 } from './migrations/1793980800000-initial-schema';
 import { Instruments1793980800001 } from './migrations/1793980800001-instruments';
 import type { DatabaseEnv } from './config/env.validation';
+import { PG_KEEPALIVE, PG_SESSION_OPTIONS } from './database/session-options';
 
 export function engineDataSourceOptions(
   env: DatabaseEnv,
 ): Extract<DataSourceOptions, { type: 'postgres' }> {
   return {
     type: 'postgres',
+    extra: {
+      options: PG_SESSION_OPTIONS,
+      ...PG_KEEPALIVE,
+      // Черга за з’єднанням під сплеском не повинна давати 500 за 3 с; недоступну БД виявляє /ready.
+      connectionTimeoutMillis: 10000,
+    },
     host: env.DATABASE_HOST,
     port: env.DATABASE_PORT,
     username: env.DATABASE_USER,

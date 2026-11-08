@@ -8,15 +8,14 @@
 
 - `apps/matching-engine-service` — автентифікація, подача/скасування заявок,
   зіставлення за price-time priority, self-trade prevention, трансляція
-  order book через WebSocket.
+  committed знімка order book через WebSocket.
+- Дві репліки engine: Redis lease з TTL і renewal, PG fencing, recovery та admin resume.
 - `apps/frontend` — форма подачі заявки і сторінка order book з live-оновленням.
 
 ## Що ще НЕ реалізовано / потребує уваги
 
 - `apps/settlement-service` — лише каркас, розрахунок угод не реалізовано
   (`NotImplementedException`).
-- Розподілена координація "один власник order book на інструмент" —
-  `RedisLockService` існує, але ще ніде не підключений.
 - Публікація угод у чергу подій: угоди вже зберігаються в PostgreSQL, але relay
   штатних подій ще не підключений.
 - Обробка розриву WebSocket-з'єднання на фронтенді (resync за номером
@@ -59,7 +58,7 @@ Compose запускає `engine-migrate` після готовності Postgr
 можна скинути томи через `docker compose down -v` і запустити стек знову.
 Ця команда видалить також локальний том Redis.
 
-- matching-engine-service: http://localhost:3001
+- engine-lb: http://localhost:3001; репліки для діагностики: `127.0.0.1:3101` і `127.0.0.1:3102`
 - settlement-service: http://localhost:3002
 - frontend: http://localhost:3000
 - PostgreSQL: `127.0.0.1:5433`
@@ -67,7 +66,9 @@ Compose запускає `engine-migrate` після готовності Postgr
   `docker compose exec -T redis redis-cli PING`.
 
 Обидва backend-сервіси повертають HTTP 200 та `{"status":"ok"}` на `GET /health`.
-Це перевірка доступності HTTP-процесу. PostgreSQL і Redis мають власні healthcheck.
+Це перевірка доступності HTTP-процесу. PostgreSQL і Redis мають власні healthcheck. Engine також має `/ready`: PG, застосовані
+міграції, Redis і `maxmemory-policy=noeviction`. Standby може бути ready без власного lease.
+Перевірка міграцій читає лише таблицю `migrations` і нічого не створює.
 Redis пише AOF у том `redis-data` і працює з політикою `noeviction`. Поки Redis відтворює
 AOF, невдалі healthcheck не враховуються протягом `REDIS_HEALTH_START_PERIOD` (типово `120s`).
 Для більшого набору даних збільште значення, наприклад `REDIS_HEALTH_START_PERIOD=10m`, і
@@ -81,7 +82,10 @@ AOF, невдалі healthcheck не враховуються протягом `
 інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
 `ADMIN_PASSWORD` та адресу WebSocket, доступну браузеру. Використовуйте окремий
 Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
-отримає окрему БД та власні облікові дані.
+отримає окрему БД та власні облікові дані. Override передає секрети **обом** реплікам;
+прямі порти реплік лишаються на loopback. Публічний nginx listener `:3001` блокує
+`/internal/` і `/metrics` (також `/Metrics` і `/metrics/`) та перезаписує `X-Forwarded-For`. Внутрішній `:8080` не публікується;
+frontend звертається до нього через `MATCHING_ENGINE_URL=http://engine-lb:8080`.
 
 ```bash
 export COMPOSE_FILE=docker-compose.yml:docker-compose.remote.yml
@@ -167,6 +171,7 @@ volumes:
 | Паралельні заявки гублять рівні книги, повторно виконують lot або конфліктують із cancel | `test/e2e/regression/concurrent-orders.e2e-spec.ts` | Один worker на інструмент, спільний порядок submit/cancel. |
 | Зачеплена resting-заявка лишається в старому стані в БД | `test/e2e/regression/resting-persistence.e2e-spec.ts` | Одна транзакція записує всі зміни заявок і trades. |
 | Після рестарту книга порожня | `test/e2e/regression/book-restore.e2e-spec.ts` | Recovery читає committed resting-заявки й звіряє лічильники. |
+| Після падіння власника Redis lock лишається назавжди | `test/integration/redis-lock.spec.ts`: acquire без release; на початковому коді `PTTL=-1`. Червоний коміт `88e28a3`, виправлення `5b5cc7c` | `SET NX PX`, атомарні Lua renew/release; інтеграційні тести перевіряють SIGKILL дочірнього процесу й захист replacement lease. |
 | Cancel обнуляє невиконаний залишок | `test/e2e/regression/cancel-remainder.e2e-spec.ts` | Залишок і виконаний обсяг зберігаються. |
 
 ## Зіставлення заявок
@@ -212,6 +217,7 @@ JSON-чисел перевіряється запис із тіла запиту
   запуску увійдіть на `POST /auth/login` як `admin@demo.local` з `ADMIN_PASSWORD`
   з `apps/matching-engine-service/.env.example`. Реєстрація налаштованих адрес дає
   409. Якщо адреса вже належить звичайному користувачу, engine відхиляє старт.
+  Паролі хешуються поза транзакцією, тому кількість адрес не впливає на ліміт простою сесії.
   Адреси в `ADMIN_EMAILS` мають бути ASCII (IDN-домен записують у punycode), бо регістр
   порівнюють JavaScript і PostgreSQL. Повторний старт зберігає пароль seed-акаунта. Після вилучення адреси з
   `ADMIN_EMAILS` раніше видана роль зберігається до закінчення access JWT.
@@ -272,7 +278,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 ```bash
 (cd apps/matching-engine-service && npm ci && npm run format:check && npm run lint:check && npm run typecheck && npm test)
-(cd apps/settlement-service && npm ci && npm run format:check && npm run lint:check && npm run typecheck)
+(cd apps/settlement-service && npm ci && npm run format:check && npm run lint:check && npm run typecheck && npm test)
 (cd apps/frontend && npm ci && npm run format:check && npm run lint && npm run typecheck && npm run build)
 docker compose up -d --build --wait --wait-timeout 240
 curl -fsS http://localhost:3001/health
@@ -283,6 +289,9 @@ curl -fsS http://localhost:3000/orderbook > /dev/null
 Тести matching engine потребують Node.js 20.12 або новішого (`util.parseEnv`).
 Jest у matching engine запускає файли `*.spec.ts` поза `test/e2e/` і `test/integration/`.
 Тести зіставлення перевіряють сценарії виконання, скасування та звіряють книгу й угоди з незалежним еталоном.
+Інтеграційний сценарій 200 HTTP-заявок тепер запускає worker на обох репліках:
+lease має обрати єдиного writer. `waitFor` отримав опційний інтервал 50 мс для TTL-тесту;
+дефолтні 10 мс і всі наявні assertions збережені.
 
 У тесті сервісу заявок перевірка STP читає внутрішній знімок книги напряму, щоб
 зберегти перевірку конкретної resting-заявки після зміни публічної глибини. У
@@ -374,10 +383,13 @@ LISTEN/NOTIFY лише пришвидшує роботу: polling кожні `CO
 Одна заявка може мати кілька waiter для різних submit/cancel `seq`. LISTEN-клієнт
 перепідключається після розриву.
 
-До підключення розподіленого lease запускайте **рівно один** процес із
-`ENGINE_WORKER_ENABLED=true` на спільній БД. Додатковий intake для перевірки конкурентного
-прийому має `ENGINE_WORKER_ENABLED=false`; його локальна книга порожня. Книгу й legacy
-WebSocket читайте на процесі worker. Розподілені ownership, fencing і snapshot ще не підключені.
+Обидві репліки Compose мають `ENGINE_WORKER_ENABLED=true`. Кожна може приймати
+HTTP-запити, але matching виконує лише власник lease інструмента. `ENGINE_WORKER_ENABLED=false`
+вимикає matching на окремому екземплярі для діагностики. REST і початковий legacy WS snapshot
+читають один committed стан PostgreSQL на owner і standby. Публічні читання книги
+обмежені трьома одночасними запитами на репліку (черга до 200 і не довше 2 с, далі 503 `BOOK_BUSY`), щоб не
+відбирати з’єднання в worker; PostgreSQL сам сортує рівні й застосовує `depth`. Legacy namespace `/` ще не має
+sequence/resync або потоку оновлень; для актуального знімка повторіть підписку.
 
 `DELETE /orders/:id` створює не більше однієї cancel-команди. Якщо заявка вже термінальна
 або попередня команда встигла її виконати, відповідь — 409 `ORDER_ALREADY_FILLED` чи
@@ -411,17 +423,36 @@ Recovery сортує заявки за ціною й `prioritySeq`, перев�
 Стан переживає restart. Submit і cancel повертають 503 `INSTRUMENT_HALTED`; нові команди
 не приймаються й не застосовуються. Логи містять `alert=engine_recovery_mismatch` або
 `alert=engine_seq_gap`. Автоматичного resume немає. Перед відновленням необхідно
-порівняти журнал, лічильники й фактичні resting-заявки; адміністративний resume ще не підключений.
+порівняти журнал, лічильники й фактичні resting-заявки.
+`POST /admin/instruments/ABC/resume` з access-токеном admin передає запит поточному власнику
+через NOTIFY, незалежно від репліки HTTP. Власник під fenced row lock повторює recovery.
+Перед активацією також перевіряється суцільний журнал від 1 до `next_seq`: застосований
+префікс до `last_applied_seq`, незастосований суфікс і узгодженість обох лічильників.
+Невиправлена прогалина чи хибний `applied_at` блокують resume та подальший intake.
+Збіг — 200 `{status:"active"}`, розбіжність — 409 `RECOVERY_MISMATCH`.
+Непідтверджений legacy стан (`legacy_verified=false`) завжди дає 409; `force` немає.
+Невідомий інструмент дає 400, відсутній власник або втрачений NOTIFY — 503.
+Якщо recovery падає, зокрема коли втрачено відповідь на COMMIT, власник відпускає lease, а
+наступний poll читає фактичний статус із БД. Адміністратор бачить 503 і може повторити запит.
+Власник підтверджує запит одразу: без підтвердження 503 приходить через 3 с, після нього
+результат чекається до 12 с (lock 3 с і перевірка журналу до 10 с). Запит журналу має
+власний `statement_timeout=10s`. Recovery-транзакція також має `statement_timeout=10s` і
+`idle_in_transaction_session_timeout=10s`, бо читання й сортування великої книги довше за
+5 с і 2 с простою; решта сесій лишається на 5 с і 2 с. Очікування вільного з’єднання пулу — до 10 с.
+Публікація NOTIFY обмежена 2 с: зависле з’єднання розривається й перепідключається. Дедлайн
+підтвердження (3 с) рахується від виклику й охоплює чергу публікацій: відповідь не чекає на
+publish, а прострочений запит власнику не надсилається.
+Повтор перевіряє дані знову. Звичайний користувач отримує 403, без токена — 401.
 
 Діагностика з кореня локального Compose-проєкту:
 
 ```bash
-docker compose logs --no-color --tail=200 matching-engine-service
+docker compose logs --no-color --tail=200 matching-engine-1 matching-engine-2
 docker compose exec -T exchange-db psql -U exchange -d exchange -c 'SELECT * FROM instrument_state;'
 docker compose exec -T exchange-db psql -U exchange -d exchange -c 'SELECT instrument,seq,type,order_id,applied_at,result FROM order_commands ORDER BY instrument,seq;'
 ```
 
-Для довгого recovery healthcheck має 10 спроб через 5 с. Прогін на 10 000 resting-заявках
+Для довгого recovery healthcheck має початкове вікно 120 с і 10 спроб через 5 с. Прогін на 10 000 resting-заявках
 перевіряє, що навіть десятикратний виміряний старт вкладається в це вікно. Тестові дані
 не доводять такої межі для довільного обсягу: перед збільшенням навантаження виміряйте
 recovery на своїй БД. Знімки книги для прискорення старту поки не реалізовані.
@@ -437,7 +468,7 @@ Frontend-форма читає `{order,trades}`, окремо показує `pe
 Оновлення БД із заявками попереднього engine виконуйте із зупиненим старим writer:
 
 ```bash
-docker compose stop matching-engine-service
+docker compose down --remove-orphans
 docker compose up -d --build --wait --wait-timeout 240
 ```
 
@@ -467,3 +498,132 @@ Gap перевіряється також на хвості журналу: як
 accepted повертає 200, rejected — збережену 422, інше тіло — 409; новий прийом — 503.
 
 Якщо запис applied-команди не оновився, вся TX matching відкочується; last_applied_seq не просувається.
+
+
+## Володіння інструментом і failover
+
+`lease:instrument:{ABC}` містить унікальний токен екземпляра. TTL — 5000 мс,
+renew — 1500 мс, запас до step down — 500 мс. Власник відмовляється від lease за
+монотонним дедлайном, навіть якщо запізніла відповідь renew каже «успіх». Redis-клієнт
+не накопичує offline-команди; команда й початкове підключення обмежені 1000 мс.
+Старий токен не може продовжити чи видалити lease нового власника.
+
+Lease визначає кандидата. Право запису дає PostgreSQL: takeover збільшує
+`owner_epoch`; кожна TX matching блокує `instrument_state`, перевіряє епоху й завершується
+умовним UPDATE з тією самою епохою та попереднім `last_applied_seq`. Помилка відкочує
+orders, trades і outbox разом. Пам’ять оновлюється після COMMIT. У сесіях engine:
+`idle_in_transaction_session_timeout=2s`, `statement_timeout=5s`; захоплення рядка має
+`lock_timeout=3s`. Призупинений усередині TX процес не блокує takeover безкінечно.
+
+Захоплення lease не залежить від drain: poll планується до початку обходу, а завантаження
+інструмента не блокує інші. Один прохід drain обмежений 1 с і 100 командами; решту забирає
+наступний poll, тож resume і shutdown не чекають довгий backlog.
+
+Орієнтир простою після crash — близько 7 с: TTL + acquire кожні 1000 мс з jitter
+0–300 мс + recovery. Це діє за доступності Redis і PG резервній репліці, до 10 000
+resting-заявок на інструмент та без стрибків годинника Redis. System-тест вимагає ≤ 10 с;
+після SIGTERM — ≤ 2 с. Виміряно: **SIGTERM 840 мс, SIGKILL 4883 мс**.
+Якщо власник втрачає мережу до PG без TCP reset, запит висить, а renew у Redis триває. Тому
+drain і recovery мають сторожовий таймер: без прогресу протягом 30 с власник пише
+`alert=engine_worker_stalled`, відпускає lease і 5 с не намагається його повернути, а резервна
+репліка забирає інструмент. Простій у цьому випадку близько 30 с, а не 7 с. Keepalive виявляє
+розрив лише на сокеті без незавершених запитів. System-тест `ownership:blackhole` вимагає ≤ 45 с;
+виміряно **30 366 мс**.
+Запити на відрізану репліку отримують 503 або 504 і повторюються. Команда на десятки тисяч заявок
+може тривати довше 30 с: кожна заявка рахується як прогрес. Intake серіалізується з halt на
+рядку лічильника інструмента і не блокує `instrument_state`, тому потік заявок не зупиняє worker.
+Подача й скасування обмежені п'ятьма одночасними запитами на репліку (черга до 500 і не довше
+5 с, далі 503 `ORDERS_BUSY`), щоб решта пулу лишалася worker. Така відмова означає, що заявку не
+прийнято. Якщо заявку вже прийнято, а читання результату не вдалося, відповідь — 202 і `pending`.
+`takeoverMs` — `recovered_at` нової епохи мінус останній `applied_at` старої епохи;
+це верхня межа простою, обидві мітки походять з одного PG.
+
+`GET /admin/instruments` повертає власника, епоху, TTL, `lastAppliedSeq`, `maxSeq`, backlog,
+best bid/ask, кількість рівнів і resting-заявок та `outboxBacklog`. `/metrics` містить
+лічильники mismatch, fenced writes, помилок renew і стан halted. Лічильники належать одній
+репліці, тому `/metrics` недоступний через публічний `:3001` (404): збирайте його з
+`127.0.0.1:3101` і `:3102`. Збій Redis не ховає решту полів: `leaseTtlMs` тоді `null`. Для розбору halted:
+
+```sql
+SELECT instrument,status,owner_instance,owner_epoch,last_applied_seq,
+       resting_bid_count,resting_ask_count,resting_bid_lots,resting_ask_lots
+FROM instrument_state;
+SELECT instrument,side,count(*),sum(remaining_quantity) * 100000000 AS lots
+FROM orders WHERE status IN ('open','partially_filled') GROUP BY instrument,side;
+SELECT instrument,seq,type,order_id,applied_at,result FROM order_commands ORDER BY instrument,seq;
+```
+
+Виправляйте дані лише після звірки з авторитетним журналом. Після виправлення викличте
+resume й перевірте, що backlog зменшується в порядку `seq`. Автоматичного підтвердження
+legacy даних немає.
+
+### System-перевірки ownership
+
+Runner має Docker CLI і socket для керування контейнерами свого Compose-проєкту.
+Контейнери вибираються за project/service labels. PostgreSQL advisory lock не дозволяє
+два ownership-сценарії одночасно на одній БД. На старті runner відновлює зупинені репліки,
+тож повтор після переривання між kill і restore не потребує ручного start.
+
+```bash
+(
+  set -eu
+  export COMPOSE_PROJECT_NAME="exchange-system-$(openssl rand -hex 6)"
+  export COMPOSE_FILE=docker-compose.yml:docker-compose.test.yml
+  cleanup() {
+    result=$?
+    if [ "$result" -ne 0 ]; then
+      docker compose ps -a || true
+      docker compose logs --no-color --tail=200 || true
+    fi
+    docker compose --profile test down -v --remove-orphans || true
+    exit "$result"
+  }
+  trap cleanup EXIT
+  printf 'Compose project: %s\n' "$COMPOSE_PROJECT_NAME"
+  docker compose build system-tests
+  docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
+  docker compose up -d --build --wait --wait-timeout 240
+  docker compose run --rm system-tests npm run realtime:transport
+  docker compose run --rm system-tests npm run chaos:sigterm
+  docker compose run --rm system-tests npm run ownership:kill
+  docker compose run --rm system-tests npm run ownership:hooks
+  docker compose run --rm system-tests npm run ownership:blackhole
+)
+```
+
+Усі довгоживучі сервіси мають `restart: unless-stopped`: впала репліка повертається як резерв,
+а nginx, PostgreSQL і Redis піднімаються після збою чи рестарту Docker.
+Test-overlay не публікує host-портів, використовує окремі томи та `restart: "no"`.
+TTL лишається production-значенням. Збережені команди перевіряються незалежним matcher;
+будь-яка розбіжність, дубль чи перевищення takeover завершує runner кодом 1.
+При обриві, 502/503/504 або таймауті запит повторюється з тим самим `Idempotency-Key`
+до 30 с, з backoff 250–2000 мс. Nginx не повторює POST на іншу репліку.
+При SIGKILL усього shell trap не виконається: стек і томи лишаться. Їх можна прибрати
+через `docker compose -p НАДРУКОВАНИЙ_ПРОЄКТ -f docker-compose.yml -f docker-compose.test.yml --profile test down -v`.
+Ця команда видаляє лише тестові томи вибраного проєкту.
+
+`CHAOS_ENABLED` читається після завантаження конфігурації: значення з локального `.env`
+діє так само, як змінна середовища процесу. `CHAOS_ENABLED=false` у звичайному стеку:
+маршруту `/admin/chaos` немає.
+Test-overlay вмикає його для seeded admin. Репліки мають `init: true`: Node не є
+PID 1, тому self-SIGKILL hooks справді завершують процес; init також збирає дочірні процеси. Хуки `after_writes_before_commit`
+і `after_commit_before_memory` завершують процес через SIGKILL; `stall_before_commit`
+чекає `CHAOS_STALL_BEFORE_COMMIT_MS`. Інтеграційний тест таймауту сесії (`fencing.spec.ts`) відтворює
+зависання сирим `pg`-з’єднанням із тими самими опціями сесії, а не хуком у воркері: після
+стоп-хука власник із чинним lease сам відновився б, тож failover він не перевіряє. `fromSeq` та `requireTrades` обмежують спрацювання.
+
+Settlement поки не має тестових сценаріїв. Його `npm test` явно дозволяє порожній набір
+через `--passWithNoTests`; CI викликає той самий скрипт.
+
+### Транспорт і точність публічної книги
+
+Socket.IO працює лише через WebSocket. Клієнтам потрібно явно задати
+`io(url, { transports: ['websocket'] })`; HTTP polling повертає 400 `Transport unknown`.
+Це дозволяє балансувати з’єднання між репліками без sticky sessions. Після reconnect
+клієнт повторює `subscribe`, щоб отримати committed snapshot. Frontend уже задає цей
+транспорт. System-перевірка перевіряє підключення, повторне підключення та snapshot
+через публічний і внутрішній listener nginx, а також явне відхилення polling.
+
+Обсяг цінового рівня — точна сума залишків із 8 десятковими знаками у рядку.
+Він може перевищувати максимальний обсяг однієї заявки: перевірка 10 000 заявок
+по 1 000 000 і ще одного lot перевіряє REST та WebSocket без переповнення агрегату.

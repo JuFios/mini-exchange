@@ -22,7 +22,7 @@ import { EngineEnv, validateEnv } from './config/env.validation';
         }),
     }),
     AuthModule,
-    OrdersModule,
+    OrdersModule.register(),
   ],
   controllers: [HealthController],
 })

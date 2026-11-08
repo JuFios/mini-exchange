@@ -1,13 +1,13 @@
 import { DataSource } from 'typeorm';
 import { BadRequestException, Controller, Get, Param, Query } from '@nestjs/common';
 import { InstrumentCatalog } from './instrument-catalog';
-import { OrderBookService } from './order-book.service';
+import { CommittedBook } from '../engine/committed-book';
 import { DEFAULT_BOOK_DEPTH, MAX_BOOK_DEPTH } from './order-book.types';
 
 @Controller()
 export class MarketController {
   constructor(
-    private readonly book: OrderBookService,
+    private readonly book: CommittedBook,
     private readonly instruments: InstrumentCatalog,
     private readonly source: DataSource,
   ) {}
@@ -43,7 +43,7 @@ export class MarketController {
     return this.snapshot(instrument, depth);
   }
 
-  private snapshot(symbol: unknown, depth: unknown) {
+  private async snapshot(symbol: unknown, depth: unknown) {
     const instrument = this.instruments.require(symbol);
     let limit = DEFAULT_BOOK_DEPTH;
     if (depth !== undefined) {
@@ -56,10 +56,6 @@ export class MarketController {
       }
       limit = Number(depth);
     }
-    return {
-      instrument,
-      seq: this.book.sequence(instrument),
-      ...this.book.depth(instrument, limit),
-    };
+    return this.book.read(instrument, limit);
   }
 }

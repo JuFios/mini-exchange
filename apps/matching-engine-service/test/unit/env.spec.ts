@@ -66,3 +66,12 @@ it.each(['COMMAND_POLL_INTERVAL_MS', 'ORDER_SYNC_WAIT_MS', 'SEQ_GAP_ALERT_MS'])(
       expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
   },
 );
+
+it('rejects renew intervals and safety windows that exceed the lease budget', () => {
+  expect(() =>
+    validateEnv({ ...example, LEASE_RENEW_INTERVAL_MS: '2000', LEASE_TTL_MS: '5000' }),
+  ).toThrow('LEASE_RENEW_INTERVAL_MS');
+  expect(() =>
+    validateEnv({ ...example, LEASE_SAFETY_MS: '1600', LEASE_RENEW_INTERVAL_MS: '1500' }),
+  ).toThrow('LEASE_SAFETY_MS');
+});
