@@ -422,6 +422,9 @@ Recovery сортує заявки за ціною й `prioritySeq`, перев�
 порівняти журнал, лічильники й фактичні resting-заявки.
 `POST /admin/instruments/ABC/resume` з access-токеном admin передає запит поточному власнику
 через NOTIFY, незалежно від репліки HTTP. Власник під fenced row lock повторює recovery.
+Перед активацією також перевіряється суцільний журнал від 1 до `next_seq`: застосований
+префікс до `last_applied_seq`, незастосований суфікс і узгодженість обох лічильників.
+Невиправлена прогалина чи хибний `applied_at` блокують resume та подальший intake.
 Збіг — 200 `{status:"active"}`, розбіжність — 409 `RECOVERY_MISMATCH`.
 Непідтверджений legacy стан (`legacy_verified=false`) завжди дає 409; `force` немає.
 Невідомий інструмент дає 400, відсутній власник або втрачений NOTIFY — 503.
@@ -548,6 +551,7 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose build system-tests
   docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
   docker compose up -d --build --wait --wait-timeout 240
+  docker compose run --rm system-tests npm run realtime:transport
   docker compose run --rm system-tests npm run chaos:sigterm
   docker compose run --rm system-tests npm run ownership:kill
   docker compose run --rm system-tests npm run ownership:hooks
@@ -563,7 +567,9 @@ TTL лишається production-значенням. Збережені ком�
 через `docker compose -p НАДРУКОВАНИЙ_ПРОЄКТ -f docker-compose.yml -f docker-compose.test.yml --profile test down -v`.
 Ця команда видаляє лише тестові томи вибраного проєкту.
 
-`CHAOS_ENABLED=false` у звичайному стеку: маршруту `/admin/chaos` немає.
+`CHAOS_ENABLED` читається після завантаження конфігурації: значення з локального `.env`
+діє так само, як змінна середовища процесу. `CHAOS_ENABLED=false` у звичайному стеку:
+маршруту `/admin/chaos` немає.
 Test-overlay вмикає його для seeded admin. Репліки мають `init: true`: Node не є
 PID 1, тому self-SIGKILL hooks справді завершують процес; init також збирає дочірні процеси. Хуки `after_writes_before_commit`
 і `after_commit_before_memory` завершують процес через SIGKILL; `stall_before_commit`
@@ -571,3 +577,16 @@ PID 1, тому self-SIGKILL hooks справді завершують проц�
 
 Settlement поки не має тестових сценаріїв. Його `npm test` явно дозволяє порожній набір
 через `--passWithNoTests`; CI викликає той самий скрипт.
+
+### Транспорт і точність публічної книги
+
+Socket.IO працює лише через WebSocket. Клієнтам потрібно явно задати
+`io(url, { transports: ['websocket'] })`; HTTP polling повертає 400 `Transport unknown`.
+Це дозволяє балансувати з’єднання між репліками без sticky sessions. Після reconnect
+клієнт повторює `subscribe`, щоб отримати committed snapshot. Frontend уже задає цей
+транспорт. System-перевірка перевіряє підключення, повторне підключення та snapshot
+через публічний і внутрішній listener nginx, а також явне відхилення polling.
+
+Обсяг цінового рівня — точна сума залишків із 8 десятковими знаками у рядку.
+Він може перевищувати максимальний обсяг однієї заявки: перевірка 10 000 заявок
+по 1 000 000 і ще одного lot перевіряє REST та WebSocket без переповнення агрегату.
