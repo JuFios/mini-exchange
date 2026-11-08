@@ -12,9 +12,12 @@ jest.mock('pg', () => ({
   })),
 }));
 
+beforeEach(() => jest.clearAllMocks());
+afterEach(() => jest.useRealTimers());
+
 const keepAlive = { keepAlive: true, keepAliveInitialDelayMillis: 5000 };
 
-it('detects a silently dead socket on pooled connections', () => {
+it('enables keepalive on pooled connections', () => {
   const options = engineDataSourceOptions(
     validateDatabaseEnv({
       DATABASE_HOST: 'db',
@@ -28,7 +31,7 @@ it('detects a silently dead socket on pooled connections', () => {
   expect(options.extra).toMatchObject(keepAlive);
 });
 
-it('detects a silently dead socket on the notification connection', async () => {
+it('enables keepalive on the notification connection', async () => {
   const notifications = new PgNotifications({
     getOrThrow: (key: string) => (key === 'DATABASE_PORT' ? 5432 : key),
   } as never);
@@ -36,5 +39,28 @@ it('detects a silently dead socket on the notification connection', async () => 
   await notifications.onModuleInit();
 
   expect(Client).toHaveBeenCalledWith(expect.objectContaining(keepAlive));
+  await notifications.onModuleDestroy();
+});
+
+it('reconnects when the LISTEN query never gets a reply', async () => {
+  jest.useFakeTimers();
+  jest.mocked(Client).mockImplementationOnce(
+    () =>
+      ({
+        on: jest.fn(),
+        connect: jest.fn().mockResolvedValue(undefined),
+        query: jest.fn(() => new Promise(() => undefined)),
+        end: jest.fn().mockResolvedValue(undefined),
+      }) as never,
+  );
+  const notifications = new PgNotifications({
+    getOrThrow: (key: string) => (key === 'DATABASE_PORT' ? 5432 : key),
+  } as never);
+
+  const started = notifications.onModuleInit();
+  await jest.advanceTimersByTimeAsync(2100);
+  await started;
+
+  expect(Client).toHaveBeenCalledTimes(2);
   await notifications.onModuleDestroy();
 });
