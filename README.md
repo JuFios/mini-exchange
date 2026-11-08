@@ -523,8 +523,11 @@ orders, trades і outbox разом. Пам’ять оновлюється пі
 0–300 мс + recovery. Це діє за доступності Redis і PG резервній репліці, до 10 000
 resting-заявок на інструмент та без стрибків годинника Redis. System-тест вимагає ≤ 10 с;
 після SIGTERM — ≤ 2 с. Виміряно: **SIGTERM 537 мс, SIGKILL 4500 мс**.
-Якщо власник втрачає мережу до PG без TCP reset, keepalive виявляє розрив приблизно за 15 с.
-Далі recovery падає, власник відпускає lease, і резервна репліка забирає інструмент.
+Якщо власник втрачає мережу до PG без TCP reset, запит висить, а renew у Redis триває. Тому
+drain і recovery мають сторожовий таймер: без завершення за 30 с власник пише
+`alert=engine_worker_stalled`, відпускає lease і 5 с не намагається його повернути, а резервна
+репліка забирає інструмент. Простій у цьому випадку близько 30 с, а не 7 с. Keepalive виявляє
+розрив лише на сокеті без незавершених запитів. System-тест `ownership:blackhole` вимагає ≤ 45 с.
 `takeoverMs` — `recovered_at` нової епохи мінус останній `applied_at` старої епохи;
 це верхня межа простою, обидві мітки походять з одного PG.
 
@@ -577,10 +580,12 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose run --rm system-tests npm run chaos:sigterm
   docker compose run --rm system-tests npm run ownership:kill
   docker compose run --rm system-tests npm run ownership:hooks
+  docker compose run --rm system-tests npm run ownership:blackhole
 )
 ```
 
-Репліки engine мають `restart: unless-stopped`, щоб впала репліка поверталася як резерв.
+Усі довгоживучі сервіси мають `restart: unless-stopped`: впала репліка повертається як резерв,
+а nginx, PostgreSQL і Redis піднімаються після збою чи рестарту Docker.
 Test-overlay не публікує host-портів, використовує окремі томи та `restart: "no"`.
 TTL лишається production-значенням. Збережені команди перевіряються незалежним matcher;
 будь-яка розбіжність, дубль чи перевищення takeover завершує runner кодом 1.
