@@ -51,6 +51,20 @@ export class BookLoader {
       bids: orders.filter(({ side }) => side === 'buy').sort(compareOrders),
       asks: orders.filter(({ side }) => side === 'sell').sort(compareOrders),
     };
+    let journalValid = true;
+    if (resume) {
+      // Один MVCC snapshot узгоджує лічильник intake з журналом без зворотного порядку блокувань.
+      const [journal] = await db.query(
+        `SELECT i.next_seq >= $2::bigint
+          AND count(c.seq) = i.next_seq
+          AND COALESCE(bool_and(c.seq <= i.next_seq
+            AND ((c.seq <= $2::bigint) = (c.applied_at IS NOT NULL))), true) AS valid
+        FROM instruments i LEFT JOIN order_commands c ON c.instrument=i.symbol
+        WHERE i.symbol=$1 GROUP BY i.next_seq`,
+        [instrument, state.last_applied_seq],
+      );
+      journalValid = journal?.valid === true;
+    }
     const actual = counters(book);
     const crossed =
       book.bids.length > 0 && book.asks.length > 0 && book.bids[0].price >= book.asks[0].price;
@@ -61,7 +75,8 @@ export class BookLoader {
       actual.askCount !== state.resting_ask_count ||
       actual.bidLots !== state.resting_bid_lots ||
       actual.askLots !== state.resting_ask_lots ||
-      crossed
+      crossed ||
+      !journalValid
     ) {
       await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
         instrument,
