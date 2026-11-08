@@ -1,5 +1,7 @@
 x-engine: &engine
   init: true
+  # Без перезапуску впала репліка не повертається, і резерв лишається єдиним.
+  restart: unless-stopped
   build: &engine-build ./apps/matching-engine-service
   env_file: ./apps/matching-engine-service/.env.example
   environment: &engine-environment

@@ -14,6 +14,9 @@ async function main() {
       const rest = await request('/instruments/ABC/book', 'GET', undefined, undefined, base);
       assert.equal(rest.status, 200);
       const { bids, asks } = (await rest.json()) as { bids: unknown[]; asks: unknown[] };
+      const metrics = await request('/metrics', 'GET', undefined, undefined, base);
+      assert.equal(metrics.status, base.endsWith(':3001') ? 404 : 200);
+      await metrics.text();
       const socket = io(base, {
         transports: ['websocket'],
         reconnection: false,

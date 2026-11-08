@@ -16,7 +16,8 @@ export NEXT_PUBLIC_WS_URL=wss://exchange.example.test
 docker compose config --format json | jq -e '
   .services as $s |
   (["matching-engine-1","matching-engine-2","engine-lb"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
-  ($s.frontend.ports | length == 1 and .[0].host_ip == "127.0.0.1")'
+  ($s.frontend.ports | length == 1 and .[0].host_ip == "127.0.0.1") and
+  (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
   docker compose -f docker-compose.yml -f docker-compose.remote.yml "$@"
 }

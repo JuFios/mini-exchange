@@ -1,14 +1,10 @@
 x-test-engine: &test-engine
   restart: 'no'
   ports: !reset []
-  environment: &test-environment
+  environment:
     CHAOS_ENABLED: 'true'
     ADMIN_EMAILS: admin@system.test
     ADMIN_PASSWORD: system-test-password-only
-    ORDER_RATE_LIMIT: '1000'
-    AUTH_RATE_LIMIT: '1000'
-    LOGIN_EMAIL_RATE_LIMIT: '1000'
-    PUBLIC_RATE_LIMIT: '100000'
 
 services:
   exchange-db:
@@ -28,8 +24,6 @@ services:
   settlement-service:
     restart: 'no'
     ports: !reset []
-    environment:
-      <<: *test-environment
   frontend:
     ports: !reset []
   system-tests:
