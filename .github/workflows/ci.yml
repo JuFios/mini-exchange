@@ -166,6 +166,8 @@ jobs:
           docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
       - name: Start isolated system stack
         run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Check WebSocket transport through both listeners
+        run: docker compose run --rm system-tests npm run realtime:transport
       - name: Check graceful ownership transfer
         run: docker compose run --rm system-tests npm run chaos:sigterm
       - name: Check ownership after a crash
