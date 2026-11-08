@@ -1,5 +1,5 @@
 import { CommittedBook } from '../engine/committed-book';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CommandApplier } from '../engine/command-applier';
 import { InstrumentWorker } from '../engine/instrument-worker';
 import { LeaseManager } from '../ownership/lease-manager';
@@ -12,7 +12,7 @@ import { PgNotifications } from '../engine/pg-notifications';
 import { IntakeService } from '../intake/intake.service';
 import { NoopReservationClient, ReservationClient } from '../intake/reservation.client';
 import { BookLoader } from '../engine/book-loader';
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
@@ -30,7 +30,6 @@ import { InstrumentCatalog } from './instrument-catalog';
     OrdersController,
     AdminInstrumentsController,
     ReadinessController,
-    ...(process.env.CHAOS_ENABLED === 'true' ? [ChaosController] : []),
   ],
   providers: [
     CommittedBook,
@@ -58,4 +57,12 @@ import { InstrumentCatalog } from './instrument-catalog';
   ],
   exports: [OrderBookService],
 })
-export class OrdersModule {}
+export class OrdersModule {
+  static async register(): Promise<DynamicModule> {
+    await ConfigModule.envVariablesLoaded;
+    return {
+      module: OrdersModule,
+      controllers: process.env.CHAOS_ENABLED === 'true' ? [ChaosController] : [],
+    };
+  }
+}
