@@ -54,6 +54,20 @@ export async function until<T>(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+export function waitReady(service: string, timeout = 60000) {
+  return until(
+    async () => {
+      try {
+        return (await request('/ready', 'GET', undefined, undefined, `http://${service}:3001`))
+          .status;
+      } catch {
+        return 0;
+      }
+    },
+    (status) => status === 200,
+    timeout,
+  );
+}
 export async function request(
   path: string,
   method = 'GET',

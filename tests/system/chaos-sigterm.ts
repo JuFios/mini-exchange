@@ -8,6 +8,7 @@ import {
   submit,
   token,
   until,
+  waitReady,
   verifyReplay,
 } from './helpers';
 
@@ -26,19 +27,7 @@ async function main() {
       const id = container(service);
       if (docker('inspect', '--format', '{{.State.Running}}', id) !== 'true') docker('start', id);
     }
-    for (const replica of ['matching-engine-1', 'matching-engine-2'])
-      await until(
-        async () => {
-          try {
-            return (await request('/ready', 'GET', undefined, undefined, `http://${replica}:3001`))
-              .status;
-          } catch {
-            return 0;
-          }
-        },
-        (s) => s === 200,
-        60000,
-      );
+    for (const replica of ['matching-engine-1', 'matching-engine-2']) await waitReady(replica);
     const seller = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
     const buyer = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
     const admin = await token('login', process.env.ADMIN_EMAIL!, process.env.ADMIN_PASSWORD!);

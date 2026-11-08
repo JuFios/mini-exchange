@@ -6,6 +6,7 @@ import {
   request,
   submit,
   until,
+  waitReady,
   verifyReplay,
   container,
   docker,
@@ -23,18 +24,7 @@ async function main() {
     for (const service of ['matching-engine-1', 'matching-engine-2']) {
       const id = container(service);
       if (docker('inspect', '--format', '{{.State.Running}}', id) !== 'true') docker('start', id);
-      await until(
-        async () => {
-          try {
-            return (await request('/ready', 'GET', undefined, undefined, `http://${service}:3001`))
-              .status;
-          } catch {
-            return 0;
-          }
-        },
-        (s) => s === 200,
-        60000,
-      );
+      await waitReady(service);
     }
     const admin = await token('login', process.env.ADMIN_EMAIL!, process.env.ADMIN_PASSWORD!);
     const regular = await token('register', `${randomUUID()}@system.test`, 'hook-user-password');
@@ -118,20 +108,7 @@ async function main() {
       );
       docker('start', victim);
       victim = undefined;
-      for (const service of ['matching-engine-1', 'matching-engine-2'])
-        await until(
-          async () => {
-            try {
-              return (
-                await request('/ready', 'GET', undefined, undefined, `http://${service}:3001`)
-              ).status;
-            } catch {
-              return 0;
-            }
-          },
-          (state) => state === 200,
-          60000,
-        );
+      for (const service of ['matching-engine-1', 'matching-engine-2']) await waitReady(service);
     }
   } finally {
     if (victim) {
