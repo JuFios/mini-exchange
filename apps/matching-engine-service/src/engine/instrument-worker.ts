@@ -115,6 +115,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       .catch((error: unknown) => {
         this.logger.error({
           alert: 'engine_resume_failed',
+          instrument: request.instrument,
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       })
