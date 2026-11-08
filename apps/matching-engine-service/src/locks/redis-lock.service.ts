@@ -4,6 +4,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+const CONNECT_WAIT_MS = 1000;
 const LEASE_SCRIPT = readFileSync(join(__dirname, 'lease.lua'), 'utf8');
 
 @Injectable()
@@ -28,6 +29,7 @@ export class RedisLockService implements OnModuleDestroy {
     // Без черги offline запізнілий renew не оживить покинутий lease.
     if (this.client.status !== 'ready') {
       if (this.client.status !== 'connecting' && this.client.status !== 'connect') return false;
+      // Під час LOADING ioredis лишається в `connect` без події error, тож чекання обмежене.
       await new Promise<void>((resolve, reject) => {
         const ready = () => {
           cleanup();
@@ -37,7 +39,9 @@ export class RedisLockService implements OnModuleDestroy {
           cleanup();
           reject(new Error('Redis is unavailable'));
         };
+        const timer = setTimeout(failed, CONNECT_WAIT_MS);
         const cleanup = () => {
+          clearTimeout(timer);
           this.client.off('ready', ready);
           this.client.off('error', failed);
         };

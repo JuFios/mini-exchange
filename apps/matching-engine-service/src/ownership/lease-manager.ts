@@ -74,21 +74,33 @@ export class LeaseManager implements OnModuleDestroy {
       this.leases.set(instrument, lease);
       this.schedule(lease);
       return lease;
-    } catch {
+    } catch (error) {
+      // Відповідь SET NX могла загубитися після застосування: ключ без власника блокує всіх до TTL.
+      if (!lease.active) void this.locks.release(lease.key, lease.value).catch(() => undefined);
+      this.logger.warn({
+        alert: 'engine_lease_acquire_failed',
+        instrument,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
       return;
     }
   }
 
-  private schedule(lease: InstrumentLease): void {
+  private schedule(lease: InstrumentLease, attemptStartedAt = performance.now()): void {
     clearTimeout(lease.deadline);
     clearTimeout(lease.renewal);
     lease.deadline = setTimeout(
       () => this.drop(lease),
       Math.max(0, lease.renewedAt + this.budget() - performance.now()),
     );
-    lease.renewal = setTimeout(() => {
-      void this.renew(lease);
-    }, this.config.getOrThrow('LEASE_RENEW_INTERVAL_MS'));
+    // Інтервал рахується від початку спроби: повільна відповідь не відсуває повтор.
+    const interval = this.config.getOrThrow<number>('LEASE_RENEW_INTERVAL_MS');
+    lease.renewal = setTimeout(
+      () => {
+        void this.renew(lease);
+      },
+      Math.max(0, attemptStartedAt + interval - performance.now()),
+    );
   }
 
   private async renew(lease: InstrumentLease): Promise<void> {
@@ -107,7 +119,7 @@ export class LeaseManager implements OnModuleDestroy {
       this.renewFailures++;
       this.logger.warn({ alert: 'engine_lease_renew_failed', instrument: lease.instrument });
     }
-    if (this.valid(lease)) this.schedule(lease);
+    if (this.valid(lease)) this.schedule(lease, started);
   }
 
   drop(lease: InstrumentLease): void {
