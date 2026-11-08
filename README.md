@@ -68,6 +68,7 @@ Compose запускає `engine-migrate` після готовності Postgr
 Обидва backend-сервіси повертають HTTP 200 та `{"status":"ok"}` на `GET /health`.
 Це перевірка доступності HTTP-процесу. PostgreSQL і Redis мають власні healthcheck. Engine також має `/ready`: PG, застосовані
 міграції, Redis і `maxmemory-policy=noeviction`. Standby може бути ready без власного lease.
+Перевірка міграцій читає лише таблицю `migrations` і нічого не створює.
 Redis пише AOF у том `redis-data` і працює з політикою `noeviction`. Поки Redis відтворює
 AOF, невдалі healthcheck не враховуються протягом `REDIS_HEALTH_START_PERIOD` (типово `120s`).
 Для більшого набору даних збільште значення, наприклад `REDIS_HEALTH_START_PERIOD=10m`, і
@@ -83,7 +84,7 @@ AOF, невдалі healthcheck не враховуються протягом `
 Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
 отримає окрему БД та власні облікові дані. Override передає секрети **обом** реплікам;
 прямі порти реплік лишаються на loopback. Публічний nginx listener `:3001` блокує
-`/internal/` і перезаписує `X-Forwarded-For`. Внутрішній `:8080` не публікується;
+`/internal/` і `/metrics` та перезаписує `X-Forwarded-For`. Внутрішній `:8080` не публікується;
 frontend звертається до нього через `MATCHING_ENGINE_URL=http://engine-lb:8080`.
 
 ```bash
@@ -384,7 +385,9 @@ LISTEN/NOTIFY лише пришвидшує роботу: polling кожні `CO
 Обидві репліки Compose мають `ENGINE_WORKER_ENABLED=true`. Кожна може приймати
 HTTP-запити, але matching виконує лише власник lease інструмента. `ENGINE_WORKER_ENABLED=false`
 вимикає matching на окремому екземплярі для діагностики. REST і початковий legacy WS snapshot
-читають один committed стан PostgreSQL на owner і standby. Legacy namespace `/` ще не має
+читають один committed стан PostgreSQL на owner і standby. Публічні читання книги
+обмежені трьома одночасними запитами на репліку (черга до 200, далі 503 `BOOK_BUSY`), щоб не
+відбирати з’єднання в worker; PostgreSQL сам сортує рівні й застосовує `depth`. Legacy namespace `/` ще не має
 sequence/resync або потоку оновлень; для актуального знімка повторіть підписку.
 
 `DELETE /orders/:id` створює не більше однієї cancel-команди. Якщо заявка вже термінальна
@@ -428,6 +431,9 @@ Recovery сортує заявки за ціною й `prioritySeq`, перев�
 Збіг — 200 `{status:"active"}`, розбіжність — 409 `RECOVERY_MISMATCH`.
 Непідтверджений legacy стан (`legacy_verified=false`) завжди дає 409; `force` немає.
 Невідомий інструмент дає 400, відсутній власник або втрачений NOTIFY — 503.
+Власник підтверджує запит одразу: без підтвердження 503 приходить через 3 с, після нього
+результат чекається до 12 с (lock 3 с і перевірка журналу до 10 с). Запит журналу має
+власний `statement_timeout=10s`, решта сесії лишається на 5 с.
 Повтор перевіряє дані знову. Звичайний користувач отримує 403, без токена — 401.
 
 Діагностика з кореня локального Compose-проєкту:
@@ -510,7 +516,9 @@ resting-заявок на інструмент та без стрибків го
 
 `GET /admin/instruments` повертає власника, епоху, TTL, `lastAppliedSeq`, `maxSeq`, backlog,
 best bid/ask, кількість рівнів і resting-заявок та `outboxBacklog`. `/metrics` містить
-лічильники mismatch, fenced writes, помилок renew і стан halted. Для розбору halted:
+лічильники mismatch, fenced writes, помилок renew і стан halted. Лічильники належать одній
+репліці, тому `/metrics` недоступний через публічний `:3001` (404): збирайте його з
+`127.0.0.1:3101` і `:3102`. Збій Redis не ховає решту полів: `leaseTtlMs` тоді `null`. Для розбору halted:
 
 ```sql
 SELECT instrument,status,owner_instance,owner_epoch,last_applied_seq,
@@ -558,6 +566,7 @@ Runner має Docker CLI і socket для керування контейнер�
 )
 ```
 
+Репліки engine мають `restart: unless-stopped`, щоб впала репліка поверталася як резерв.
 Test-overlay не публікує host-портів, використовує окремі томи та `restart: "no"`.
 TTL лишається production-значенням. Збережені команди перевіряються незалежним matcher;
 будь-яка розбіжність, дубль чи перевищення takeover завершує runner кодом 1.
