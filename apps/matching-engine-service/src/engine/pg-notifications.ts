@@ -121,13 +121,15 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     return { ready, cancel: cleanup };
   }
 
-  private publish(channel: string, payload: unknown): Promise<void> {
+  // expired: запит уже відповів, тож власнику його надсилати немає сенсу.
+  private publish(channel: string, payload: unknown, expired?: () => boolean): Promise<void> {
     const client = this.client;
     const task = this.publishing.then(async () => {
+      if (expired?.()) return;
       if (!client || !this.ready || this.client !== client)
         throw new Error('Notification connection unavailable');
       let timer: NodeJS.Timeout | undefined;
-      const expired = new Promise<never>((_resolve, reject) => {
+      const timedOut = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
           () => reject(new Error('Notification publish timed out')),
           PUBLISH_WAIT_MS,
@@ -136,7 +138,7 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
       try {
         await Promise.race([
           client.query('SELECT pg_notify($1,$2)', [channel, JSON.stringify(payload)]),
-          expired,
+          timedOut,
         ]);
       } catch (error) {
         // Запит без відповіді блокував би всю чергу; розрив запускає перепідключення.
@@ -154,12 +156,18 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
   }
 
   // Власник підтверджує отримання одразу: відсутній власник дає 503 за RESUME_ACK_WAIT_MS,
-  // а довге recovery не обривається через той самий короткий таймаут.
+  // а довге recovery не обривається через той самий короткий таймаут. Дедлайн ack іде від
+  // виклику й охоплює чергу публікацій: відповідь не чекає на publish, а прострочений запит
+  // не публікується.
   async requestResume(instrument: string): Promise<boolean | undefined> {
     const id = randomUUID();
+    let settled = false;
     let finish!: (ok: boolean | undefined) => void;
     const result = new Promise<boolean | undefined>((resolve) => {
-      finish = resolve;
+      finish = (ok) => {
+        settled = true;
+        resolve(ok);
+      };
     });
     let timer = setTimeout(() => finish(undefined), RESUME_ACK_WAIT_MS);
     this.resumeWaiters.set(id, finish);
@@ -167,12 +175,13 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
       clearTimeout(timer);
       timer = setTimeout(() => finish(undefined), RESUME_RESULT_WAIT_MS);
     });
+    void this.publish('engine_resume', { instrument, id }, () => settled).catch(() =>
+      finish(undefined),
+    );
     try {
-      await this.publish('engine_resume', { instrument, id });
       return await result;
-    } catch {
-      return undefined;
     } finally {
+      settled = true;
       clearTimeout(timer);
       this.resumeWaiters.delete(id);
       this.resumeAcks.delete(id);
