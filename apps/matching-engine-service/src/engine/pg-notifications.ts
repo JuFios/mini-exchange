@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { PG_SESSION_OPTIONS } from '../database/session-options';
 
 // Recovery тримає lock_timeout 3 с і журнал до 10 с; nginx читає відповідь до 15 с.
+const PUBLISH_WAIT_MS = 2000;
 const RESUME_ACK_WAIT_MS = 3000;
 const RESUME_RESULT_WAIT_MS = 12000;
 
@@ -125,7 +126,28 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     const task = this.publishing.then(async () => {
       if (!client || !this.ready || this.client !== client)
         throw new Error('Notification connection unavailable');
-      await client.query('SELECT pg_notify($1,$2)', [channel, JSON.stringify(payload)]);
+      let timer: NodeJS.Timeout | undefined;
+      const expired = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Notification publish timed out')),
+          PUBLISH_WAIT_MS,
+        );
+      });
+      try {
+        await Promise.race([
+          client.query('SELECT pg_notify($1,$2)', [channel, JSON.stringify(payload)]),
+          expired,
+        ]);
+      } catch (error) {
+        // Запит без відповіді блокував би всю чергу; розрив запускає перепідключення.
+        if (error instanceof Error && error.message === 'Notification publish timed out')
+          (
+            client as unknown as { connection?: { stream?: { destroy(): void } } }
+          ).connection?.stream?.destroy();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     });
     this.publishing = task.catch(() => undefined);
     return task;
