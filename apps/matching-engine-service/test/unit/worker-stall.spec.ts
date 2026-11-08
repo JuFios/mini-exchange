@@ -11,7 +11,7 @@ function lease(value = 'v'): InstrumentLease {
   return { instrument: 'ABC', key: 'k', value, renewedAt: 0, active: true };
 }
 
-function setup(recover: () => Promise<unknown> = never, source: object = {}) {
+function setup(recover: () => Promise<unknown> = never, source: object = {}, applier: object = {}) {
   jest.useFakeTimers();
   const held = lease();
   const dropped: [InstrumentLease, number | undefined][] = [];
@@ -36,9 +36,9 @@ function setup(recover: () => Promise<unknown> = never, source: object = {}) {
     { commit: () => undefined, quarantine: () => undefined } as never,
     {} as never,
     ownership as never,
+    { reach: async () => undefined } as never,
     {} as never,
-    {} as never,
-    {} as never,
+    applier as never,
   );
   jest.spyOn(worker['logger'], 'error').mockImplementation((message) => {
     logged.push(message);
@@ -122,4 +122,154 @@ it('leaves the lease alone when the drain finishes in time', async () => {
   await jest.advanceTimersByTimeAsync(STALL_MS * 2);
 
   expect(dropped).toEqual([]);
+});
+
+it('keeps the lease while a long drain keeps making progress', async () => {
+  const { worker, owned, held, dropped } = setup();
+  owned.set('ABC', { lease: held });
+  let finish!: () => void;
+  drain(worker).mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)));
+
+  const kicked = worker.kick('ABC');
+  for (let step = 0; step < 4; step++) {
+    await jest.advanceTimersByTimeAsync(20000);
+    worker['beat'](held);
+  }
+  finish();
+  await kicked;
+
+  expect(dropped).toEqual([]);
+});
+
+it('releases the lease once progress stops part way through', async () => {
+  const { worker, owned, held, dropped } = setup();
+  owned.set('ABC', { lease: held });
+  drain(worker).mockImplementation(never);
+
+  const kicked = worker.kick('ABC');
+  await jest.advanceTimersByTimeAsync(20000);
+  worker['beat'](held);
+  await jest.advanceTimersByTimeAsync(STALL_MS - 1);
+  expect(dropped).toEqual([]);
+  await jest.advanceTimersByTimeAsync(1);
+  await kicked;
+
+  expect(dropped).toEqual([[held, 5000]]);
+});
+
+function sweep(makers: number) {
+  const updates: string[] = [];
+  const target = {
+    id: 'taker',
+    ownerId: 'u',
+    side: 'buy',
+    price: '100.00',
+    quantity: '5.00000000',
+    remainingQuantity: '5.00000000',
+    prioritySeq: '1',
+    status: 'pending',
+    version: 0,
+  };
+  const orders = {
+    findOneByOrFail: async () => target,
+    update: async ({ id }: { id: string }) => {
+      updates.push(id);
+      return { affected: 1 };
+    },
+  };
+  const db = {
+    query: async (sql: string) =>
+      sql.includes('FOR UPDATE')
+        ? [
+            {
+              owner_epoch: '1',
+              status: 'active',
+              legacy_verified: true,
+              last_applied_seq: '0',
+            },
+          ]
+        : [[], 1],
+    getRepository: () => orders,
+  };
+  const applier = {
+    apply: () => ({
+      outcome: 'accepted',
+      book: { bids: [], asks: [] },
+      trades: [],
+      levelChanges: [],
+      closed: [],
+      orderChanges: Array.from({ length: makers }, (_, index) => ({
+        id: `maker-${index}`,
+        status: 'filled',
+        remaining: 0n,
+        quantity: 1n,
+      })),
+    }),
+  };
+  const row = {
+    instrument: 'ABC',
+    seq: '1',
+    type: 'submit',
+    order_id: 'taker',
+    accepted_at: new Date(0),
+    traceparent: null,
+  };
+  return { db, row, updates, applier };
+}
+
+it('reports progress for every maker of one large command', async () => {
+  const { db, row, applier } = sweep(5);
+  const { worker, held } = setup(never, {}, applier);
+  const beat = jest.spyOn(worker as unknown as { beat: () => void }, 'beat');
+
+  await worker['applyOne'](
+    db as never,
+    { lease: held, seq: '0', epoch: '1', book: {} } as never,
+    row as never,
+  );
+
+  expect(beat.mock.calls.length).toBeGreaterThanOrEqual(5);
+});
+
+it('abandons a large command as soon as its lease is gone', async () => {
+  const { db, row, updates, applier } = sweep(5);
+  const { worker, held, ownership } = setup(never, {}, applier);
+  let checks = 0;
+  ownership.leases.assert = () => {
+    if (++checks > 3) throw new FencedOutError();
+  };
+
+  await expect(
+    worker['applyOne'](
+      db as never,
+      { lease: held, seq: '0', epoch: '1', book: {} } as never,
+      row as never,
+    ),
+  ).rejects.toBeInstanceOf(FencedOutError);
+
+  expect(updates.length).toBeLessThan(5);
+});
+
+it('locks intake before halting on a sequence gap', async () => {
+  const queries: string[] = [];
+  const db = {
+    query: async (sql: string) => {
+      queries.push(sql);
+      return sql.includes('FOR UPDATE') ? [{ owner_epoch: '1' }] : [];
+    },
+  };
+  const source = {
+    query: async () => [{ seq: '5', next_seq: '5' }],
+    transaction: async (work: (manager: unknown) => Promise<unknown>) => work(db),
+  };
+  const { worker, owned, held } = setup(never, source);
+  (worker['config'] as unknown as { getOrThrow: () => number }).getOrThrow = () => 0;
+  owned.set('ABC', { lease: held, seq: '0', epoch: '1', halted: false, book: {} });
+
+  await (worker as unknown as { drain: (s: string) => Promise<void> }).drain('ABC');
+
+  const lock = queries.findIndex((sql) => /FROM instruments .*FOR UPDATE/.test(sql));
+  const halt = queries.findIndex((sql) => sql.includes("SET status='halted'"));
+  expect(lock).toBeGreaterThanOrEqual(0);
+  expect(lock).toBeLessThan(halt);
 });
