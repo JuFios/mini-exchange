@@ -35,6 +35,20 @@ export class LeaseManager implements OnModuleDestroy {
     return lease.active && this.leases.get(lease.instrument) === lease;
   }
 
+  /** Залишок TTL ключа lease в Redis; контролери не звертаються до клієнта напряму. */
+  ttl(instrument: string): Promise<number> {
+    return this.locks.client.pttl(`lease:instrument:{${instrument}}`);
+  }
+
+  /** Redis відповідає і не витісняє ключі, інакше lease може зникнути без сліду. */
+  async redisReady(): Promise<boolean> {
+    const [ping, policy] = await Promise.all([
+      this.locks.client.ping(),
+      this.locks.client.config('GET', 'maxmemory-policy'),
+    ]);
+    return ping === 'PONG' && Array.isArray(policy) && policy[1] === 'noeviction';
+  }
+
   assert(lease: InstrumentLease): void {
     if (!this.valid(lease)) throw new FencedOutError();
   }

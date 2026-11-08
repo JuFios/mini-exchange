@@ -41,9 +41,7 @@ export class AdminInstrumentsController {
       rows.map(async (row: { instrument: string }) => ({
         ...row,
         // Збій Redis не повинен ховати дані з PostgreSQL.
-        leaseTtlMs: await this.leases.locks.client
-          .pttl(`lease:instrument:{${row.instrument}}`)
-          .catch(() => null),
+        leaseTtlMs: await this.leases.ttl(row.instrument).catch(() => null),
       })),
     );
   }

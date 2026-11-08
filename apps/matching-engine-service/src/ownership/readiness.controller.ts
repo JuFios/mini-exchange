@@ -29,13 +29,11 @@ export class ReadinessController {
 
   @Get('ready') async ready() {
     try {
-      const [ping, policy, pending] = await Promise.all([
-        this.leases.locks.client.ping(),
-        this.leases.locks.client.config('GET', 'maxmemory-policy'),
+      const [redisReady, pending] = await Promise.all([
+        this.leases.redisReady(),
         this.hasPendingMigrations(),
       ]);
-      if (ping !== 'PONG' || !Array.isArray(policy) || policy[1] !== 'noeviction' || pending)
-        throw new Error();
+      if (!redisReady || pending) throw new Error();
       return { status: 'ok' };
     } catch {
       throw new ServiceUnavailableException({ status: 'unavailable' });
