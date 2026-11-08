@@ -10,7 +10,7 @@ import { InstrumentCatalog } from '../instrument-catalog';
 
 // Legacy-підписка повертає committed snapshot без номера послідовності.
 // Для виявлення пропущених оновлень потрібен sequence-протокол.
-@WebSocketGateway({ cors: { origin: '*' } })
+@WebSocketGateway({ transports: ['websocket'], cors: { origin: '*' } })
 export class OrdersGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
