@@ -10,12 +10,20 @@ export class DatabaseExceptionFilter extends BaseExceptionFilter {
     const message = error instanceof Error ? error.message : '';
     if (
       /^08/.test(code) ||
-      // Пул і клієнт pg повідомляють про ці збої без коду.
-      /^Connection terminated|^timeout exceeded when trying to connect/.test(message) ||
+      // Пул, клієнт pg і TypeORM повідомляють про ці збої без коду.
+      /^Connection terminated|^timeout exceeded when trying to connect|already released/.test(
+        message,
+      ) ||
       [
         'ECONNREFUSED',
         'ECONNRESET',
         'ETIMEDOUT',
+        'ENOTFOUND',
+        'EAI_AGAIN',
+        'EHOSTUNREACH',
+        'ENETUNREACH',
+        'EPIPE',
+        '25P03',
         '57P01',
         '57P02',
         '57P03',
