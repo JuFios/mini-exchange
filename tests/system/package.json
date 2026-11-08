@@ -13,12 +13,14 @@
     "typecheck": "tsc --noEmit",
     "format:check": "prettier --check \"*.ts\"",
     "format": "prettier --write \"*.ts\"",
-    "ownership:hooks": "ts-node chaos-hooks.ts"
+    "ownership:hooks": "ts-node chaos-hooks.ts",
+    "realtime:transport": "ts-node realtime-transport.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "socket.io-client": "4.8.4"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
