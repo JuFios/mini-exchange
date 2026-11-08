@@ -1,3 +1,4 @@
+import { InstrumentWorker } from '../../src/engine/instrument-worker';
 import { engineApp } from './engine-app';
 import { waitFor } from '../helpers/wait-for';
 const api = engineApp();
@@ -94,5 +95,71 @@ it.each(['first', 'middle', 'tail', 'applied-prefix', 'applied-ahead', 'counter-
           .query('SELECT seq FROM order_commands WHERE applied_at IS NOT NULL ORDER BY seq')
       ).map((row: { seq: string }) => row.seq),
     ).toEqual(['1', '2', '3']);
+  },
+);
+
+it.each([
+  ['committed', true, 'active'],
+  ['rolled back', false, 'halted'],
+])(
+  'follows the database when the reply to a resume COMMIT is lost and it was %s',
+  async (_outcome, committed, status) => {
+    const token = await api.register();
+    await api
+      .database()
+      .query("UPDATE instrument_state SET status='halted' WHERE instrument='ABC'");
+    await api.restart();
+    const source = api.database();
+    const original = source.createQueryRunner.bind(source);
+    let lost = false;
+    const interception = jest.spyOn(source, 'createQueryRunner').mockImplementation((mode) => {
+      const runner = original(mode);
+      const query = runner.query.bind(runner) as (
+        sql: string,
+        parameters?: unknown[],
+        structured?: boolean,
+      ) => Promise<unknown>;
+      let resuming = false;
+      runner.query = ((sql: string, parameters?: unknown[], structured?: boolean) => {
+        if (sql.includes("SET status='active'")) resuming = true;
+        return query(sql, parameters, structured);
+      }) as typeof runner.query;
+      const commit = runner.commitTransaction.bind(runner);
+      runner.commitTransaction = async () => {
+        if (!resuming || lost) return commit();
+        lost = true;
+        if (committed) await commit();
+        else await runner.rollbackTransaction();
+        throw new Error('COMMIT acknowledgement lost');
+      };
+      return runner;
+    });
+    const worker = api.app().get(InstrumentWorker) as unknown as {
+      resume(request: { instrument: string; id: string }): void;
+      owned: Map<string, { halted: boolean }>;
+      running: Map<string, Promise<void>>;
+    };
+    try {
+      worker.resume({ instrument: 'ABC', id: 'lost-commit-reply' });
+      await waitFor(async () => lost && !worker.running.has('ABC'));
+    } finally {
+      interception.mockRestore();
+    }
+    expect(
+      (await source.query("SELECT status FROM instrument_state WHERE instrument='ABC'"))[0].status,
+    ).toBe(status);
+    await waitFor(async () => worker.owned.get('ABC')?.halted === !committed);
+    if (committed) {
+      expect((await api.submit(token)).status).toBe(201);
+      return;
+    }
+    expect((await api.submit(token)).status).toBe(503);
+    const login = await api.request('/auth/login', 'POST', undefined, {
+      email: 'admin@demo.local',
+      password: 'demo-admin-local-only',
+    });
+    const admin = (await login.json()).accessToken;
+    expect((await api.request('/admin/instruments/ABC/resume', 'POST', admin)).status).toBe(200);
+    expect((await api.submit(token)).status).toBe(201);
   },
 );
