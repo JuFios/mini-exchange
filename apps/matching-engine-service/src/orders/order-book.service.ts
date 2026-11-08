@@ -21,15 +21,13 @@ function levels(orders: readonly BookOrder[]): BookLevel[] {
 @Injectable()
 export class OrderBookService {
   private readonly quarantined = new Set<string>();
-  private readonly books = new Map<string, { seq: string; depth: BookDepth }>();
+  private readonly books = new Map<string, { seq: string; book: Book; depth?: BookDepth }>();
 
-  // Нові рівні встановлює лише worker після успішного COMMIT або перевіреного recovery.
+  // Нову книгу встановлює лише worker після успішного COMMIT або перевіреного recovery.
+  // Рівні рахуються при першому читанні: на гарячому шляху команди це O(книга) без споживача.
   commit(instrument: string, book: Book, seq: string): void {
     this.quarantined.delete(instrument);
-    this.books.set(instrument, {
-      seq,
-      depth: { bids: levels(book.bids), asks: levels(book.asks) },
-    });
+    this.books.set(instrument, { seq, book });
   }
 
   forget(instrument: string): void {
@@ -52,7 +50,12 @@ export class OrderBookService {
         code: 'INSTRUMENT_HALTED',
         message: 'Стан книги не підтверджено',
       });
-    const depth = this.books.get(instrument)?.depth ?? { bids: [], asks: [] };
+    const entry = this.books.get(instrument);
+    let depth: BookDepth = { bids: [], asks: [] };
+    if (entry) {
+      entry.depth ??= { bids: levels(entry.book.bids), asks: levels(entry.book.asks) };
+      depth = entry.depth;
+    }
     return {
       bids: depth.bids.slice(0, limit).map((level) => ({ ...level })),
       asks: depth.asks.slice(0, limit).map((level) => ({ ...level })),
