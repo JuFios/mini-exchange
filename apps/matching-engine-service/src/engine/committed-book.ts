@@ -4,6 +4,8 @@ import { DataSource } from 'typeorm';
 // Публічні читання ділять пул PG із worker. Ліміт залишає worker вільні з’єднання.
 const MAX_CONCURRENT_READS = 3;
 const MAX_WAITING_READS = 200;
+// Клієнт, якого nginx уже відключив, не повинен залишати в черзі запит, що виконається пізніше.
+const MAX_QUEUE_WAIT_MS = 2000;
 
 interface Level {
   price: string;
@@ -26,7 +28,18 @@ export class CommittedBook {
     if (this.waiting.length >= MAX_WAITING_READS)
       throw new ServiceUnavailableException({ code: 'BOOK_BUSY' });
     // Слот передається напряму, тож `active` не змінюється між release і resume.
-    await new Promise<void>((resolve) => this.waiting.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const entry = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        const index = this.waiting.indexOf(entry);
+        if (index >= 0) this.waiting.splice(index, 1);
+        reject(new ServiceUnavailableException({ code: 'BOOK_BUSY' }));
+      }, MAX_QUEUE_WAIT_MS);
+      this.waiting.push(entry);
+    });
   }
 
   private releaseSlot(): void {
