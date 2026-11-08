@@ -2,8 +2,22 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { AdminSeedService } from '../../src/auth/admin-seed.service';
 import { User } from '../../src/auth/entities/user.entity';
+import { advisoryLocks } from '../../src/database/advisory-lock';
 import { migrate } from '../../src/database/migrate';
 import { testDatabase } from '../test-database';
+
+let mockHashDelayMs = 0;
+
+jest.mock('bcrypt', () => {
+  const actual = jest.requireActual('bcrypt');
+  return {
+    ...actual,
+    hash: async (password: string, rounds: number) => {
+      await new Promise((resolve) => setTimeout(resolve, mockHashDelayMs));
+      return actual.hash(password, rounds);
+    },
+  };
+});
 
 const emails = ['first-admin@example.test', 'second-admin@example.test'];
 const password = 'seed-password-0123456789';
@@ -33,6 +47,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  mockHashDelayMs = 0;
   try {
     if (source.isInitialized) await source.destroy();
   } finally {
@@ -97,3 +112,32 @@ it('keeps existing seed passwords and creates only the missing accounts', async 
   expect(rows).toHaveLength(2);
   expect(rows[0].password_hash).toBe(before.password_hash);
 });
+
+it('seeds accounts when hashing lasts longer than the idle transaction limit', async () => {
+  mockHashDelayMs = 2500;
+
+  await seeder().onApplicationBootstrap();
+
+  expect((await accounts()).map((row) => row.email)).toEqual(emails);
+}, 15000);
+
+it('waits for another seeding replica longer than the default statement limit', async () => {
+  const holder = database.source();
+  await holder.initialize();
+  const runner = holder.createQueryRunner();
+  let seeding: Promise<void> | undefined;
+  try {
+    await runner.query('SELECT pg_advisory_lock($1, $2)', [...advisoryLocks.adminSeed.key]);
+    seeding = seeder().onApplicationBootstrap();
+    seeding.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 5500));
+    await runner.query('SELECT pg_advisory_unlock($1, $2)', [...advisoryLocks.adminSeed.key]);
+
+    await expect(seeding).resolves.toBeUndefined();
+    expect(await accounts()).toHaveLength(2);
+  } finally {
+    await runner.release();
+    await holder.destroy();
+    await seeding?.catch(() => undefined);
+  }
+}, 15000);
