@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Client } from 'pg';
 import { randomUUID } from 'node:crypto';
+import { PG_SESSION_OPTIONS } from '../database/session-options';
 
 // Recovery тримає lock_timeout 3 с і журнал до 10 с; nginx читає відповідь до 15 с.
 const RESUME_ACK_WAIT_MS = 3000;
@@ -41,7 +42,7 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
       password: this.config.getOrThrow('DATABASE_PASSWORD'),
       database: this.config.getOrThrow('DATABASE_NAME'),
       connectionTimeoutMillis: 3000,
-      options: '-c idle_in_transaction_session_timeout=2000 -c statement_timeout=5000',
+      options: PG_SESSION_OPTIONS,
       application_name: `engine-listen:${this.config.getOrThrow('INSTANCE_ID')}`,
     });
     this.client = client;

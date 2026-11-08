@@ -15,6 +15,7 @@ import {
 import { InitialSchema1793980800000 } from './migrations/1793980800000-initial-schema';
 import { Instruments1793980800001 } from './migrations/1793980800001-instruments';
 import type { DatabaseEnv } from './config/env.validation';
+import { PG_SESSION_OPTIONS } from './database/session-options';
 
 export function engineDataSourceOptions(
   env: DatabaseEnv,
@@ -22,8 +23,9 @@ export function engineDataSourceOptions(
   return {
     type: 'postgres',
     extra: {
-      options: '-c idle_in_transaction_session_timeout=2000 -c statement_timeout=5000',
-      connectionTimeoutMillis: 3000,
+      options: PG_SESSION_OPTIONS,
+      // Черга за з’єднанням під сплеском не повинна давати 500 за 3 с; недоступну БД виявляє /ready.
+      connectionTimeoutMillis: 10000,
     },
     host: env.DATABASE_HOST,
     port: env.DATABASE_PORT,
