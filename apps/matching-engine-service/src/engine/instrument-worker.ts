@@ -17,6 +17,10 @@ import { FencedOutError, lockEpoch } from '../ownership/fencing';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { PgNotifications } from './pg-notifications';
 
+// Resume і shutdown чекають на поточний drain, тому один прохід обмежений часом.
+// Решту backlog забере наступний poll або NOTIFY.
+const DRAIN_BUDGET_MS = 1000;
+
 interface OwnedBook {
   epoch: string;
   lease: InstrumentLease;
@@ -177,7 +181,12 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   }
 
   private async drain(instrument: string): Promise<void> {
-    for (let count = 0; count < 100 && !this.stopped; count++) {
+    const started = performance.now();
+    for (
+      let count = 0;
+      count < 100 && !this.stopped && performance.now() - started < DRAIN_BUDGET_MS;
+      count++
+    ) {
       const owned = this.owned.get(instrument);
       if (!owned) return;
       this.ownership.leases.assert(owned.lease);
