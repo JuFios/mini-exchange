@@ -20,6 +20,11 @@ import { PgNotifications } from './pg-notifications';
 // Resume і shutdown чекають на поточний drain, тому один прохід обмежений часом.
 // Решту backlog забере наступний poll або NOTIFY.
 const DRAIN_BUDGET_MS = 1000;
+// Renew у Redis не залежить від PostgreSQL: запит у мертву мережу тримав би lease без роботи.
+// Межа більша за легальні очікування операції: черга пулу 10 с, lock 3 с, statement 10 с.
+const WORKER_STALL_MS = 30000;
+// Довше за інтервал acquire: резерв встигає забрати lease раніше за відрізаного власника.
+const STALL_BACK_OFF_MS = 5000;
 
 interface OwnedBook {
   epoch: string;
@@ -91,7 +96,11 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     resume = false,
   ): Promise<OwnedBook> {
     try {
-      const owned = await this.ownership.recover(instrument, lease, resume);
+      const owned = await this.bounded(
+        instrument,
+        lease,
+        this.ownership.recover(instrument, lease, resume),
+      );
       this.owned.set(instrument, owned);
       if (owned.quarantined) this.books.quarantine(instrument);
       else this.books.commit(instrument, owned.book, owned.seq);
@@ -100,6 +109,24 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       this.ownership.leases.drop(lease);
       throw error;
     }
+  }
+
+  // Застарілий запис після відновлення мережі не пройде fencing; тут звільняється лише lease.
+  private bounded<T>(
+    instrument: string,
+    lease: InstrumentLease | undefined,
+    work: Promise<T>,
+  ): Promise<T> {
+    if (!lease) return work;
+    let timer: NodeJS.Timeout;
+    const stalled = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        this.logger.error({ alert: 'engine_worker_stalled', instrument });
+        this.ownership.leases.drop(lease, STALL_BACK_OFF_MS);
+        reject(new FencedOutError());
+      }, WORKER_STALL_MS);
+    });
+    return Promise.race([work, stalled]).finally(() => clearTimeout(timer));
   }
 
   private readonly resume = (request: { instrument: string; id: string }) => {
@@ -164,7 +191,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     if (running) return running;
     // Lease цього drain: до завершення запису owned міг змінитися на нову епоху.
     const lease = this.owned.get(instrument)?.lease;
-    const task = this.drain(instrument)
+    const task = this.bounded(instrument, lease, this.drain(instrument))
       .catch(async (error: unknown) => {
         this.logger.error({
           alert: 'engine_apply_failed',
@@ -194,13 +221,15 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
 
   private async drain(instrument: string): Promise<void> {
     const started = performance.now();
+    // Завислий drain може прокинутися вже після нового lease цієї ж репліки.
+    const lease = this.owned.get(instrument)?.lease;
     for (
       let count = 0;
       count < 100 && !this.stopped && performance.now() - started < DRAIN_BUDGET_MS;
       count++
     ) {
       const owned = this.owned.get(instrument);
-      if (!owned) return;
+      if (!owned || owned.lease !== lease) return;
       this.ownership.leases.assert(owned.lease);
       if (owned.halted) return;
       const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(
@@ -209,6 +238,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         WHERE i.symbol=$1`,
         [instrument, owned.seq],
       );
+      if (this.owned.get(instrument) !== owned) return;
       if (!row.seq && BigInt(row.next_seq) === BigInt(owned.seq)) {
         this.gaps.delete(instrument);
         return;

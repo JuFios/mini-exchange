@@ -136,9 +136,10 @@ export class LeaseManager implements OnModuleDestroy {
     if (this.valid(lease)) this.schedule(lease, started);
   }
 
-  drop(lease: InstrumentLease): void {
+  drop(lease: InstrumentLease, backOffMs = 0): void {
     if (!lease.active) return;
     lease.active = false;
+    if (backOffMs) this.nextAttempt.set(lease.instrument, performance.now() + backOffMs);
     clearTimeout(lease.renewal);
     clearTimeout(lease.deadline);
     if (this.leases.get(lease.instrument) === lease) {
