@@ -13,7 +13,7 @@ import { bookOrder, CommandRow } from './command';
 import { CommandApplier, toRejectedInternal, WorkerResult } from './command-applier';
 import { OwnershipCoordinator } from '../ownership/ownership-coordinator';
 import { InstrumentLease } from '../ownership/lease-manager';
-import { FencedOutError, lockEpoch } from '../ownership/fencing';
+import { FencedOutError, haltInstrument, lockEpoch } from '../ownership/fencing';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { PgNotifications } from './pg-notifications';
 
@@ -269,9 +269,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           await this.source.transaction(async (db) => {
             await lockEpoch(db, instrument, owned.epoch);
             this.ownership.leases.assert(owned.lease);
-            await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
-              instrument,
-            ]);
+            await haltInstrument(db, instrument);
           });
           owned.halted = true;
           this.logger.error({

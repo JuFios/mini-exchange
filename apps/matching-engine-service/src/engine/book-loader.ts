@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { EntityManager, In } from 'typeorm';
 import { Book, compareOrders } from '../matching/book';
 import { Order } from '../orders/entities/order.entity';
+import { haltInstrument } from '../ownership/fencing';
 import { bookOrder } from './command';
 
 export function counters(book: Book) {
@@ -32,9 +33,7 @@ export class BookLoader {
       [instrument],
     );
     if (state.legacy_verified !== true) {
-      await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
-        instrument,
-      ]);
+      await haltInstrument(db, instrument);
       this.logger.error({ alert: 'engine_legacy_state_unverified', instrument });
       return {
         book: { bids: [], asks: [] },
@@ -82,9 +81,7 @@ export class BookLoader {
       crossed ||
       !journalValid
     ) {
-      await db.query("UPDATE instrument_state SET status='halted' WHERE instrument=$1", [
-        instrument,
-      ]);
+      await haltInstrument(db, instrument);
       this.recoveryMismatches++;
       this.logger.error({ alert: 'engine_recovery_mismatch', instrument });
       state.status = 'halted';

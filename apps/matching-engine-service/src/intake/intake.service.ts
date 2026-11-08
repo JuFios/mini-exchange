@@ -83,13 +83,9 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async assertActive(
-    db: Pick<EntityManager, 'query'>,
-    instrument: string,
-    lock = false,
-  ): Promise<void> {
+  async assertActive(db: Pick<EntityManager, 'query'>, instrument: string): Promise<void> {
     const [state] = await db.query(
-      `SELECT status,legacy_verified FROM instrument_state WHERE instrument=$1${lock ? ' FOR SHARE' : ''}`,
+      'SELECT status,legacy_verified FROM instrument_state WHERE instrument=$1',
       [instrument],
     );
     if (state?.status !== 'active' || state.legacy_verified !== true) {
@@ -179,7 +175,6 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
       );
       if (!rows.length) return undefined;
       if (accepted === 'rejected') return null;
-      await this.assertActive(db, dto.instrument, true);
       const command = await this.sequence(
         db,
         dto.instrument,
@@ -189,6 +184,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
         payload,
         traceparent,
       );
+      await this.assertActive(db, dto.instrument);
       await db.getRepository(Order).insert({
         id: row.order_id,
         ownerId: userId,
@@ -238,7 +234,6 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     try {
       return await this.source.transaction(async (db) => {
         await db.query("SET LOCAL lock_timeout='3s'");
-        await this.assertActive(db, order.instrument, true);
         const command = await this.sequence(
           db,
           order.instrument,
@@ -248,6 +243,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
           {},
           traceparent,
         );
+        await this.assertActive(db, order.instrument);
         return { orderId: order.id, seq: command.seq, replay: false };
       });
     } catch (error) {
@@ -258,6 +254,8 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // Рядок лічильника серіалізує intake з halt. Блокування стану заважало б worker: нові
+  // FOR SHARE обганяють його FOR UPDATE, і під потоком заявок застосування стоїть.
   private async sequence(
     db: EntityManager,
     instrument: string,
