@@ -30,6 +30,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   private readonly logger = new Logger(InstrumentWorker.name);
   private readonly owned = new Map<string, OwnedBook>();
   private readonly running = new Map<string, Promise<void>>();
+  private readonly loading = new Map<string, Promise<void>>();
   private readonly gaps = new Map<string, number>();
   private timer?: NodeJS.Timeout;
   private stopped = false;
@@ -61,7 +62,18 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     await this.poll();
   }
 
-  private async reload(instrument: string): Promise<void> {
+  // Одне завантаження на інструмент: poll і повтор після збою drain не змагаються за lease.
+  private reload(instrument: string): Promise<void> {
+    const current = this.loading.get(instrument);
+    if (current) return current;
+    const task = this.load(instrument).finally(() => {
+      if (this.loading.get(instrument) === task) this.loading.delete(instrument);
+    });
+    this.loading.set(instrument, task);
+    return task;
+  }
+
+  private async load(instrument: string): Promise<void> {
     const lease = await this.ownership.leases.acquire(instrument);
     if (!lease) return;
     try {
@@ -100,10 +112,20 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.running.set(request.instrument, task);
   };
 
-  private async poll(): Promise<void> {
+  // Наступний poll планується до початку роботи: довгий drain або повільний recovery одного
+  // інструмента не відкладає захоплення lease іншого, інакше failover перевищить заявлені 7–10 с.
+  private poll(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.timer = setTimeout(() => {
+      void this.poll();
+    }, this.config.getOrThrow('COMMAND_POLL_INTERVAL_MS'));
+    return this.sweep();
+  }
+
+  private async sweep(): Promise<void> {
     await Promise.all(
       this.catalog.list().map(async ({ symbol }) => {
-        if (!this.owned.has(symbol)) {
+        if (!this.owned.has(symbol) && !this.loading.has(symbol)) {
           try {
             await this.reload(symbol);
           } catch (error) {
@@ -118,10 +140,6 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         await this.kick(symbol);
       }),
     );
-    if (!this.stopped)
-      this.timer = setTimeout(() => {
-        void this.poll();
-      }, this.config.getOrThrow('COMMAND_POLL_INTERVAL_MS'));
   }
 
   async kick(instrument: string): Promise<void> {
@@ -389,6 +407,10 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     clearTimeout(this.timer);
     this.notifications.commandListeners.delete(this.wake);
     this.notifications.resumeListeners.delete(this.resume);
-    await Promise.all(this.running.values());
+    await Promise.all(
+      [...this.loading.values(), ...this.running.values()].map((task) =>
+        task.catch(() => undefined),
+      ),
+    );
   }
 }

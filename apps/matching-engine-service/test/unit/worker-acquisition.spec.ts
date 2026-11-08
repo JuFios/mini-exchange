@@ -48,5 +48,27 @@ it('keeps trying to acquire a free instrument while another one is draining a ba
 
   // Інтервал poll 100 мс: за секунду XYZ має отримати кілька спроб, а не одну.
   expect(acquired.filter((instrument) => instrument === 'XYZ').length).toBeGreaterThanOrEqual(5);
-  await worker.onModuleDestroy().catch(() => undefined);
+  // Drain навмисно не завершується, тому shutdown не чекаємо.
+  void worker.onModuleDestroy();
+});
+
+it('does not delay acquisition of one instrument while another one is still loading', async () => {
+  jest.useFakeTimers();
+  const { worker, acquired } = setup();
+  const leases = (worker['ownership'] as { leases: { acquire: (s: string) => Promise<undefined> } })
+    .leases;
+  leases.acquire = async (instrument: string) => {
+    acquired.push(instrument);
+    // Захоплення ABC зависає (повільний Redis): XYZ усе одно має повторюватися.
+    if (instrument === 'ABC') await new Promise<never>(() => undefined);
+    return undefined;
+  };
+
+  void worker.onApplicationBootstrap();
+  await jest.advanceTimersByTimeAsync(1000);
+
+  expect(acquired.filter((instrument) => instrument === 'XYZ').length).toBeGreaterThanOrEqual(5);
+  // Повторні poll не запускають друге завантаження ABC, поки перше триває.
+  expect(acquired.filter((instrument) => instrument === 'ABC')).toHaveLength(1);
+  void worker.onModuleDestroy();
 });
