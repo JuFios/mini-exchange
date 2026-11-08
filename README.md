@@ -586,7 +586,9 @@ TTL лишається production-значенням. Збережені ком�
 Test-overlay вмикає його для seeded admin. Репліки мають `init: true`: Node не є
 PID 1, тому self-SIGKILL hooks справді завершують процес; init також збирає дочірні процеси. Хуки `after_writes_before_commit`
 і `after_commit_before_memory` завершують процес через SIGKILL; `stall_before_commit`
-чекає `CHAOS_STALL_BEFORE_COMMIT_MS`. `fromSeq` та `requireTrades` обмежують спрацювання.
+чекає `CHAOS_STALL_BEFORE_COMMIT_MS`. Інтеграційний тест таймауту сесії (`fencing.spec.ts`) відтворює
+зависання сирим `pg`-з’єднанням із тими самими опціями сесії, а не хуком у воркері: після
+стоп-хука власник із чинним lease сам відновився б, тож failover він не перевіряє. `fromSeq` та `requireTrades` обмежують спрацювання.
 
 Settlement поки не має тестових сценаріїв. Його `npm test` явно дозволяє порожній набір
 через `--passWithNoTests`; CI викликає той самий скрипт.
