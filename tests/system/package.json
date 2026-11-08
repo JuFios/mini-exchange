@@ -14,6 +14,7 @@
     "format:check": "prettier --check \"*.ts\"",
     "format": "prettier --write \"*.ts\"",
     "ownership:hooks": "ts-node chaos-hooks.ts",
+    "ownership:blackhole": "ts-node pg-blackhole.ts",
     "realtime:transport": "ts-node realtime-transport.ts"
   },
   "dependencies": {
