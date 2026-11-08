@@ -1,11 +1,32 @@
 {
   "parser": "@typescript-eslint/parser",
-  "parserOptions": { "sourceType": "module" },
+  "parserOptions": {
+    "sourceType": "module"
+  },
   "plugins": ["@typescript-eslint"],
   "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
   "root": true,
-  "env": { "node": true, "jest": true },
+  "env": {
+    "node": true,
+    "jest": true
+  },
   "rules": {
-    "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }]
+    "@typescript-eslint/no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "CallExpression[callee.property.name='transaction'] CallExpression[callee.object.name='bcrypt']",
+        "message": "Do not hash inside a database transaction: sessions die after 2 s idle in transaction."
+      },
+      {
+        "selector": "CallExpression[callee.property.name='transaction'] CallExpression[callee.object.property.name=/^(reservations|redis|locks)$/]",
+        "message": "Do not call external services inside a database transaction: sessions die after 2 s idle in transaction."
+      }
+    ]
   }
 }
