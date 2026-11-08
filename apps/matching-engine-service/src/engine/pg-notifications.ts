@@ -9,6 +9,13 @@ const PUBLISH_WAIT_MS = 2000;
 const RESUME_ACK_WAIT_MS = 3000;
 const RESUME_RESULT_WAIT_MS = 12000;
 
+// Запит без відповіді блокував би з'єднання; розрив запускає перепідключення.
+function destroySocket(client: Client): void {
+  (
+    client as unknown as { connection?: { stream?: { destroy(): void } } }
+  ).connection?.stream?.destroy();
+}
+
 interface Waiter {
   seq: string;
   finish: () => void;
@@ -87,9 +94,22 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
     });
     try {
       await client.connect();
-      await client.query(
-        'LISTEN order_applied; LISTEN engine_commands; LISTEN engine_resume; LISTEN engine_resume_result',
-      );
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          client.query(
+            'LISTEN order_applied; LISTEN engine_commands; LISTEN engine_resume; LISTEN engine_resume_result',
+          ),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              destroySocket(client);
+              reject(new Error('LISTEN timed out'));
+            }, PUBLISH_WAIT_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
       if (this.stopped) await client.end();
       else if (this.client === client) this.ready = true;
     } catch {
@@ -142,11 +162,8 @@ export class PgNotifications implements OnModuleInit, OnModuleDestroy {
           timedOut,
         ]);
       } catch (error) {
-        // Запит без відповіді блокував би всю чергу; розрив запускає перепідключення.
         if (error instanceof Error && error.message === 'Notification publish timed out')
-          (
-            client as unknown as { connection?: { stream?: { destroy(): void } } }
-          ).connection?.stream?.destroy();
+          destroySocket(client);
         throw error;
       } finally {
         clearTimeout(timer);
