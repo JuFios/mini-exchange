@@ -17,6 +17,13 @@ async function main() {
       const metrics = await request('/metrics', 'GET', undefined, undefined, base);
       assert.equal(metrics.status, base.endsWith(':3001') ? 404 : 200);
       await metrics.text();
+      if (base.endsWith(':3001'))
+        // Express віддає ці шляхи так само, як `/metrics`, тож nginx має закривати всі варіанти.
+        for (const path of ['/Metrics', '/metrics/', '/METRICS/', '/Internal/x', '/internal/x']) {
+          const blocked = await request(path, 'GET', undefined, undefined, base);
+          assert.equal(blocked.status, 404, path);
+          await blocked.text();
+        }
       const socket = io(base, {
         transports: ['websocket'],
         reconnection: false,
