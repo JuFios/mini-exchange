@@ -91,3 +91,70 @@ it('restores active accepted reservation terms from stored engine orders across 
     ),
   ).toEqual([{ entries: 1 }]);
 });
+
+it('converts a reservation that commits concurrently with rollback to the legacy hash', async () => {
+  const source = ledger.source();
+  const reservation = {
+    reservationId: randomUUID(),
+    userId: randomUUID(),
+    asset: 'ABC',
+    amount: '100',
+    instrument: 'ABC',
+    limitPrice: '100.00',
+  } as const;
+  await ledger.app().get(ReservationsService).reserve(reservation);
+  const concurrentId = randomUUID();
+  const writer = source.createQueryRunner();
+  let rollback: Promise<void> | undefined;
+  try {
+    await writer.startTransaction();
+    await writer.query('UPDATE reservations SET remaining=remaining WHERE reservation_id=$1', [
+      reservation.reservationId,
+    ]);
+    rollback = migrate(source, 'revert');
+    void rollback.catch(() => undefined);
+    let waiting = false;
+    const deadline = performance.now() + 3000;
+    while (!waiting && performance.now() < deadline) {
+      [{ waiting }] = await source.query(
+        `SELECT EXISTS (SELECT FROM pg_stat_activity
+                        WHERE datname=current_database() AND wait_event_type='Lock'
+                          AND query LIKE '%UPDATE reservations%request_hash%') AS waiting`,
+      );
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(waiting).toBe(true);
+    await writer.query(
+      `INSERT INTO reservations (reservation_id,user_id,asset,amount,remaining,status,request_hash,result,instrument,limit_price_ticks)
+       SELECT $1,user_id,asset,amount,remaining,status,request_hash,result,instrument,limit_price_ticks
+       FROM reservations WHERE reservation_id=$2`,
+      [concurrentId, reservation.reservationId],
+    );
+    await writer.commitTransaction();
+    await rollback;
+    expect(
+      await source.query('SELECT request_hash FROM reservations WHERE reservation_id=$1', [
+        concurrentId,
+      ]),
+    ).toEqual([
+      {
+        request_hash: requestHash({
+          userId: reservation.userId,
+          asset: reservation.asset,
+          amount: reservation.amount,
+        }),
+      },
+    ]);
+  } finally {
+    if (writer.isTransactionActive) await writer.rollbackTransaction();
+    await writer.release();
+    await rollback?.then(
+      async () => {
+        await source.query('DELETE FROM reservations WHERE reservation_id=$1', [concurrentId]);
+        await migrate(source, 'run');
+        await ledger.app().get(ReservationsService).reserve(reservation);
+      },
+      () => undefined,
+    );
+  }
+});

@@ -4,7 +4,6 @@ export class ReservationTermsAndBalancePrecision1793980800001 implements Migrati
   async up(db: QueryRunner): Promise<void> {
     // Сумарний баланс має вміщувати до bigint-кількості проводок із 38 цифрами кожна.
     await db.query(`
-      ALTER TABLE accounts ALTER COLUMN balance TYPE numeric(57,0);
       ALTER TABLE reservations
         ADD COLUMN instrument text REFERENCES assets(code),
         ADD COLUMN limit_price_ticks bigint,
@@ -17,12 +16,14 @@ export class ReservationTermsAndBalancePrecision1793980800001 implements Migrati
             AND limit_price_ticks BETWEEN 1 AND 100000000
           )
         );
+      ALTER TABLE accounts ALTER COLUMN balance TYPE numeric(57,0);
     `);
   }
 
   async down(db: QueryRunner): Promise<void> {
     // Старий клієнт повторює reserve за хешем канонічних userId, asset і amount.
     await db.query(`
+      LOCK TABLE reservations IN ACCESS EXCLUSIVE MODE;
       UPDATE reservations
       SET request_hash=encode(sha256(convert_to(format(
         '{"userId":%s,"asset":%s,"amount":%s}',
