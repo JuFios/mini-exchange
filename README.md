@@ -7,8 +7,9 @@
 ## Що вже працює
 
 - `apps/matching-engine-service` — автентифікація, подача/скасування заявок,
-  зіставлення за price-time priority, self-trade prevention, трансляція
-  committed знімка order book через WebSocket.
+  зіставлення за price-time priority, self-trade prevention, WebSocket `/market`
+  (snapshot, `book.delta` з номером команди, угоди), `/private` (заявки й баланси
+  власника) та застарілий `/`.
 - Дві репліки engine: Redis lease з TTL і renewal, PG fencing, recovery та admin resume.
 - Transactional outbox публікує події книги, угод і заявок у Redis Streams.
 - Settlement резервує кошти, споживає `trade.executed` і `order.closed` із Redis Streams,
@@ -17,8 +18,8 @@
 
 ## Що ще НЕ реалізовано / потребує уваги
 
-- Обробка розриву WebSocket-з'єднання на фронтенді (resync за номером
-  послідовності).
+- Клієнт resync за номером послідовності на фронтенді (автомат `book-sync`): сервер уже віддає
+  snapshot, `seq` і heartbeat, а сторінка досі працює через застарілий namespace `/`.
 
 ## Запуск
 
@@ -198,6 +199,7 @@ volumes:
 | Зачеплена resting-заявка лишається в старому стані в БД | `test/e2e/regression/resting-persistence.e2e-spec.ts` | Одна транзакція записує всі зміни заявок і trades. |
 | Після рестарту книга порожня | `test/e2e/regression/book-restore.e2e-spec.ts` | Recovery читає committed resting-заявки й звіряє лічильники. |
 | Після падіння власника Redis lock лишається назавжди | `test/integration/redis-lock.spec.ts`: acquire без release; на початковому коді `PTTL=-1`. Червоний коміт `88e28a3`, виправлення `5b5cc7c` | `SET NX PX`, атомарні Lua renew/release; інтеграційні тести перевіряють SIGKILL дочірнього процесу й захист replacement lease. |
+| Підписаний WebSocket-клієнт лишається на першій книзі й не відрізняє її від застарілої | `test/e2e/regression/silent-stale.e2e-spec.ts`: після п'яти заявок клієнт не отримує жодного оновлення, хоча з'єднання живе | Namespace `/` надсилає свіжу книгу після змін; нові клієнти використовують `/market` із `seq`, delta і heartbeat (розділ «WebSocket і resync»). |
 | Cancel обнуляє невиконаний залишок | `test/e2e/regression/cancel-remainder.e2e-spec.ts` | Залишок і виконаний обсяг зберігаються. |
 
 ## Зіставлення заявок
@@ -329,6 +331,10 @@ HTTP-тесті точності використано дійсний симв�
 Тести міграцій engine враховують нову міграцію для строку повтору release:
 відкат перевіряє видалення її індексу, а перевірки базової схеми та constraints збережено.
 Спільний e2e-хелпер engine вимикає реальні резерви для наявних тестів matching.
+Після кожного тесту він також видаляє market-stream і stream подій користувачів: номери команд
+починаються з одиниці після `TRUNCATE`, а читачі WebSocket беруть хвіст stream за точку відліку.
+Тести звірки settlement підміняють `EngineOrdersClient` разом з `EngineTradesClient`: без engine
+питання про термінальні заявки не має відповіді.
 Тести резервів підключають HTTP-двійник і перевіряють відновлення після SIGKILL.
 Інтеграційні тести вбивають relay до та після XADD і звіряють усі рядки outbox
 з Redis після рестарту. Окремий сценарій запускає два relay на 1000 застосованих командах.
@@ -640,6 +646,84 @@ relay публікує їх знову, а settlement ідемпотентно �
 Нові змінні settlement: `CONSUMER_NAME`, `CONSUMER_CLAIM_IDLE_MS`, `CONSUMER_MAX_DELIVERIES`,
 `SETTLEMENT_GRACE_MS`, `ENGINE_INTERNAL_URL`. Для кількох екземплярів settlement задайте різні `CONSUMER_NAME`.
 
+## WebSocket і resync
+
+Усі namespace працюють лише через WebSocket (`transports: ['websocket']`) і не потребують sticky sessions.
+Дані беруть із закомічених рядків PostgreSQL та Redis Streams: пам'ять власника інструмента WebSocket не читає.
+Кожна репліка читає `exchange:market:{I}` та `exchange:user-events` однією командою `XREAD` зі збереженим `lastId`,
+починаючи з хвоста stream на старті. Репліка відкидає повтор запису з однаковим `eventId`, який relay робить після збою
+між XADD і позначкою публікації (пам'ятає останні 4096 ID). Клієнт усе одно відкидає delta за `seq`: після рестарту репліки
+повтор міг би дійти вдруге.
+
+### `/market` (публічний)
+
+| Подія | Напрям | Зміст |
+|---|---|---|
+| `book.subscribe {instrument}` | клієнт → сервер | ack `{ok, instance, snapshot}`, де `snapshot` = `{instrument, seq, bids, asks}`; помилка `{ok:false, error}` з кодом `UNKNOWN_INSTRUMENT`, `INSTRUMENT_HALTED`, `BOOK_BUSY` (ліміт одночасних читань snapshot) або `BOOK_UNAVAILABLE` |
+| `book.unsubscribe {instrument}` | клієнт → сервер | ack `{ok}` |
+| `book.delta` | сервер → клієнт | `{instrument, seq, changes}`; рівно одна на команду (може бути порожньою), `seq` дорівнює номеру команди |
+| `trade` | сервер → клієнт | `{instrument, tradeId, seq, price, quantity, takerSide, executedAt}` |
+| `book.heartbeat` | сервер → клієнт | `{instrument, seq}` кожні 2 с; `seq` = `last_applied_seq` з PostgreSQL |
+
+`changes` містить абсолютні `quantity` і `orders` рівня; `quantity: "0"` означає, що рівень зник.
+Snapshot читається в `REPEATABLE READ READ ONLY`, тому будь-яка репліка віддає однаковий стан для одного `seq`.
+Сервер приєднує сокет до кімнати інструмента до читання snapshot: команда, закомічена після snapshot,
+публікується вже після приєднання, і клієнт не втрачає delta між snapshot і першою подією.
+Delta із `seq` більшим за snapshot можуть дійти до ack, тож клієнт буферизує їх від моменту підписки.
+Клієнт відкидає delta із `seq` не більше за snapshot, а при пропуску (`seq` більший за наступний) або коли
+heartbeat двічі поспіль випереджає останню отриману delta, бере новий snapshot. Під час черги в relay PostgreSQL коротко випереджає stream, тож heartbeat може випередити delta: клієнт має робити resync із затримкою та випадковим зсувом (jitter), а сервер обмежує одночасні читання snapshot і відповідає `BOOK_BUSY`. Невдала повторна підписка лишає сокет у кімнаті.
+Протокол не містить ідентифікаторів користувачів і заявок.
+
+Завислий `XREAD`-цикл не можна помітити за самими delta, тому heartbeat бере `seq` з PostgreSQL й іде до будь-яких звернень до Redis, а не з останньої
+розданої цією реплікою події. Репліка стежить, чи просувається вона за тим, що relay уже опублікував у stream.
+Якщо вона відстає й не просувається довше `WS_REPLICA_MAX_LAG_MS` (5000 в `.env.example`; змінна обов'язкова, 1–60000), то `/ready` повертає 503,
+сокети репліки розриваються, а нові підключення відхиляються з `REPLICA_UNAVAILABLE`, поки вона не наздожене stream.
+Перевірка йде раз на 2 с і починає відлік на першому тіку з відставанням, тож реакція займає до `WS_REPLICA_MAX_LAG_MS` плюс чотири секунди (близько 8 с для 5000). Зупинка relay не знімає репліки:
+у stream тоді немає нових записів, а клієнти самі позначають книгу `stale` за heartbeat.
+Метрика `ws_replica_lag_seq{instrument}` показує різницю між `last_applied_seq` у PostgreSQL і розданим `seq`.
+
+### `/private` (власник)
+
+Токен передається в handshake: `io(url + '/private', { auth: { token } })`. Це access-токен із тими ж перевірками,
+що й для HTTP (HS256, `typ=access`, `sub` — UUID). Без токена, з refresh-токеном, простроченим чи підробленим
+підключення завершується `connect_error` з повідомленням `UNAUTHORIZED`. Кімнату `user:<sub>` визначає сервер.
+У `exp` токена сервер розриває сокет; клієнт бере новий access і підключається знову.
+
+| Подія | Зміст |
+|---|---|
+| `order.updated` | `{orderId, instrument, version, status, remainingQuantity, filledQuantity, cancelReason?}` |
+| `wallet.updated` | `{asset, available, reserved, version}`; settlement пише її після кожного руху коштів (резерв, угода, release) |
+
+Приватні події не мають `seq` і під час розриву губляться. Після кожного (пере)підключення клієнт перечитує
+`GET /orders?status=active` і `GET /wallets`, а події застосовує, лише якщо `version` більша за відому.
+Кожна репліка читає весь stream `exchange:user-events` і віддає кожному сокету події його власника.
+
+### Застарілий namespace `/`
+
+`subscribe` повертає `book` з агрегованими `bids` і `asks` без `seq`. Раніше після цього сервер нічого не
+надсилав, тож клієнт лишався з першою книгою й не міг відрізнити її від актуальної. Тепер після змін книги
+сервер надсилає нову `book`, не частіше ніж раз на 100 мс на інструмент і лише за наявності підписників.
+Відсутність `seq` лишається обмеженням: виявити пропуск тут неможливо. Namespace deprecated, нові клієнти
+використовують `/market`.
+
+### Chaos і перевірки
+
+`POST /admin/chaos` з `{"point":"freeze_stream_reader"}` зупиняє читання stream на репліці, `unfreeze_stream_reader`
+відновлює його (лише з `CHAOS_ENABLED=true`). Інтеграційний тест `realtime-replicas.spec.ts` заморожує читач
+однієї з двох реплік і перевіряє: клієнт замороженої репліки бачить розбіжність у heartbeat, `/ready` стає 503, сокети
+розірвано, нові підключення відхилено, а друга репліка весь час `live`. Той самий файл порівнює послідовності
+двох клієнтів на різних репліках та 100 snapshot, зроблених під час 150 команд, з незалежним replay.
+
+```bash
+docker compose run --rm system-tests npm run wallet:push
+```
+
+Сценарій `wallet:push` підключає покупця, продавця й стороннього користувача до `/private` через `engine-lb`.
+Після угоди перші двоє отримують `wallet.updated` для base і quote з зростаючою `version`, остання подія
+збігається з `GET /wallets`, а сторонній користувач не отримує нічого.
+
+Не використовуються Socket.IO Redis adapter і connection state recovery: відновлення стану робить snapshot.
+
 ## Recovery і зупинений інструмент
 
 Recovery сортує заявки за ціною й `prioritySeq`, перевіряє загальні та окремі для bids/asks
@@ -818,6 +902,7 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose run --rm system-tests npm run ownership:hooks
   docker compose run --rm system-tests npm run ownership:blackhole
   docker compose run --rm system-tests npm run settlement:redrive
+  docker compose run --rm system-tests npm run wallet:push
 )
 ```
 
