@@ -1,7 +1,9 @@
 import { once } from 'node:events';
 import { fork } from 'node:child_process';
 import { join } from 'node:path';
+import { JwtService } from '@nestjs/jwt';
 import Redis from 'ioredis';
+import request from 'supertest';
 import { SettlementConsumer } from '../../src/consumer/settlement-consumer.service';
 import { SettlementStats } from '../../src/consumer/settlement-stats';
 import { DEAD_LETTER_STREAM } from '../../src/consumer/streams';
@@ -79,6 +81,26 @@ afterEach(async () => {
 afterAll(async () => {
   await resetStreams(redis);
   redis.disconnect();
+});
+
+it('returns in GET /wallets the same version that the pushed wallet.updated carries', async () => {
+  const trade = tradeFixture();
+  await reserveTrade(ledger.app(), trade);
+  consumer = startConsumer(ledger.app());
+  await redis.xadd(abcStream, '*', ...tradeFields(trade));
+  const pushed = await until(walletEvents, (events) => events.length === 4);
+
+  const jwt = new JwtService({ secret: ledger.jwtSecret });
+  for (const { userId, asset, version } of pushed) {
+    const access = jwt.sign({ sub: userId, typ: 'access' }, { expiresIn: '15m' });
+    const response = await request(ledger.app().getHttpServer())
+      .get('/wallets')
+      .auth(access, { type: 'bearer' })
+      .expect(200);
+    expect(response.body.find((wallet: { asset: string }) => wallet.asset === asset)).toMatchObject(
+      { version },
+    );
+  }
 });
 
 it('settles a published trade, pushes all four wallets and acknowledges the record', async () => {

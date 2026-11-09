@@ -125,6 +125,26 @@ it('delivers order and wallet updates only to their owner and without identities
   expect(forB).toEqual([]);
 });
 
+it('returns in GET /orders the same version that the pushed order.updated carries', async () => {
+  const owner = await account();
+  const received = await listen(owner.accessToken);
+  const response = await api.submit(owner.accessToken, { price: 100 });
+  expect(response.status).toBe(201);
+  const { order } = (await response.json()) as { order: { id: string } };
+
+  await waitFor(async () => received.some(({ event }) => event === 'order.updated'), 5000);
+  const pushed = received.filter(({ event }) => event === 'order.updated').at(-1)?.payload as {
+    orderId: string;
+    version: number;
+  };
+  const listed = (await (await api.request('/orders', 'GET', owner.accessToken)).json()) as {
+    id: string;
+    version: number;
+  }[];
+  expect(pushed.orderId).toBe(order.id);
+  expect(listed.find(({ id }) => id === order.id)?.version).toBe(pushed.version);
+});
+
 it('drops a repeated stream entry and keeps delivering the next ones', async () => {
   const user = await account();
   const received = await listen(user.accessToken);
