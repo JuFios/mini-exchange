@@ -216,6 +216,8 @@ jobs:
         run: docker compose up -d --build --wait --wait-timeout 240
       - name: Check WebSocket transport through both listeners
         run: docker compose run --rm system-tests npm run realtime:transport
+      - name: Check cancellation and reservation recovery
+        run: docker compose run --rm system-tests npm run reservations:release
       - name: Check graceful ownership transfer
         run: docker compose run --rm system-tests npm run chaos:sigterm
       - name: Check ownership after a crash
