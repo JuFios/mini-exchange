@@ -25,13 +25,25 @@ const isText = (value: unknown): value is string => typeof value === 'string' &&
 // `seq` перетворюється на BigInt, який кидає виняток на нечисловому тексті.
 const isSeq = (value: unknown): value is string => typeof value === 'string' && /^\d+$/.test(value);
 
+/** Значення поля запису stream або `undefined`, якщо такого поля немає. */
+export function fieldOf(fields: readonly string[], name: string): string | undefined {
+  const index = fields.indexOf(name);
+  return index < 0 ? undefined : fields[index + 1];
+}
+
+/** `seq` команди з поля запису; нечисловий текст не потрапляє до `BigInt`. */
+export function seqOf(fields: readonly string[]): bigint | undefined {
+  const seq = fieldOf(fields, 'seq');
+  return seq !== undefined && /^\d+$/.test(seq) ? BigInt(seq) : undefined;
+}
+
 /**
  * Розбирає поле `envelope` запису stream. Невідомий тип чи версія й пошкоджений запис дають
  * `undefined`: читач пропускає такий запис, а не зупиняється на ньому.
  */
 export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefined {
-  const raw = fields[fields.indexOf('envelope') + 1];
-  if (fields.indexOf('envelope') < 0 || raw === undefined) return undefined;
+  const raw = fieldOf(fields, 'envelope');
+  if (raw === undefined) return undefined;
   let envelope: unknown;
   try {
     envelope = JSON.parse(raw);

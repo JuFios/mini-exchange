@@ -5,7 +5,7 @@ import Redis from 'ioredis';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { marketStream, USER_EVENTS_STREAM } from '../outbox/streams';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
-import { MarketEvent, parseEnvelope, UserEvent } from './realtime-events';
+import { MarketEvent, parseEnvelope, seqOf, UserEvent } from './realtime-events';
 import { RecentIds, streamPosition } from './replica-lag';
 
 const BLOCK_MS = 1000;
@@ -163,8 +163,9 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
       const [tail] = await this.probe.xrevrange(key, '+', '-', 'COUNT', 1);
       ids.set(key, tail?.[0] ?? '0-0');
       const instrument = /^exchange:market:\{(.+)\}$/.exec(key)?.[1];
-      const seq = tail?.[1][tail[1].indexOf('seq') + 1];
-      if (instrument && seq) this.emitted.set(instrument, BigInt(seq));
+      // Хвіст може бути пошкодженим записом: без числового `seq` лічильник лишається нульовим.
+      const seq = tail ? seqOf(tail[1]) : undefined;
+      if (instrument && seq !== undefined) this.emitted.set(instrument, seq);
     }
     return ids;
   }

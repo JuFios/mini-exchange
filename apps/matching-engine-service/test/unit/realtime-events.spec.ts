@@ -1,9 +1,11 @@
 import {
+  fieldOf,
   parseEnvelope,
   privateOrder,
   privateWallet,
   publicDelta,
   publicTrade,
+  seqOf,
 } from '../../src/realtime/realtime-events';
 
 const entry = (type: string, payload: unknown, changes: Record<string, unknown> = {}) => [
@@ -84,5 +86,26 @@ describe('client projections', () => {
     expect(privateWallet({ ...wallet, ...internal } as never)).toEqual(wallet);
     for (const projection of [privateOrder({ ...order, ...internal } as never), wallet])
       expect(JSON.stringify(projection)).not.toMatch(/userId|UserId|ownerId|entryId/);
+  });
+});
+
+describe('stream field access', () => {
+  it('reads a field only when it exists', () => {
+    expect(fieldOf(['a', '1', 'b', '2'], 'b')).toBe('2');
+    expect(fieldOf(['a', '1'], 'b')).toBeUndefined();
+    expect(fieldOf([], 'a')).toBeUndefined();
+  });
+
+  it.each([
+    [['seq', '12'], 12n],
+    [['seq', '0'], 0n],
+    [['seq', ''], undefined],
+    [['seq', 'abc'], undefined],
+    [['seq', '1.5'], undefined],
+    [['seq', '-1'], undefined],
+    [['envelope', 'null'], undefined],
+    [[], undefined],
+  ])('reads seq from %j as %p', (fields, expected) => {
+    expect(seqOf(fields)).toBe(expected);
   });
 });
