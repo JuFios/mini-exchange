@@ -95,6 +95,7 @@ describe('level changes keep a depth-limited client book exact', () => {
           side: fc.constantFrom('buy' as const, 'sell' as const),
           slot: fc.nat(159),
           quantity: fc.bigInt({ min: 1n, max: 5n }),
+          owner: fc.constantFrom('A', 'B'),
         }),
       },
       {
@@ -103,6 +104,7 @@ describe('level changes keep a depth-limited client book exact', () => {
           type: fc.constant('cross' as const),
           side: fc.constantFrom('buy' as const, 'sell' as const),
           quantity: fc.bigInt({ min: 1n, max: 20n }),
+          owner: fc.constantFrom('A', 'B'),
         }),
       },
       {
@@ -121,12 +123,13 @@ describe('level changes keep a depth-limited client book exact', () => {
           const seq = BigInt(index + 1);
           let command: Command;
           if (action.type === 'submit') {
-            // Спільні діапазони цін не перетинаються, тож глибокі книги з'являються без угод.
+            // Діапазони цін не перетинаються, тож глибокі книги з'являються без угод; власники повторюються,
+            // тому трапляється й запобігання угоді із собою.
             const price = (action.side === 'buy' ? 1_000n : 2_000n) + BigInt(action.slot);
-            command = submit(seq, action.side, price, action.quantity, 'maker');
+            command = submit(seq, action.side, price, action.quantity, action.owner);
           } else if (action.type === 'cross') {
             const price = action.side === 'buy' ? 2_159n : 1_000n;
-            command = submit(seq, action.side, price, action.quantity, 'taker');
+            command = submit(seq, action.side, price, action.quantity, action.owner);
           } else {
             const orderId = `order-${action.target + 1}`;
             command = { type: 'cancel', orderId, terminalStatus: closed.get(orderId) };
