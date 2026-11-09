@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "System checks for instrument ownership and recovery",
+  "description": "System checks for instrument ownership, recovery and settlement",
   "engines": {
     "node": ">=20.12"
   },
@@ -15,7 +15,8 @@
     "format": "prettier --write \"*.ts\"",
     "ownership:hooks": "ts-node chaos-hooks.ts",
     "ownership:blackhole": "ts-node pg-blackhole.ts",
-    "realtime:transport": "ts-node realtime-transport.ts"
+    "realtime:transport": "ts-node realtime-transport.ts",
+    "settlement:redrive": "ts-node redrive.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",
