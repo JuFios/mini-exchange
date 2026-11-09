@@ -166,6 +166,34 @@ describe('a client that subscribes while commands are being applied', () => {
     await waitFor(async () => seqs(received).length === 2, 5000);
     expect(seqs(otherReceived)).toEqual([]);
   }, 30000);
+
+  it('keeps the room when a slower subscription fails after a later one succeeded', async () => {
+    const owner = await api.register();
+    const socket = await connect(api.url(), '/market');
+    sockets.push(socket);
+    const received = record(socket, EVENTS);
+    const book = api.app().get(CommittedBook);
+    const original = book.read.bind(book);
+    let calls = 0;
+    const read = jest.spyOn(book, 'read').mockImplementation(async (...args) => {
+      if (++calls > 1) return original(...args);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      throw new ServiceUnavailableException({ code: 'BOOK_BUSY' });
+    });
+    try {
+      const acks = await Promise.all([
+        emitWithAck<{ ok: boolean }>(socket, 'book.subscribe', { instrument: 'ABC' }),
+        emitWithAck<{ ok: boolean }>(socket, 'book.subscribe', { instrument: 'ABC' }),
+      ]);
+      expect(acks.map(({ ok }) => ok)).toEqual([false, true]);
+    } finally {
+      read.mockRestore();
+    }
+
+    // Успішна підписка означає, що клієнт у кімнаті й отримує delta.
+    expect((await api.submit(owner)).status).toBe(201);
+    await waitFor(async () => seqs(received).length === 1, 5000);
+  }, 30000);
 });
 
 describe('a reader that loses its Redis connection', () => {
