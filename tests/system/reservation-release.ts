@@ -108,8 +108,8 @@ async function main() {
 
     const seller = await newUser();
     const buyer = await newUser();
-    const sell = await open(seller, { instrument: 'XYZ', side: 'sell', price: 100, quantity: 1 });
-    const buy = await open(buyer, { instrument: 'XYZ', side: 'buy', price: 101, quantity: 2 });
+    const sell = await open(seller, { instrument: 'ABC', side: 'sell', price: 100, quantity: 1 });
+    const buy = await open(buyer, { instrument: 'ABC', side: 'buy', price: 101, quantity: 2 });
     await cancel(buyer, buy.id);
     await until(() => released(buy.id), Boolean);
     assert.deepEqual(await usd(buyer), {
@@ -130,8 +130,8 @@ async function main() {
       undefined,
       {
         tradeId: trade.rows[0].trade_id,
-        instrument: 'XYZ',
-        baseAsset: 'XYZ',
+        instrument: 'ABC',
+        baseAsset: 'ABC',
         quoteAsset: 'USD',
         buyOrderId: buy.id,
         sellOrderId: sell.id,
