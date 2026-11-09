@@ -10,14 +10,13 @@
   зіставлення за price-time priority, self-trade prevention, трансляція
   committed знімка order book через WebSocket.
 - Дві репліки engine: Redis lease з TTL і renewal, PG fencing, recovery та admin resume.
+- Transactional outbox публікує події книги, угод і заявок у Redis Streams.
 - `apps/frontend` — форма подачі заявки і сторінка order book з live-оновленням.
 
 ## Що ще НЕ реалізовано / потребує уваги
 
 - `apps/settlement-service` — лише каркас, розрахунок угод не реалізовано
   (`NotImplementedException`).
-- Публікація угод у чергу подій: угоди вже зберігаються в PostgreSQL, але relay
-  штатних подій ще не підключений.
 - Обробка розриву WebSocket-з'єднання на фронтенді (resync за номером
   послідовності).
 
@@ -298,6 +297,11 @@ lease має обрати єдиного writer. `waitFor` отримав опц
 HTTP-тесті точності використано дійсний символ `ABC`. Рядок і вкладене число, які
 перевіряють виділення JSON-чисел верхнього рівня, лишаються в полі `note` тестової фікстури.
 
+Тести відхиленого submit і cancel фільтрують outbox за `seq` перевірюваної команди,
+бо звичайні команди теж створюють події. Перевірки фактичної delta та release збережено.
+Інтеграційні тести вбивають relay до та після XADD і звіряють усі рядки outbox
+з Redis після рестарту. Окремий сценарій запускає два relay на 1000 застосованих командах.
+
 ### Engine e2e
 
 Запустіть з кореня репозиторію після `npm ci` у пакеті matching engine. Кожен запуск
@@ -410,6 +414,50 @@ sequence/resync або потоку оновлень; для актуально�
 `GET /instruments/ABC/trades?limit=50` публічний. Ліміт 1–100. Новіші `seq` і fill йдуть
 першими. Поля: `tradeId`, `seq`, `price`, `quantity`, `takerSide`, `executedAt`;
 ID ордерів і користувачів у публічній стрічці відсутні.
+
+## Події й доставка
+
+Engine записує outbox у тій самій PostgreSQL-транзакції, що й зміни заявок, угоди та
+`last_applied_seq`. Скасування й відхилення теж споживають `seq`.
+
+| Stream | Події |
+|---|---|
+| `exchange:market:{I}` | Одна `book.delta` на команду, навіть порожня, і одна `trade.public` на угоду. Публічна угода містить ті самі поля, що й REST-стрічка, плюс інструмент. |
+| `exchange:settlement:{I}` | `trade.executed` на угоду, `order.closed` за додатної суми release. |
+| `exchange:user-events` | `order.updated` на кожну змінену заявку з її версією і власником. |
+
+Redis-запис містить `eventId`, `type`, `version`, `instrument`, `seq`, `traceparent`
+і `envelope`. JSON у `envelope` має версію 1, `occurredAt` з outbox, `producer` та
+`payload`. `seq` — цілий рядок. `price` і `quantity` — десяткові рядки.
+`quoteAmount` і `releasedAmount` — рядки цілих мінімальних одиниць відповідного
+активу (10 знаків шкали для USD, 8 для базового активу).
+
+Кожна репліка запускає relay. PostgreSQL advisory lock дозволяє публікувати лише одному
+relay одночасно. Relay бере найстаріший доступний неопублікований рядок, виконує XADD,
+позначає `published_at` і комітить. Lua в Redis атомарно звіряє позицію outbox для
+пари «stream, інструмент» і виконує XADD. Так Redis відхиляє запізнілий запит
+зі старішою позицією після того, як інша репліка просунула stream.
+Одна подія на транзакцію зберігає порядок при повторі після XADD. Якщо relay упав
+у цьому вікні, наступна спроба може додати
+другий Redis-запис із тим самим `eventId` та `seq`. Для нових команд `book.delta`
+покриває всі послідовні `seq` інструмента. Інші типи можуть пропускати або повторювати
+`seq`. Рядки outbox зі старої версії relay публікує як збережено.
+
+`OUTBOX_POLL_INTERVAL_MS` (100 мс) задає паузу при порожній черзі, зайнятому lock
+або збої. Поки є backlog, relay бере наступний рядок після COMMIT.
+`STREAM_MAXLEN` (1 000 000) задає приблизну межу довжини кожного stream. Якщо Redis
+недоступний, неопубліковані рядки залишаються в PostgreSQL і relay підбирає їх після
+відновлення. Обрізані чи втрачені записи Redis можна відтворити з outbox.
+Службовий hash `exchange:outbox:positions:<DATABASE_NAME>` зберігає останні позиції.
+PostgreSQL і Redis цього розгортання використовують спільну історію outbox.
+
+Для діагностики перевірте `outboxBacklog` у `GET /admin/instruments`, помилки
+`outbox_publish_failed` у логах engine та записи всередині Compose.
+
+```bash
+docker compose logs matching-engine-1 matching-engine-2
+docker compose exec -T redis redis-cli XRANGE 'exchange:market:{ABC}' - + COUNT 10
+```
 
 ## Recovery і зупинений інструмент
 
