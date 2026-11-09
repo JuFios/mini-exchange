@@ -28,6 +28,7 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
 
   private readonly logger = new Logger(OrdersGateway.name);
   private readonly pending = new Map<string, NodeJS.Timeout>();
+  private readonly reads = new Map<string, Promise<void>>();
   private readonly detach: (() => void)[] = [];
 
   constructor(
@@ -64,25 +65,50 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
     }
     client.join(instrument);
     try {
-      const { bids, asks } = await this.orderBook.read(instrument);
-      client.emit('book', { bids, asks });
+      // Читання й відправка йдуть по черзі з іншими читаннями інструмента: книга без `seq`
+      // не дозволяє клієнту відрізнити старішу від новішої.
+      await this.exclusive(instrument, async () => {
+        const { bids, asks } = await this.orderBook.read(instrument);
+        client.emit('book', { bids, asks });
+      });
     } catch {
       return { ok: false, error: 'Книга тимчасово недоступна' };
     }
   }
 
   async broadcastDepth(instrument: string) {
+    await this.exclusive(instrument, () => this.push(instrument));
+  }
+
+  private async push(instrument: string): Promise<void> {
     const { bids, asks } = await this.orderBook.read(instrument);
     this.server.to(instrument).emit('book', { bids, asks });
   }
 
+  /** Читання одного інструмента не перетинаються: пізніше завершене не може бути старішим. */
+  private exclusive(instrument: string, task: () => Promise<void>): Promise<void> {
+    const result = (this.reads.get(instrument) ?? Promise.resolve()).then(task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reads.set(instrument, tail);
+    void tail.then(() => {
+      if (this.reads.get(instrument) === tail) this.reads.delete(instrument);
+    });
+    return result;
+  }
+
   private schedule(instrument: string): void {
-    // Без підписників книгу не читаємо; серія команд збирається в одне читання.
+    // Без підписників книгу не читаємо; серія команд збирається в одне читання. Запис лишається
+    // до початку читання, тож за повільного читання черга не росте більше ніж на одне.
     if (this.pending.has(instrument) || !this.server.sockets.adapter.rooms.get(instrument)?.size)
       return;
     const timer = setTimeout(() => {
-      this.pending.delete(instrument);
-      this.broadcastDepth(instrument).catch((error: unknown) =>
+      this.exclusive(instrument, () => {
+        this.pending.delete(instrument);
+        return this.push(instrument);
+      }).catch((error: unknown) =>
         // Наступна зміна книги повторить спробу; для застарілого каналу цього достатньо.
         this.logger.warn({
           alert: 'legacy_book_push_failed',
