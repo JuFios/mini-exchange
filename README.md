@@ -639,8 +639,20 @@ curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: appl
 `trade.executed` і `order.closed` у хвіст outbox із новою позицією (до 1000 ID кожного списку за запит),
 relay публікує їх знову, а settlement ідемпотентно обробляє. Зайвий redrive безпечний. Для `failed`
 спершу виправте причину з `settlement_failures`, потім повторіть redrive. `stuck_reservation` називає
-`reservationId`, він дорівнює `orderId`: передайте його в `orderIds`. Витік резерву
-(`reservation_leak`) redrive не виправляє: знайдіть резерв за користувачем і активом, перевірте
+`reservationId`, він дорівнює `orderId`. Що передати, залежить від стану заявки в engine:
+
+- `cancelled`: резерв закриває `order.closed`, тож передайте `reservationId` в `orderIds`;
+- `filled` (залишок нуль): `order.closed` для неї не пишеться, резерв закриває `trade.executed`. Redrive за
+  `orderIds` поверне `requeued: 0`. Знайдіть угоди заявки в базі engine й передайте їхні ID в `tradeIds`:
+
+```bash
+docker compose exec -T exchange-db psql -U engine -d exchange -Atc \
+  "SELECT trade_id FROM trades WHERE buyer_order_id = '<orderId>' OR seller_order_id = '<orderId>'"
+```
+
+Redrive вибирає події за ID, а не за датою, тож угода поза періодом звірки теж знаходиться. Якщо
+`requeued` усе ще нуль, події немає в outbox: перевірте, що заявка справді термінальна, і не змінюйте ledger вручну.
+Витік резерву (`reservation_leak`) redrive не виправляє: знайдіть резерв за користувачем і активом, перевірте
 `settlement_failures` та лог release.
 
 Нові змінні settlement: `CONSUMER_NAME`, `CONSUMER_CLAIM_IDLE_MS`, `CONSUMER_MAX_DELIVERIES`,
