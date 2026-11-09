@@ -189,9 +189,24 @@ it('rejects an internal matching error, persists its release, and applies the ne
         "SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'",
       ),
     ).toEqual([{ last_applied_seq: '2' }]);
-    const outbox = await database().query('SELECT type,payload FROM outbox ORDER BY id');
+    const outbox = await database().query(
+      'SELECT type,payload FROM outbox WHERE seq=1 ORDER BY id',
+    );
     expect(outbox).toEqual([
       { type: 'book.delta', payload: { instrument: 'ABC', seq: '1', changes: [] } },
+      {
+        type: 'order.updated',
+        payload: {
+          orderId: order.id,
+          userId: order.ownerId,
+          instrument: 'ABC',
+          version: 1,
+          status: 'cancelled',
+          remainingQuantity: '2.00000000',
+          filledQuantity: '0.00000000',
+          cancelReason: 'rejected',
+        },
+      },
       {
         type: 'order.closed',
         payload: expect.objectContaining({

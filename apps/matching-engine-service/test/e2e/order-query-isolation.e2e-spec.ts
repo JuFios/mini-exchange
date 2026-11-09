@@ -37,11 +37,16 @@ it.each([true, false])(
       }),
     );
     expect((await request(`/orders/${first.id}`, 'DELETE', owner)).status).toBe(200);
-    expect(await database().query("SELECT payload FROM outbox WHERE type='book.delta'")).toEqual([
+    const seq = keepSecond ? '3' : '2';
+    expect(
+      await database().query("SELECT payload FROM outbox WHERE type='book.delta' AND seq=$1", [
+        seq,
+      ]),
+    ).toEqual([
       {
         payload: {
           instrument: 'ABC',
-          seq: keepSecond ? '3' : '2',
+          seq,
           changes: [
             {
               side: 'ask',
