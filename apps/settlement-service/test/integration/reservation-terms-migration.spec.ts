@@ -55,6 +55,13 @@ it('restores active accepted reservation terms from stored engine orders across 
 
   for (let attempt = 0; attempt < 2; attempt++) {
     await migrate(source, 'revert');
+    for (const { reservationId, userId, asset, amount } of [buy, sell, orphan]) {
+      expect(
+        await source.query('SELECT request_hash FROM reservations WHERE reservation_id=$1', [
+          reservationId,
+        ]),
+      ).toEqual([{ request_hash: requestHash({ userId, asset, amount }) }]);
+    }
     await migrate(source, 'run');
     await backfillReservationTerms(source, () => ledger.secondary().initialize());
     await backfillReservationTerms(source, () => ledger.secondary().initialize());

@@ -21,7 +21,15 @@ export class ReservationTermsAndBalancePrecision1793980800001 implements Migrati
   }
 
   async down(db: QueryRunner): Promise<void> {
+    // Старий клієнт повторює reserve за хешем канонічних userId, asset і amount.
     await db.query(`
+      UPDATE reservations
+      SET request_hash=encode(sha256(convert_to(format(
+        '{"userId":%s,"asset":%s,"amount":%s}',
+        to_json(user_id::text), to_json(asset), to_json(amount::text)
+      ), 'UTF8')), 'hex')
+      WHERE instrument IS NOT NULL;
+
       ALTER TABLE reservations
         DROP CONSTRAINT reservations_terms_check,
         DROP COLUMN limit_price_ticks,
