@@ -179,4 +179,19 @@ describe('with a short access token', () => {
     expect((await api.submit(fresh)).status).toBe(201);
     await waitFor(async () => received.some(({ event }) => event === 'order.updated'), 5000);
   }, 20000);
+
+  it('leaves the public market subscription on the same connection untouched', async () => {
+    await api.restart({ JWT_ACCESS_TTL: 2 });
+    const user = await account();
+    const market = await connect(api.url(), '/market');
+    const socket = await connect(api.url(), '/private', user.accessToken);
+    sockets.push(market, socket);
+    // Дві namespace ділять один транспорт: розрив приватної не повинен закривати публічну.
+    expect(market.io).toBe(socket.io);
+
+    await disconnected(socket, 6000);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(market.connected).toBe(true);
+  }, 20000);
 });
