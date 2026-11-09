@@ -307,6 +307,34 @@ describe('with a reader that stops following entries that carry no new delta', (
   );
 });
 
+describe('a reader that meets unreadable entries', () => {
+  it('skips them on every stream and keeps delivering the entries after them', async () => {
+    const received = await join(api.url());
+    const owner = await api.register();
+    const admin = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+    try {
+      for (const stream of ['exchange:market:{ABC}', 'exchange:user-events'])
+        for (const envelope of ['null', '5', '[]', '{', '"text"'])
+          await admin.xadd(stream, '*', 'envelope', envelope);
+      const delta = { instrument: 'ABC', seq: 'abc', changes: [] };
+      await admin.xadd(
+        'exchange:market:{ABC}',
+        '*',
+        'envelope',
+        JSON.stringify({ eventId: 'poison', type: 'book.delta', version: 1, payload: delta }),
+      );
+    } finally {
+      admin.disconnect();
+    }
+
+    expect((await api.submit(owner)).status).toBe(201);
+
+    await waitFor(async () => seqs(received).includes('1'), 8000);
+    const reader = api.app().get(RealtimeStreamReader);
+    expect(reader.cursor('exchange:market:{ABC}')).toBe(await reader.head('exchange:market:{ABC}'));
+  }, 30000);
+});
+
 describe('snapshots taken while commands are being applied', () => {
   const units = (text: string, scale: number) => {
     const [whole, fraction = ''] = text.split('.');

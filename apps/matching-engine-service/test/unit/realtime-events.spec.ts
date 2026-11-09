@@ -43,6 +43,12 @@ describe('parseEnvelope', () => {
     ['a market event without instrument', entry('book.delta', { seq: '7' })],
     ['a market event without seq', entry('book.delta', { instrument: 'ABC' })],
     ['a user event without user', entry('wallet.updated', { asset: 'USD' })],
+    ['a non-numeric market seq', entry('book.delta', { ...delta, seq: 'abc' })],
+    ['a fractional market seq', entry('trade.public', { ...trade, seq: '1.5' })],
+    ['an envelope that is JSON null', ['envelope', 'null']],
+    ['an envelope that is a number', ['envelope', '5']],
+    ['an envelope that is a string', ['envelope', '"text"']],
+    ['an envelope that is an array', ['envelope', '[]']],
   ])('skips %s instead of throwing', (_name, fields) => {
     expect(parseEnvelope(fields)).toBeUndefined();
   });
