@@ -22,6 +22,8 @@ const USER_TYPES = new Set(['order.updated', 'wallet.updated']);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isText = (value: unknown): value is string => typeof value === 'string' && value !== '';
+// `seq` перетворюється на BigInt, який кидає виняток на нечисловому тексті.
+const isSeq = (value: unknown): value is string => typeof value === 'string' && /^\d+$/.test(value);
 
 /**
  * Розбирає поле `envelope` запису stream. Невідомий тип чи версія й пошкоджений запис дають
@@ -30,17 +32,19 @@ const isText = (value: unknown): value is string => typeof value === 'string' &&
 export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefined {
   const raw = fields[fields.indexOf('envelope') + 1];
   if (fields.indexOf('envelope') < 0 || raw === undefined) return undefined;
-  let envelope: Partial<Envelope<unknown>>;
+  let envelope: unknown;
   try {
     envelope = JSON.parse(raw);
   } catch {
     return undefined;
   }
-  const { type, eventId, version, payload } = envelope;
+  // `null`, число чи масив теж коректний JSON, але розібрати їх на поля не можна.
+  if (!isRecord(envelope)) return undefined;
+  const { type, eventId, version, payload } = envelope as Partial<Envelope<unknown>>;
   if (version !== 1 || !isText(eventId) || !isText(type) || !isRecord(payload)) return undefined;
   // Форму payload гарантує виробник (контрактні тести); тут перевіряються лише ключі маршрутизації.
   if (MARKET_TYPES.has(type)) {
-    if (!isText(payload.instrument) || !isText(payload.seq)) return undefined;
+    if (!isText(payload.instrument) || !isSeq(payload.seq)) return undefined;
     return { type, eventId, payload } as unknown as MarketEvent;
   }
   if (USER_TYPES.has(type)) {

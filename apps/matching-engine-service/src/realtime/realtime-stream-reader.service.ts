@@ -169,7 +169,19 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     return ids;
   }
 
+  /** Запис, який не вдалося обробити, пропускається: курсор усе одно просувається за ним. */
   private consume(fields: string[]): void {
+    try {
+      this.dispatch(fields);
+    } catch (error) {
+      this.logger.warn({
+        alert: 'realtime_event_skipped',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private dispatch(fields: string[]): void {
     const event = parseEnvelope(fields);
     // Пошкоджений запис не зупиняє читача й не повторюється.
     if (!event) {
