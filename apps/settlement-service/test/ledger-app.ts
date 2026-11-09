@@ -13,7 +13,7 @@ import { migrate } from '../src/database/migrate';
 const demo = parseEnv(readFileSync(join(__dirname, '../.env.example'), 'utf8'));
 export const internalToken = demo.INTERNAL_API_TOKEN!;
 
-export function ledgerApp() {
+export function ledgerApp(overrides: Record<string, string> = {}) {
   const base = {
     LEDGER_DATABASE_HOST: process.env.LEDGER_DATABASE_HOST ?? '127.0.0.1',
     LEDGER_DATABASE_PORT: process.env.LEDGER_DATABASE_PORT ?? '5433',
@@ -24,6 +24,7 @@ export function ledgerApp() {
   const name = `ledger_e2e_${randomUUID().replaceAll('-', '')}`;
   const env = {
     ...demo,
+    ...overrides,
     ...base,
     LEDGER_DATABASE_NAME: name,
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',

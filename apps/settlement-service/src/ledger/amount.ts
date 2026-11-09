@@ -1,6 +1,8 @@
 export const ASSET_SCALES = { ABC: 8, USD: 10, XYZ: 8 } as const;
 export type Asset = keyof typeof ASSET_SCALES;
 export const ASSETS = Object.keys(ASSET_SCALES) as Asset[];
+export const MAX_PRICE_TICKS = 100_000_000n;
+export const MAX_QUANTITY_LOTS = 100_000_000_000_000n;
 export const MAX_AMOUNT = 10n ** 38n - 1n;
 
 export function parseAmount(value: string, scale: number): bigint {

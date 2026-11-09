@@ -151,6 +151,14 @@ function internalToken(value: unknown, key: string): string {
   return text;
 }
 
+const reservationSchema = {
+  SETTLEMENT_URL: settlementUrl,
+  INTERNAL_API_TOKEN: internalToken,
+  RESERVATION_TIMEOUT_MS: milliseconds,
+  RESERVATION_SWEEP_AFTER_MS: milliseconds,
+  RESERVATION_SWEEP_INTERVAL_MS: milliseconds,
+};
+
 const schema = {
   LEASE_TTL_MS: milliseconds,
   LEASE_RENEW_INTERVAL_MS: milliseconds,
@@ -160,11 +168,6 @@ const schema = {
   CHAOS_STALL_BEFORE_COMMIT_MS: milliseconds,
   ENGINE_WORKER_ENABLED: boolean,
   RESERVATIONS_ENABLED: boolean,
-  SETTLEMENT_URL: settlementUrl,
-  INTERNAL_API_TOKEN: internalToken,
-  RESERVATION_TIMEOUT_MS: milliseconds,
-  RESERVATION_SWEEP_AFTER_MS: milliseconds,
-  RESERVATION_SWEEP_INTERVAL_MS: milliseconds,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
   OUTBOX_POLL_INTERVAL_MS: (value: unknown, key: string) => milliseconds(value ?? '100', key),
   STREAM_MAXLEN: streamMaxLen,
@@ -185,7 +188,9 @@ const schema = {
   INSTRUMENTS: instruments,
 };
 
-export type EngineEnv = { [K in keyof typeof schema]: ReturnType<(typeof schema)[K]> };
+export type EngineEnv = { [K in keyof typeof schema]: ReturnType<(typeof schema)[K]> } & {
+  [K in keyof typeof reservationSchema]?: ReturnType<(typeof reservationSchema)[K]>;
+};
 export type DatabaseEnv = Pick<EngineEnv, keyof typeof databaseSchema>;
 
 export function validateDatabaseEnv(input: Record<string, unknown>): DatabaseEnv {
@@ -207,5 +212,11 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
   if (parsed.LEASE_SAFETY_MS >= parsed.LEASE_RENEW_INTERVAL_MS) {
     throw new Error('LEASE_SAFETY_MS must be less than LEASE_RENEW_INTERVAL_MS');
   }
-  return parsed;
+  const reservations = Object.entries(reservationSchema).flatMap(([key, read]) => {
+    const value = input[key];
+    return parsed.RESERVATIONS_ENABLED || (value !== undefined && value !== '')
+      ? [[key, read(value, key)]]
+      : [];
+  });
+  return { ...parsed, ...Object.fromEntries(reservations) };
 }

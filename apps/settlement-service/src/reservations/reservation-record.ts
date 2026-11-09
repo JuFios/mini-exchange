@@ -5,6 +5,8 @@ export interface ReservationRecord {
   reservation_id: string;
   user_id: string;
   asset: Asset;
+  instrument: Asset | null;
+  limit_price_ticks: string | null;
   remaining: string;
   status: 'active' | 'closed' | 'rejected' | 'released_tombstone';
   request_hash: string | null;

@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { InternalTokenGuard } from '../security/internal-token.guard';
 import { ReservationsService } from './reservations.service';
+import { ReleaseDto } from './release.dto';
 import { ReserveDto } from './reserve.dto';
 
 @Controller('internal/reservations')
@@ -33,5 +34,11 @@ export class ReservationsController {
   @HttpCode(200)
   release(@Param('id', ParseUUIDPipe) id: string) {
     return this.reservations.release(id);
+  }
+
+  @Post(':id/release-closed')
+  @HttpCode(200)
+  releaseClosed(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReleaseDto) {
+    return this.reservations.release(id, BigInt(dto.amount));
   }
 }

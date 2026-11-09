@@ -116,3 +116,28 @@ it.each([
     'INTERNAL_API_TOKEN',
   );
 });
+
+it('accepts the previous environment when reservation support is disabled', () => {
+  const config = { ...example, RESERVATIONS_ENABLED: 'false' };
+  for (const key of [
+    'SETTLEMENT_URL',
+    'INTERNAL_API_TOKEN',
+    'RESERVATION_TIMEOUT_MS',
+    'RESERVATION_SWEEP_AFTER_MS',
+    'RESERVATION_SWEEP_INTERVAL_MS',
+  ])
+    delete (config as Record<string, unknown>)[key];
+  expect(validateEnv(config).RESERVATIONS_ENABLED).toBe(false);
+});
+
+it.each([
+  'SETTLEMENT_URL',
+  'INTERNAL_API_TOKEN',
+  'RESERVATION_TIMEOUT_MS',
+  'RESERVATION_SWEEP_AFTER_MS',
+  'RESERVATION_SWEEP_INTERVAL_MS',
+])('still requires %s when reservations are enabled', (key) => {
+  expect(() => validateEnv({ ...example, RESERVATIONS_ENABLED: 'true', [key]: undefined })).toThrow(
+    key,
+  );
+});

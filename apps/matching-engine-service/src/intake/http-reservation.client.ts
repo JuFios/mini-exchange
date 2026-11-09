@@ -40,9 +40,12 @@ export class HttpReservationClient extends ReservationClient {
     throw unavailable();
   }
 
-  async release(reservationId: string): Promise<void> {
+  async release(reservationId: string, amount?: string): Promise<void> {
     try {
-      const response = await this.post(`/internal/reservations/${reservationId}/release`);
+      const response = await this.post(
+        `/internal/reservations/${reservationId}/${amount === undefined ? 'release' : 'release-closed'}`,
+        amount === undefined ? undefined : { amount },
+      );
       const body = await response.json();
       if (response.status === 200 && body?.status === 'released') return;
     } catch {
@@ -51,7 +54,7 @@ export class HttpReservationClient extends ReservationClient {
     throw unavailable();
   }
 
-  private post(path: string, body?: Reservation): Promise<Response> {
+  private post(path: string, body?: Reservation | { amount: string }): Promise<Response> {
     return fetch(new URL(path, this.url), {
       method: 'POST',
       redirect: 'error',

@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { Asset, parseAmount } from '../ledger/amount';
+import { Asset, MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
 import { PostingBuilder } from '../ledger/posting-builder';
 import {
@@ -34,15 +34,6 @@ export class TradesService {
       executedAt,
     } = canonicalTrade(dto);
     const { price, quantity, buyLimit } = tradeAmounts(dto);
-    const postings = PostingBuilder.trade({
-      buyerUserId,
-      sellerUserId,
-      baseAsset,
-      quoteAsset,
-      price,
-      quantity,
-      buyLimit,
-    });
     const hash = requestHash({
       instrument,
       buyOrderId,
@@ -75,9 +66,26 @@ export class TradesService {
       const locked = await lockReservations(db, [buyOrderId, sellOrderId]);
       const buy = locked.find((reservation) => reservation.reservation_id === buyOrderId);
       const sell = locked.find((reservation) => reservation.reservation_id === sellOrderId);
-      const reservedQuote = buyLimit * quantity;
-      assertReservation(buy, buyerUserId, quoteAsset, reservedQuote);
-      assertReservation(sell, sellerUserId, baseAsset, quantity);
+      const buyer = tradeReservation(buy, buyerUserId, quoteAsset, instrument);
+      const seller = tradeReservation(sell, sellerUserId, baseAsset, instrument);
+      const reservedQuote = buyer.limit * quantity;
+      if (
+        buyLimit !== buyer.limit ||
+        price > buyer.limit ||
+        price < seller.limit ||
+        buyer.remaining < reservedQuote ||
+        seller.remaining < quantity
+      )
+        throw reservationMismatch();
+      const postings = PostingBuilder.trade({
+        buyerUserId,
+        sellerUserId,
+        baseAsset,
+        quoteAsset,
+        price,
+        quantity,
+        buyLimit: buyer.limit,
+      });
       const wallets = [
         { userId: buyerUserId, asset: baseAsset },
         { userId: buyerUserId, asset: quoteAsset },
@@ -132,9 +140,9 @@ function tradeAmounts(dto: SettleTradeDto) {
     if (
       price <= 0n ||
       price > buyLimit ||
-      buyLimit > 100_000_000n ||
+      buyLimit > MAX_PRICE_TICKS ||
       quantity <= 0n ||
-      quantity > 100_000_000_000_000n
+      quantity > MAX_QUANTITY_LOTS
     )
       throw new Error();
     return { price, quantity, buyLimit };
@@ -143,21 +151,26 @@ function tradeAmounts(dto: SettleTradeDto) {
   }
 }
 
-function assertReservation(
+function tradeReservation(
   row: ReservationRecord | undefined,
   userId: string,
   asset: Asset,
-  amount: bigint,
-): void {
+  instrument: string,
+) {
   if (
     row?.status !== 'active' ||
     row.user_id !== userId ||
     row.asset !== asset ||
-    BigInt(row.remaining) < amount
-  ) {
-    throw new ConflictException({
-      code: 'RESERVATION_MISMATCH',
-      message: 'Резерв не відповідає угоді',
-    });
-  }
+    row.instrument !== instrument ||
+    row.limit_price_ticks === null
+  )
+    throw reservationMismatch();
+  return { limit: BigInt(row.limit_price_ticks), remaining: BigInt(row.remaining) };
+}
+
+function reservationMismatch(): ConflictException {
+  return new ConflictException({
+    code: 'RESERVATION_MISMATCH',
+    message: 'Резерв не відповідає угоді',
+  });
 }

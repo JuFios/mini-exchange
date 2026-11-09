@@ -1,4 +1,4 @@
-import { IsIn, IsUUID, Matches } from 'class-validator';
+import { IsIn, IsString, IsUUID, Matches } from 'class-validator';
 import { ASSETS, Asset } from '../ledger/amount';
 
 export class ReserveDto {
@@ -7,6 +7,12 @@ export class ReserveDto {
 
   @IsUUID()
   userId: string;
+
+  @IsIn(ASSETS.filter((asset) => asset !== 'USD'))
+  instrument: Exclude<Asset, 'USD'>;
+
+  @IsString()
+  limitPrice: string;
 
   @IsIn(ASSETS)
   asset: Asset;

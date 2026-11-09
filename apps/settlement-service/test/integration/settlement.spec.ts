@@ -13,12 +13,16 @@ it('settles a competing trade once across two connections released at a barrier'
   await reserves.reserve({
     reservationId: trade.buyOrderId,
     userId: trade.buyerUserId,
+    instrument: 'ABC',
+    limitPrice: trade.buyLimitPrice,
     asset: 'USD',
     amount: '505000000000',
   });
   await reserves.reserve({
     reservationId: trade.sellOrderId,
     userId: trade.sellerUserId,
+    instrument: 'ABC',
+    limitPrice: '0.01',
     asset: 'ABC',
     amount: '50000000',
   });
@@ -76,6 +80,8 @@ it('preserves the same balances for all 24 trade and partial release orders', as
     await reservations.reserve({
       reservationId: trade.buyOrderId,
       userId: trade.buyerUserId,
+      instrument: 'ABC',
+      limitPrice: trade.buyLimitPrice,
       asset: 'USD',
       amount: '2020000000000',
     });
@@ -102,6 +108,8 @@ it('preserves the same balances for all 24 trade and partial release orders', as
       await reservations.reserve({
         reservationId: fill.sellOrderId,
         userId: trade.sellerUserId,
+        instrument: 'ABC',
+        limitPrice: '0.01',
         asset: 'ABC',
         amount: fill.sellLots,
       });
@@ -177,4 +185,45 @@ it('preserves the same balances for all 24 trade and partial release orders', as
     SELECT asset FROM accounts GROUP BY asset HAVING SUM(balance) <> 0
   `),
   ).toEqual([]);
+});
+
+it('releases all that is still reserved after a partial release, including concurrent retries', async () => {
+  const userId = randomUUID();
+  const reservationId = randomUUID();
+  const reserves = ledger.app().get(ReservationsService);
+  await reserves.reserve({
+    reservationId,
+    userId,
+    asset: 'ABC',
+    amount: '100',
+    instrument: 'ABC',
+    limitPrice: '100.00',
+  });
+  await Promise.all([reserves.release(reservationId, 30n), reserves.release(reservationId, 30n)]);
+  expect(
+    await ledger
+      .source()
+      .query('SELECT remaining FROM reservations WHERE reservation_id=$1', [reservationId]),
+  ).toEqual([{ remaining: '70' }]);
+  await Promise.all([reserves.release(reservationId), reserves.release(reservationId)]);
+  expect(
+    await ledger
+      .source()
+      .query('SELECT remaining,status FROM reservations WHERE reservation_id=$1', [reservationId]),
+  ).toEqual([{ remaining: '0', status: 'closed' }]);
+  expect(
+    await ledger
+      .source()
+      .query("SELECT balance FROM accounts WHERE user_id=$1 AND asset='ABC' AND kind='reserved'", [
+        userId,
+      ]),
+  ).toEqual([{ balance: '0' }]);
+  expect(
+    await ledger
+      .source()
+      .query(
+        "SELECT p.amount FROM postings p JOIN journal_entries j ON j.id=p.entry_id WHERE j.reservation_id=$1 AND j.type='release' AND p.direction='credit' ORDER BY p.id",
+        [reservationId],
+      ),
+  ).toEqual([{ amount: '30' }, { amount: '70' }]);
 });

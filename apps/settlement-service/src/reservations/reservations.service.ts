@@ -1,5 +1,6 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
 import { PostingBuilder } from '../ledger/posting-builder';
 import { WalletPublisher } from '../wallets/wallet-publisher';
@@ -18,13 +19,27 @@ export class ReservationsService {
     const reservationId = dto.reservationId.toLowerCase();
     const wallet = { userId: dto.userId.toLowerCase(), asset: dto.asset };
     const amount = BigInt(dto.amount);
-    const hash = requestHash({ ...wallet, amount: amount.toString() });
+    const limit = reservationLimit(dto, amount).toString();
+    const hash = requestHash({
+      ...wallet,
+      amount: amount.toString(),
+      instrument: dto.instrument,
+      limit,
+    });
     const result = await this.source.transaction(async (db) => {
       const [claimed] = await db.query(
-        `INSERT INTO reservations (reservation_id,user_id,asset,amount,remaining,status,request_hash,result)
-         VALUES ($1,$2,$3,$4,$4,'active',$5,'{"status":"accepted"}')
+        `INSERT INTO reservations (reservation_id,user_id,asset,amount,remaining,status,request_hash,result,instrument,limit_price_ticks)
+         VALUES ($1,$2,$3,$4,$4,'active',$5,'{"status":"accepted"}',$6,$7)
          ON CONFLICT (reservation_id) DO NOTHING RETURNING reservation_id`,
-        [reservationId, wallet.userId, wallet.asset, amount.toString(), hash],
+        [
+          reservationId,
+          wallet.userId,
+          wallet.asset,
+          amount.toString(),
+          hash,
+          dto.instrument,
+          limit,
+        ],
       );
       if (!claimed) {
         const [existing] = await lockReservations(db, [reservationId]);
@@ -66,28 +81,36 @@ export class ReservationsService {
   async release(id: string, releaseAmount?: bigint): Promise<{ status: 'released' }> {
     const reservationId = id.toLowerCase();
     const update = await this.source.transaction(async (db) => {
-      // Tombstone має виграти і тоді, коли запізнілий reserve ще не надійшов.
+      // Tombstone відсікає запізнілий reserve, навіть якщо engine змінив режим.
       await db.query(
         `INSERT INTO reservations (reservation_id,status) VALUES ($1,'released_tombstone')
          ON CONFLICT (reservation_id) DO NOTHING`,
         [reservationId],
       );
       const [reservation] = await lockReservations(db, [reservationId]);
+      const operationId =
+        releaseAmount === undefined
+          ? `release:full:${reservationId}`
+          : `release:close:${reservationId}`;
+      if (releaseAmount !== undefined) {
+        const operationIds = [operationId];
+        // Старий ключ не розрізняв повний і частковий release.
+        if (reservation.status === 'active') operationIds.push(`release:${reservationId}`);
+        const [existing]: { amount: string }[] = await db.query(
+          `SELECT p.amount FROM journal_entries j JOIN postings p ON p.entry_id=j.id
+           WHERE j.operation_id=ANY($1::text[]) AND p.direction='credit'`,
+          [operationIds],
+        );
+        if (existing) {
+          if (BigInt(existing.amount) !== releaseAmount) throw releaseMismatch();
+          return;
+        }
+      }
       if (reservation.status !== 'active') return;
-      const operationId = `release:${reservationId}`;
-      const [existing] = await db.query('SELECT id FROM journal_entries WHERE operation_id=$1', [
-        operationId,
-      ]);
-      if (existing) return;
       const wallet = { userId: reservation.user_id, asset: reservation.asset };
       const remaining = BigInt(reservation.remaining);
       const amount = releaseAmount ?? remaining;
-      if (amount <= 0n || amount > remaining) {
-        throw new ConflictException({
-          code: 'RESERVATION_MISMATCH',
-          message: 'Сума звільнення не відповідає резерву',
-        });
-      }
+      if (amount <= 0n || amount > remaining) throw releaseMismatch();
       const accounts = await this.ledger.lockWallets(db, [wallet]);
       const entryId = await this.ledger.write(
         db,
@@ -101,4 +124,29 @@ export class ReservationsService {
     if (update) await this.publisher.publishBestEffort(update);
     return { status: 'released' };
   }
+}
+
+function reservationLimit(dto: ReserveDto, amount: bigint): bigint {
+  try {
+    const limit = parseAmount(dto.limitPrice, 2);
+    if (
+      limit <= 0n ||
+      limit > MAX_PRICE_TICKS ||
+      amount <= 0n ||
+      (dto.asset === 'USD'
+        ? amount % limit !== 0n || amount / limit > MAX_QUANTITY_LOTS
+        : dto.asset !== dto.instrument || amount > MAX_QUANTITY_LOTS)
+    )
+      throw new Error();
+    return limit;
+  } catch {
+    throw new BadRequestException('Некоректні параметри резерву');
+  }
+}
+
+function releaseMismatch(): ConflictException {
+  return new ConflictException({
+    code: 'RESERVATION_MISMATCH',
+    message: 'Сума звільнення не відповідає резерву',
+  });
 }
