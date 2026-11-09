@@ -3,17 +3,31 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import { Test, TestingModuleBuilder } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { configureApp } from '../src/configure-app';
 import { validateDatabaseEnv } from '../src/config/env.validation';
 import { ledgerDataSourceOptions } from '../src/data-source';
 import { migrate } from '../src/database/migrate';
+import { SettlementConsumer } from '../src/consumer/settlement-consumer.service';
 
 const demo = parseEnv(readFileSync(join(__dirname, '../.env.example'), 'utf8'));
 export const internalToken = demo.INTERNAL_API_TOKEN!;
 
-export function ledgerApp(overrides: Record<string, string> = {}) {
+// Consumer читає спільні stream Redis, тож його вмикають лише тести, які цього потребують.
+class IdleConsumer {
+  async queue() {
+    return { streams: [] };
+  }
+}
+
+export function ledgerApp(
+  overrides: Record<string, string> = {},
+  {
+    consumer = false,
+    customize,
+  }: { consumer?: boolean; customize?: (builder: TestingModuleBuilder) => void } = {},
+) {
   const base = {
     LEDGER_DATABASE_HOST: process.env.LEDGER_DATABASE_HOST ?? '127.0.0.1',
     LEDGER_DATABASE_PORT: process.env.LEDGER_DATABASE_PORT ?? '5433',
@@ -53,7 +67,10 @@ export function ledgerApp(overrides: Record<string, string> = {}) {
       process.env[key] = value;
     }
     const { AppModule } = await import('../src/app.module');
-    const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const builder = Test.createTestingModule({ imports: [AppModule] });
+    if (!consumer) builder.overrideProvider(SettlementConsumer).useClass(IdleConsumer);
+    customize?.(builder);
+    const module = await builder.compile();
     app = module.createNestApplication({ logger: ['error'], abortOnError: false });
     configureApp(app);
     await app.init();

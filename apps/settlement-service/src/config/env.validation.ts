@@ -59,12 +59,43 @@ function internalToken(value: unknown, key: string): string {
   return text;
 }
 
+function origin(value: unknown, key: string): string {
+  const text = required(value, key);
+  try {
+    const url = new URL(text);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    )
+      throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error(`${key} must be an HTTP or HTTPS origin`);
+  }
+}
+
+function consumerName(value: unknown, key: string): string {
+  const text = required(value, key);
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(text))
+    throw new Error(`${key} must contain 1 to 64 letters, digits, dots, dashes or underscores`);
+  return text;
+}
+
 const schema = {
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,
   REDIS_PORT: port,
   STREAM_MAXLEN: integer(1, Number.MAX_SAFE_INTEGER),
+  CONSUMER_NAME: consumerName,
+  CONSUMER_CLAIM_IDLE_MS: integer(1000, 3_600_000),
+  CONSUMER_MAX_DELIVERIES: integer(1, 1000),
+  SETTLEMENT_GRACE_MS: integer(0, 86_400_000),
+  ENGINE_INTERNAL_URL: origin,
   JWT_ACCESS_SECRET: secret,
   INTERNAL_API_TOKEN: internalToken,
   DEMO_INITIAL_BALANCES: demoBalances,

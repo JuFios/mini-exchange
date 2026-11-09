@@ -224,6 +224,8 @@ jobs:
         run: docker compose run --rm system-tests npm run ownership:hooks
       - name: Check takeover when the owner loses PostgreSQL silently
         run: docker compose run --rm system-tests npm run ownership:blackhole
+      - name: Check settlement recovery after a lost stream
+        run: docker compose run --rm system-tests npm run settlement:redrive
       - name: Diagnose failure before cleanup
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200

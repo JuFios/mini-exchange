@@ -22,6 +22,7 @@ export class TradesService {
     streamId?: string,
     traceId?: string,
   ): Promise<SettlementResult> {
+    const { trade, price, quantity, buyLimit, hash } = describeTrade(dto);
     const {
       tradeId,
       instrument,
@@ -32,21 +33,7 @@ export class TradesService {
       baseAsset,
       quoteAsset,
       executedAt,
-    } = canonicalTrade(dto);
-    const { price, quantity, buyLimit } = tradeAmounts(dto);
-    const hash = requestHash({
-      instrument,
-      buyOrderId,
-      sellOrderId,
-      buyerUserId,
-      sellerUserId,
-      baseAsset,
-      quoteAsset,
-      executedAt,
-      price: price.toString(),
-      quantity: quantity.toString(),
-      buyLimit: buyLimit.toString(),
-    });
+    } = trade;
 
     return this.source.transaction(async (db) => {
       const [inserted] = await db.query(
@@ -105,6 +92,26 @@ export class TradesService {
       return { status: 'applied', entryId };
     });
   }
+}
+
+/** Канонічний вигляд угоди й хеш, спільні для розрахунку та звірки. */
+export function describeTrade(dto: SettleTradeDto) {
+  const trade = canonicalTrade(dto);
+  const { price, quantity, buyLimit } = tradeAmounts(dto);
+  const hash = requestHash({
+    instrument: trade.instrument,
+    buyOrderId: trade.buyOrderId,
+    sellOrderId: trade.sellOrderId,
+    buyerUserId: trade.buyerUserId,
+    sellerUserId: trade.sellerUserId,
+    baseAsset: trade.baseAsset,
+    quoteAsset: trade.quoteAsset,
+    executedAt: trade.executedAt,
+    price: price.toString(),
+    quantity: quantity.toString(),
+    buyLimit: buyLimit.toString(),
+  });
+  return { trade, price, quantity, buyLimit, hash };
 }
 
 export type SettlementResult =

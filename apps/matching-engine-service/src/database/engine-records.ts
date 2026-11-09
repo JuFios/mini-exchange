@@ -53,6 +53,7 @@ export const OrderRequest = new EntitySchema({
     updatedAt: { name: 'updated_at', type: 'timestamptz', default: () => 'now()' },
     releaseDueAt: { name: 'release_due_at', type: 'timestamptz', nullable: true },
     releaseAttempts: { name: 'release_attempts', type: 'integer', default: 0 },
+    reserved: { type: 'boolean', default: false },
   },
 });
 

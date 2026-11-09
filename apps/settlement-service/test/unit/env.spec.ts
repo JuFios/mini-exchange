@@ -25,3 +25,15 @@ it.each([
     'INTERNAL_API_TOKEN',
   );
 });
+
+it.each([
+  ['ENGINE_INTERNAL_URL', 'ftp://engine'],
+  ['ENGINE_INTERNAL_URL', 'http://engine/path'],
+  ['CONSUMER_NAME', 'bad name'],
+  ['CONSUMER_NAME', ''],
+  ['CONSUMER_CLAIM_IDLE_MS', '10'],
+  ['CONSUMER_MAX_DELIVERIES', '0'],
+  ['SETTLEMENT_GRACE_MS', '-1'],
+])('rejects an invalid %s', (key, value) => {
+  expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
+});

@@ -10,7 +10,10 @@ import { ChaosHooks } from '../chaos/chaos-hooks';
 import { ChaosController } from '../chaos/chaos.controller';
 import { PgNotifications } from '../engine/pg-notifications';
 import { HttpReservationClient } from '../intake/http-reservation.client';
+import { ReservationFundingCheck } from '../intake/reservation-funding.check';
 import { ReservationSweeper } from '../intake/reservation-sweeper';
+import { InternalTradesController } from '../outbox/internal-trades.controller';
+import { OutboxRedriveController } from '../outbox/outbox-redrive.controller';
 import { IntakeService } from '../intake/intake.service';
 import { NoopReservationClient, ReservationClient } from '../intake/reservation.client';
 import { BookLoader } from '../engine/book-loader';
@@ -32,6 +35,8 @@ import { InstrumentCatalog } from './instrument-catalog';
     OrdersController,
     AdminInstrumentsController,
     ReadinessController,
+    InternalTradesController,
+    OutboxRedriveController,
   ],
   providers: [
     CommittedBook,
@@ -43,6 +48,7 @@ import { InstrumentCatalog } from './instrument-catalog';
     PgNotifications,
     IntakeService,
     ReservationSweeper,
+    ReservationFundingCheck,
     {
       provide: ReservationClient,
       inject: [ConfigService],
