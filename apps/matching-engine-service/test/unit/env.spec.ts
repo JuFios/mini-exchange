@@ -64,6 +64,7 @@ it.each([
   'OUTBOX_POLL_INTERVAL_MS',
   'ORDER_SYNC_WAIT_MS',
   'SEQ_GAP_ALERT_MS',
+  'WS_REPLICA_MAX_LAG_MS',
 ])('bounds %s', (key) => {
   for (const value of ['0', '-1', '60001', '1.5'])
     expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);

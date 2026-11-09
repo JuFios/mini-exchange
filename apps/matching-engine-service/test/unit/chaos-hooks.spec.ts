@@ -78,3 +78,21 @@ it('stalls once at stall_before_commit without killing the process', async () =>
     kill.mockRestore();
   }
 });
+
+it('freezes and unfreezes the stream reader without touching the armed one-shot point', () => {
+  const values: Record<string, unknown> = { CHAOS_ENABLED: true };
+  const hooks = new ChaosHooks({ getOrThrow: (key: string) => values[key] } as ConfigService);
+  expect(hooks.readerFrozen).toBe(false);
+  hooks.arm({ point: 'after_writes_before_commit', fromSeq: 3 });
+  expect(hooks.arm({ point: 'freeze_stream_reader' })).toEqual({ armed: 'freeze_stream_reader' });
+  expect(hooks.readerFrozen).toBe(true);
+  expect(hooks['armed']).toEqual({ point: 'after_writes_before_commit', fromSeq: 3 });
+  hooks.arm({ point: 'unfreeze_stream_reader' });
+  expect(hooks.readerFrozen).toBe(false);
+});
+
+it('refuses to freeze the stream reader when chaos is disabled', () => {
+  const hooks = new ChaosHooks({ getOrThrow: () => false } as unknown as ConfigService);
+  expect(() => hooks.arm({ point: 'freeze_stream_reader' })).toThrow();
+  expect(hooks.readerFrozen).toBe(false);
+});

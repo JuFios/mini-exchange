@@ -12,6 +12,7 @@ import { testDatabase } from '../test-database';
 import { configureApp } from '../../src/configure-app';
 import type { Order } from '../../src/orders/entities/order.entity';
 import { EngineEnv, validateEnv } from '../../src/config/env.validation';
+import { marketStream, USER_EVENTS_STREAM } from '../../src/outbox/streams';
 
 export function engineApp() {
   const database = testDatabase();
@@ -121,6 +122,14 @@ export function engineApp() {
       );
     } finally {
       await cleanup.destroy();
+    }
+    // Номери команд починаються з одиниці після TRUNCATE, тож старі записи streams збивали б
+    // читачів WebSocket наступного тесту, які беруть хвіст stream за точку відліку.
+    const redis = new Redis({ host: settings.REDIS_HOST, port: Number(settings.REDIS_PORT) });
+    try {
+      await redis.del(...['ABC', 'XYZ'].map((symbol) => marketStream(symbol)), USER_EVENTS_STREAM);
+    } finally {
+      redis.disconnect();
     }
   });
 
