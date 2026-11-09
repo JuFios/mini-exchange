@@ -117,12 +117,46 @@ function streamMaxLen(value: unknown, key: string): number {
   return length;
 }
 
+function settlementUrl(value: unknown, key: string): string {
+  const text = required(value, key);
+  try {
+    const url = new URL(text);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    )
+      throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error(`${key} must be an HTTP or HTTPS origin`);
+  }
+}
+
 const databaseSchema = {
   DATABASE_HOST: required,
   DATABASE_PORT: port,
   DATABASE_USER: required,
   DATABASE_PASSWORD: required,
   DATABASE_NAME: required,
+};
+
+function internalToken(value: unknown, key: string): string {
+  const text = required(value, key);
+  if (text.length < 32 || text.length > 1024 || /[^\x21-\x7e]/.test(text))
+    throw new Error(`${key} must contain 32 to 1024 visible ASCII characters`);
+  return text;
+}
+
+const reservationSchema = {
+  SETTLEMENT_URL: settlementUrl,
+  INTERNAL_API_TOKEN: internalToken,
+  RESERVATION_TIMEOUT_MS: milliseconds,
+  RESERVATION_SWEEP_AFTER_MS: milliseconds,
+  RESERVATION_SWEEP_INTERVAL_MS: milliseconds,
 };
 
 const schema = {
@@ -154,7 +188,9 @@ const schema = {
   INSTRUMENTS: instruments,
 };
 
-export type EngineEnv = { [K in keyof typeof schema]: ReturnType<(typeof schema)[K]> };
+export type EngineEnv = { [K in keyof typeof schema]: ReturnType<(typeof schema)[K]> } & {
+  [K in keyof typeof reservationSchema]?: ReturnType<(typeof reservationSchema)[K]>;
+};
 export type DatabaseEnv = Pick<EngineEnv, keyof typeof databaseSchema>;
 
 export function validateDatabaseEnv(input: Record<string, unknown>): DatabaseEnv {
@@ -176,5 +212,11 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
   if (parsed.LEASE_SAFETY_MS >= parsed.LEASE_RENEW_INTERVAL_MS) {
     throw new Error('LEASE_SAFETY_MS must be less than LEASE_RENEW_INTERVAL_MS');
   }
-  return parsed;
+  const reservations = Object.entries(reservationSchema).flatMap(([key, read]) => {
+    const value = input[key];
+    return parsed.RESERVATIONS_ENABLED || (value !== undefined && value !== '')
+      ? [[key, read(value, key)]]
+      : [];
+  });
+  return { ...parsed, ...Object.fromEntries(reservations) };
 }

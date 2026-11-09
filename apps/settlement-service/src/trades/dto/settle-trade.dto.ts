@@ -1,8 +1,6 @@
-import { IsNumberString, IsString, IsUUID } from 'class-validator';
+import { IsIn, IsISO8601, IsString, IsUUID, Matches } from 'class-validator';
+import { ASSETS, Asset } from '../../ledger/amount';
 
-// Каркас DTO для події угоди, що приходитиме з matching-engine-service
-// через чергу. Поки що ендпоінт приймає її напряму по HTTP для зручності
-// розробки — інтеграцію з реальною чергою потрібно додати (див. ТЗ).
 export class SettleTradeDto {
   @IsUUID()
   tradeId: string;
@@ -16,9 +14,28 @@ export class SettleTradeDto {
   @IsUUID()
   sellOrderId: string;
 
-  @IsNumberString()
+  @IsUUID()
+  buyerUserId: string;
+
+  @IsUUID()
+  sellerUserId: string;
+
+  @IsIn(ASSETS)
+  baseAsset: Asset;
+
+  @IsIn(ASSETS)
+  quoteAsset: Asset;
+
+  @IsString()
   price: string;
 
-  @IsNumberString()
+  @IsString()
   quantity: string;
+
+  @IsString()
+  buyLimitPrice: string;
+
+  @IsISO8601({ strict: true, strictSeparator: true })
+  @Matches(/T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?(?:Z|[+-][0-9]{2}:[0-9]{2})(?![\s\S])/)
+  executedAt: string;
 }

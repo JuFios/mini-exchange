@@ -39,8 +39,8 @@ services:
     environment:
       DATABASE_HOST: exchange-db
       DATABASE_PORT: '5432'
-      DATABASE_USER: exchange
-      DATABASE_PASSWORD: exchange
+      DATABASE_USER: engine
+      DATABASE_PASSWORD: engine-local-only
       DATABASE_NAME: exchange
       ENGINE_URL: http://engine-lb:3001
       ADMIN_EMAIL: admin@system.test

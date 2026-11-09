@@ -1,5 +1,6 @@
 import { Controller, Get, Header, ServiceUnavailableException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { ReservationSweeper } from '../intake/reservation-sweeper';
 import { BookLoader } from '../engine/book-loader';
 import { LeaseManager } from './lease-manager';
 import { OwnershipCoordinator } from './ownership-coordinator';
@@ -11,6 +12,7 @@ export class ReadinessController {
     private readonly leases: LeaseManager,
     private readonly loader: BookLoader,
     private readonly ownership: OwnershipCoordinator,
+    private readonly sweeper: ReservationSweeper,
   ) {}
 
   // showMigrations() створює таблицю міграцій і не звільняє з’єднання після помилки.
@@ -51,6 +53,7 @@ export class ReadinessController {
         `engine_recovery_mismatch_total ${this.loader.recoveryMismatches}`,
         `engine_fenced_writes_total ${this.ownership.fencedWrites}`,
         `engine_lease_renew_failures_total ${this.leases.renewFailures}`,
+        `reservation_release_failures_total ${this.sweeper.releaseFailures}`,
         ...states.map(
           (s) =>
             `engine_instrument_halted{instrument="${s.instrument}"} ${Number(s.status === 'halted')}`,

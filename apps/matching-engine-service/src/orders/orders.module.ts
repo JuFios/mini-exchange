@@ -9,6 +9,8 @@ import { ReadinessController } from '../ownership/readiness.controller';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { ChaosController } from '../chaos/chaos.controller';
 import { PgNotifications } from '../engine/pg-notifications';
+import { HttpReservationClient } from '../intake/http-reservation.client';
+import { ReservationSweeper } from '../intake/reservation-sweeper';
 import { IntakeService } from '../intake/intake.service';
 import { NoopReservationClient, ReservationClient } from '../intake/reservation.client';
 import { BookLoader } from '../engine/book-loader';
@@ -40,13 +42,14 @@ import { InstrumentCatalog } from './instrument-catalog';
     ChaosHooks,
     PgNotifications,
     IntakeService,
+    ReservationSweeper,
     {
       provide: ReservationClient,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {
-        if (config.getOrThrow('RESERVATIONS_ENABLED'))
-          throw new Error('RESERVATIONS_ENABLED requires an HTTP reservation client');
-        return new NoopReservationClient();
+        return config.getOrThrow('RESERVATIONS_ENABLED')
+          ? new HttpReservationClient(config)
+          : new NoopReservationClient();
       },
     },
     BookLoader,

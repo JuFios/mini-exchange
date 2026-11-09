@@ -153,6 +153,8 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     const accepted = await this.reservations.reserve({
       reservationId: row.order_id,
       userId,
+      instrument: dto.instrument,
+      limitPrice: payload.price,
       asset: dto.side === 'buy' ? instrument.quoteAsset : instrument.baseAsset,
       amount: (dto.side === 'buy'
         ? parsePrice(payload.price) * parseQuantity(payload.quantity)
