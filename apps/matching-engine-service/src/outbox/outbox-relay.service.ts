@@ -90,11 +90,12 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
       );
       if (!locked) return false;
 
-      // Один рядок на COMMIT: повтор не повертає stream до попереднього seq.
+      // Один рядок на COMMIT. Сапер може блокувати найстаріший рядок, а його пропуск
+      // дозволив би опублікувати новішу подію та відхилити стару при повторі.
       const [row]: OutboxRow[] = await db.query(
         `SELECT id, event_id, stream, type, version, instrument, seq, payload, traceparent, created_at
          FROM outbox WHERE published_at IS NULL
-         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`,
+         ORDER BY id LIMIT 1 FOR UPDATE`,
       );
       if (!row) return false;
 
