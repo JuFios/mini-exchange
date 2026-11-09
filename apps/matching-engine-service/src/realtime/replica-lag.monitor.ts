@@ -83,9 +83,10 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
           const cursor = this.reader.cursor(stream);
           const tracker = this.trackers.get(stream) ?? new LagTracker(this.maxLagMs);
           this.trackers.set(stream, tracker);
-          // Недоступний Redis не доводить зависання читача: цей випадок ловить `/ready` через lease.
-          const head = await this.reader.head(stream).catch(() => cursor);
-          return tracker.check(head, cursor, now).stale;
+          // Збій перевірки не доводить ні зависання, ні наздоганяння: лишається останній відомий стан.
+          // Недоступний Redis ловить `/ready` через lease.
+          const head = await this.reader.head(stream).catch(() => undefined);
+          return head === undefined ? tracker.stale : tracker.check(head, cursor, now).stale;
         }),
       );
       const anyStale = stalled.some(Boolean);

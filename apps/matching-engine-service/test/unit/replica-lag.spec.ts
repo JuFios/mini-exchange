@@ -27,6 +27,16 @@ describe('LagTracker', () => {
     expect(tracker.check(15n, 10n, 6001)).toEqual({ lag: 5n, stale: true });
   });
 
+  it('keeps reporting the last verdict until a check succeeds', () => {
+    const tracker = new LagTracker(max);
+    expect(tracker.stale).toBe(false);
+    tracker.check(20n, 10n, 0);
+    tracker.check(20n, 10n, 6000);
+    expect(tracker.stale).toBe(true);
+    expect(tracker.check(20n, 20n, 7000).stale).toBe(false);
+    expect(tracker.stale).toBe(false);
+  });
+
   it('recovers as soon as the replica catches up or advances', () => {
     const tracker = new LagTracker(max);
     tracker.check(20n, 10n, 0);

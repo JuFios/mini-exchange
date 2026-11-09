@@ -15,6 +15,7 @@ export class LagTracker {
   private seen = -1n;
   private behind = false;
   private progressAt = 0;
+  private lastStale = false;
 
   constructor(private readonly maxLagMs: number) {}
 
@@ -24,7 +25,13 @@ export class LagTracker {
     if (lag === 0n || emitted !== this.seen || !this.behind) this.progressAt = now;
     this.seen = emitted;
     this.behind = lag > 0n;
-    return { lag, stale: lag > 0n && now - this.progressAt > this.maxLagMs };
+    this.lastStale = lag > 0n && now - this.progressAt > this.maxLagMs;
+    return { lag, stale: this.lastStale };
+  }
+
+  /** Стан останньої успішної перевірки: потрібен, коли head stream не вдалося прочитати. */
+  get stale(): boolean {
+    return this.lastStale;
   }
 }
 
