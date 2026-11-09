@@ -6,8 +6,8 @@ import { database, engine, request, submit, token, until, waitReady } from './he
 const settlement = 'http://settlement-service:3002';
 const instrument = 'XYZ';
 
-type Wallet = { asset: string; available: string; reserved: string };
-type Update = Wallet & { version: string };
+type Wallet = { asset: string; available: string; reserved: string; version: string };
+type Update = Wallet;
 type Listener = { socket: Socket; updates: Update[] };
 
 function listen(accessToken: string): Promise<Listener> {
@@ -40,7 +40,8 @@ const matches = (updates: Update[], current: Wallet[], assets: string[]) =>
       last !== undefined &&
       wallet !== undefined &&
       last.available === wallet.available &&
-      last.reserved === wallet.reserved
+      last.reserved === wallet.reserved &&
+      last.version === wallet.version
     );
   });
 
