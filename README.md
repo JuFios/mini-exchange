@@ -11,13 +11,12 @@
   committed знімка order book через WebSocket.
 - Дві репліки engine: Redis lease з TTL і renewal, PG fencing, recovery та admin resume.
 - Transactional outbox публікує події книги, угод і заявок у Redis Streams.
-- Settlement записує резерви, розраховує угоди через внутрішній HTTP і повертає
-  баланси гаманців власнику access-токена.
+- Settlement резервує кошти, споживає `trade.executed` і `order.closed` із Redis Streams,
+  розраховує угоди ідемпотентно, публікує `wallet.updated`, веде DLQ і звіряє ledger з engine.
 - `apps/frontend` — форма подачі заявки і сторінка order book з live-оновленням.
 
 ## Що ще НЕ реалізовано / потребує уваги
 
-- Settlement ще не споживає `trade.executed` і `order.closed` із Redis Streams.
 - Обробка розриву WebSocket-з'єднання на фронтенді (resync за номером
   послідовності).
 
@@ -63,6 +62,10 @@ docker compose up --build
 `npm ci` і `npm run migration:run` перед `npm run start:dev`. У конфігурації engine
 вкажіть доступний `SETTLEMENT_URL` і той самий внутрішній токен. Для доступу до
 `GET /wallets` settlement має використовувати секрет access-токена від engine.
+
+Стандартний стек вмикає резерви. Том, у якому є заявки з вимкненими резервами, engine
+відхиляє при старті; див. розділ «Резерви та гаманці». Для чистого запуску виконайте
+`docker compose down -v`: це видаляє дані.
 
 Для оновлення з попереднього стеку збережіть резервну копію PostgreSQL. Зупиніть
 застосунки командою `docker compose stop matching-engine-1 matching-engine-2 settlement-service`
@@ -449,12 +452,21 @@ ID ордерів і користувачів у публічній стрічц
 
 ## Резерви та гаманці
 
-Стандартний стек запускається з вимкненими резервами. Вмикати їх для реального
-потоку заявок слід разом із consumer угод і закриттів та після того, як усі
-незабезпечені заявки завершено або скасовано. У цій версії режим резервування
-використовують ізольовані тести.
+Стандартний стек запускається з увімкненими резервами (`RESERVATIONS_ENABLED=true`),
+а settlement споживає угоди й закриття заявок з Redis Streams.
 
-В режимі резервування engine резервує актив перед видачею `seq`: для купівлі це лімітна ціна × кількість у
+Резерви можна вмикати лише на історії, де кожна жива або виконана заявка має резерв.
+Заявки й угоди з часів вимкнених резервів не потрапляють у ledger, тож engine з
+`RESERVATIONS_ENABLED=true` відмовляється стартувати, якщо знаходить такі заявки.
+Колонка `order_requests.reserved` позначає заявки, прийняті з реальним резервом.
+Жива заявка без резерву: скасуйте її, коли `RESERVATIONS_ENABLED=false`. Якщо лишилися
+виконані заявки без резерву, пересоздайте том БД: `docker compose down -v`. Це видаляє дані.
+Якщо резерви працювали й до появи колонки `reserved` (власний запуск), заявки не мають позначки.
+Коли ви певні, що кожна прийнята заявка мала резерв, позначте їх до старту engine:
+`docker compose exec -T exchange-db psql -U engine -d exchange -c "UPDATE order_requests SET reserved = true WHERE status = 'accepted'"`
+(пароль ролі `engine` — з `docker/postgres/.env.example`). Без цієї певності пересоздайте том.
+
+Engine резервує актив перед видачею `seq`: для купівлі це лімітна ціна × кількість у
 USD, для продажу — кількість базового активу. Порядок надходження визначає коміт видачі
 `seq`, тож заявка, що раніше почала резервування, може отримати пізніший номер.
 За недостатнього балансу `POST /orders` повертає 422 і номер команди не видається.
@@ -483,8 +495,8 @@ tombstone, який відхиляє запізнілий reserve. Метрик�
 Settlement звіряє інструмент і ліміти зі збереженими умовами обох резервів.
 За успіху відповідь містить `status: applied` та `entryId`. Повтор тих самих даних
 повертає `duplicate` з тим самим ID. Інший вміст з тим самим `tradeId` дає 409.
-Поки консюмер не підключено, matching пише угоди й закриття заявок до stream.
-Для ручного розрахунку угоди використовуйте захищений HTTP-маршрут settlement.
+Розрахунок угод із stream описано в розділі «Розрахунок угод і звірка». Захищений
+`POST /trades/settle` лишається для ручного розрахунку тим самим кодом.
 
 ## Події й доставка
 
@@ -529,6 +541,97 @@ PostgreSQL і Redis цього розгортання використовуют
 docker compose logs matching-engine-1 matching-engine-2
 docker compose exec -T redis redis-cli XRANGE 'exchange:market:{ABC}' - + COUNT 10
 ```
+
+## Розрахунок угод і звірка
+
+Settlement читає `exchange:settlement:{ABC}` і `exchange:settlement:{XYZ}` через consumer group
+`settlement` з ім'ям `CONSUMER_NAME`. Група створюється з початку stream, тож consumer бачить
+усю історію. Цикл спершу забирає прострочені записи через `XAUTOCLAIM` (`CONSUMER_CLAIM_IDLE_MS`),
+потім читає нові через `XREADGROUP`.
+
+Запис підтверджується (`XACK`) лише після коміту транзакції ledger і публікації `wallet.updated`
+для покупця й продавця в обох активах. Повторна доставка (шлях `duplicate`) теж публікує
+поточний стан, тож збій між комітом і `XADD` не губить сповіщення. Споживач події має відкидати її,
+якщо `version` не більша за відому: це контракт для клієнтів, у цьому репозиторії поки немає споживача. `order.closed` звільняє залишок резерву; `release` ідемпотентний,
+а сповіщення про нього best effort, як і для HTTP-резервів.
+
+Порядок записів settlement не потрібен: усі операції з резервом комутативні.
+
+| Збій | Поведінка |
+|---|---|
+| Невалідний envelope, невідома версія, дані угоди, що не проходять перевірку, інший вміст за тим самим `tradeId`, від'ємний баланс (23514) | Одразу DLQ |
+| Збій PostgreSQL чи Redis (з'єднання, тайм-аут, deadlock, serialization) | Без `XACK`, повтор через reclaim. У DLQ не йде за жодної кількості доставок |
+| Інша помилка (наприклад, резерв не відповідає угоді) | Повтор, після `CONSUMER_MAX_DELIVERIES` доставок DLQ |
+
+DLQ — stream `exchange:dlq` і рядок у `settlement_failures` (`stream`, `message_id`, `trade_id`, `reason`).
+Рядок пишеться першим і ідемпотентний, а `XADD` у DLQ з `XACK` виконує один Lua-скрипт.
+Redis 7 прибирає з PEL записи, обрізані `XTRIM`; їх payload втрачено. Лічильник
+`settlement_trimmed_pending_total` зростає, consumer продовжує, а звірка покаже угоду як `missing`.
+Якщо stream видалено, цикл перестворює групу й іде далі.
+
+`GET /admin/queue` (admin) показує довжину, `pending`, `lag` кожного stream, довжину DLQ і кількість
+`settlement_failures`. `GET /metrics` settlement віддає `settlement_trades_total{result}`,
+`settlement_dlq_total`, `settlement_trimmed_pending_total`, `settlement_pending`, `settlement_stream_lag`.
+Метрики поки текстові, без `prom-client`.
+
+### Звірка
+
+```bash
+curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://localhost:3002/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2026-12-31T00:00:00.000Z&instrument=ABC'
+docker compose exec -T settlement-service node dist/reconcile --from 2026-01-01T00:00:00.000Z
+```
+
+Токен адміністратора видає `POST /auth/login` engine; settlement приймає його, бо секрет access-токена спільний.
+Період `[from, to)` рахується за `executed_at` з точністю до мілісекунди. Без `from` і `to`
+береться вся історія до зараз. Команда `reconcile` не запускає consumer. Код виходу: 0 — розбіжностей немає,
+1 — є розбіжність, 2 — engine чи БД недоступні.
+
+Settlement читає угоди engine сторінками по 1000 через внутрішній `GET /internal/trades`
+(`x-internal-token`, лише через `engine-lb:8080`; публічний `:3001` повертає 404). Кожна сторінка
+читається в `REPEATABLE READ READ ONLY`. Обидві сторони зливаються в порядку `(executed_at, trade_id)`,
+тож пам'ять не залежить від кількості угод. Для кожної угоди очікувані проводки обчислюються з даних
+engine й порівнюються з фактичними.
+
+| Клас | Значення |
+|---|---|
+| `pending` | Немає в ledger, свіжіша за `SETTLEMENT_GRACE_MS`. Не робить звіт невдалим |
+| `missing` | Немає в ledger й старша за grace |
+| `failed` | Немає в ledger, є в `settlement_failures` |
+| `orphan` | Є в ledger, немає в engine |
+| `amount_mismatch` | Проводки відрізняються від очікуваних |
+| `duplicate` | Кожна очікувана проводка записана двічі |
+| `payload_conflict` | Хеш збереженої угоди не збігається з хешем даних engine |
+| `reservation_leak` | Баланс `reserved` користувача в активі не дорівнює сумі залишків активних резервів |
+
+Звіт містить `perInstrument` (кількість, Σ кількості, Σ суми котирування з обох боків) та `perAsset`
+(Σ debit, Σ credit, Σ балансів, число рахунків, чий баланс не збігається з replay проводок).
+`ok` дорівнює `false` за будь-якої розбіжності, крім `pending`, або порушеного балансу активу.
+Список `discrepancies` обмежено 1000 елементами; `counts` точні, `truncated` показує обрізання.
+Звірка читає всі проводки й рахунки, тож її варто запускати за потреби, а не за таймером. Одночасно
+виконується одна звірка: другий виклик HTTP-маршруту отримує 409 `RECONCILIATION_RUNNING`. Транзакція
+звірки має власні ліміти (600 с на запит, 120 с простою), решта settlement лишається на 15 с і 10 с.
+
+### Відновлення після втрати stream
+
+Outbox у PostgreSQL — джерело правди; stream можна відтворити. Якщо звірка показала `missing`,
+повторіть публікацію подій цих угод:
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"tradeIds":["<tradeId>"]}' http://localhost:3001/admin/outbox/redrive
+```
+
+Для втраченого `order.closed` (резерв скасованої чи частково виконаної заявки лишився активним)
+передайте `{"orderIds":["<orderId>"]}`; можна поєднати з `tradeIds`. Engine повертає події
+`trade.executed` і `order.closed` у хвіст outbox із новою позицією (до 1000 ID кожного списку за запит),
+relay публікує їх знову, а settlement ідемпотентно обробляє. Зайвий redrive безпечний. Для `failed`
+спершу виправте причину з `settlement_failures`, потім повторіть redrive. Витік резерву
+(`reservation_leak`) redrive не виправляє: знайдіть резерв за користувачем і активом, перевірте
+`settlement_failures` та лог release.
+
+Нові змінні settlement: `CONSUMER_NAME`, `CONSUMER_CLAIM_IDLE_MS`, `CONSUMER_MAX_DELIVERIES`,
+`SETTLEMENT_GRACE_MS`, `ENGINE_INTERNAL_URL`. Для кількох екземплярів settlement задайте різні `CONSUMER_NAME`.
 
 ## Recovery і зупинений інструмент
 
@@ -707,8 +810,13 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose run --rm system-tests npm run ownership:kill
   docker compose run --rm system-tests npm run ownership:hooks
   docker compose run --rm system-tests npm run ownership:blackhole
+  docker compose run --rm system-tests npm run settlement:redrive
 )
 ```
+
+Сценарій `settlement:redrive` призупиняє власника й settlement, щоб угода з'явилася без розрахунку,
+видаляє її stream, перевіряє `missing` у звірці й код виходу 1, робить redrive та перевіряє `ok` і код 0.
+Test-overlay ставить `SETTLEMENT_GRACE_MS=1000`.
 
 Усі довгоживучі сервіси мають `restart: unless-stopped`: впала репліка повертається як резерв,
 а nginx, PostgreSQL і Redis піднімаються після збою чи рестарту Docker.
