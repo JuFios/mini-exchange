@@ -588,6 +588,7 @@ docker compose exec -T settlement-service node dist/reconcile --from 2026-01-01T
 1 — є розбіжність, 2 — engine чи БД недоступні.
 
 Settlement читає угоди engine сторінками по 1000 через внутрішній `GET /internal/trades`
+і питає про стан заявок активних резервів через `POST /internal/orders/terminal`
 (`x-internal-token`, лише через `engine-lb:8080`; публічний `:3001` повертає 404). Кожна сторінка
 читається в `REPEATABLE READ READ ONLY`. Обидві сторони зливаються в порядку `(executed_at, trade_id)`,
 тож пам'ять не залежить від кількості угод. Для кожної угоди очікувані проводки обчислюються з даних
@@ -603,10 +604,15 @@ engine й порівнюються з фактичними.
 | `duplicate` | Кожна очікувана проводка записана двічі |
 | `payload_conflict` | Хеш збереженої угоди не збігається з хешем даних engine |
 | `reservation_leak` | Баланс `reserved` користувача в активі не дорівнює сумі залишків активних резервів |
+| `stuck_reservation` | Резерв лишається `active`, хоча заявка в engine `filled` або `cancelled` і перейшла в цей стан раніше за `SETTLEMENT_GRACE_MS`: `order.closed` не дійшов |
 
 Звіт містить `perInstrument` (кількість, Σ кількості, Σ суми котирування з обох боків) та `perAsset`
 (Σ debit, Σ credit, Σ балансів, число рахунків, чий баланс не збігається з replay проводок).
 `ok` дорівнює `false` за будь-якої розбіжності, крім `pending`, або порушеного балансу активу.
+`reservation_leak` і `stuck_reservation` перевіряються на момент звірки, а не за період; `instrument`
+звужує лише другу. Для `stuck_reservation` settlement проходить активні резерви сторінками по 1000 за
+`reservation_id` в одному snapshot і питає engine, які з їхніх заявок термінальні: до engine йдуть лише ID
+активних резервів, а не вся історія заявок. Недоступний engine дає 502 (код виходу 2), а не чисту звірку.
 Список `discrepancies` обмежено 1000 елементами; `counts` точні, `truncated` показує обрізання.
 Звірка читає всі проводки й рахунки, тож її варто запускати за потреби, а не за таймером. Одночасно
 виконується одна звірка: другий виклик HTTP-маршруту отримує 409 `RECONCILIATION_RUNNING`. Транзакція
@@ -626,7 +632,8 @@ curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: appl
 передайте `{"orderIds":["<orderId>"]}`; можна поєднати з `tradeIds`. Engine повертає події
 `trade.executed` і `order.closed` у хвіст outbox із новою позицією (до 1000 ID кожного списку за запит),
 relay публікує їх знову, а settlement ідемпотентно обробляє. Зайвий redrive безпечний. Для `failed`
-спершу виправте причину з `settlement_failures`, потім повторіть redrive. Витік резерву
+спершу виправте причину з `settlement_failures`, потім повторіть redrive. `stuck_reservation` називає
+`reservationId`, він дорівнює `orderId`: передайте його в `orderIds`. Витік резерву
 (`reservation_leak`) redrive не виправляє: знайдіть резерв за користувачем і активом, перевірте
 `settlement_failures` та лог release.
 
@@ -816,6 +823,8 @@ Runner має Docker CLI і socket для керування контейнер�
 
 Сценарій `settlement:redrive` призупиняє власника й settlement, щоб угода з'явилася без розрахунку,
 видаляє її stream, перевіряє `missing` у звірці й код виходу 1, робить redrive та перевіряє `ok` і код 0.
+Далі скасовує заявку при призупиненому settlement, видаляє stream з її `order.closed`, перевіряє
+`stuck_reservation` і код 1, робить redrive за `orderIds` та перевіряє `ok` і код 0.
 Test-overlay ставить `SETTLEMENT_GRACE_MS=1000`.
 
 Усі довгоживучі сервіси мають `restart: unless-stopped`: впала репліка повертається як резерв,
