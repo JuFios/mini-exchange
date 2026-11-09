@@ -88,7 +88,7 @@ export async function request(
     signal: AbortSignal.timeout(timeoutMs),
   });
 }
-export async function submit(token: string, body: unknown): Promise<Response> {
+export async function submit(token: string, body: unknown, base = engine): Promise<Response> {
   const key = randomUUID();
   const deadline = performance.now() + 30000;
   let attempt = 0;
@@ -100,7 +100,7 @@ export async function submit(token: string, body: unknown): Promise<Response> {
         'POST',
         token,
         body,
-        engine,
+        base,
         { 'Idempotency-Key': key },
         Math.max(1, Math.min(15000, Math.floor(deadline - performance.now()))),
       );

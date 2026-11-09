@@ -74,7 +74,14 @@ async function main() {
     ).rows[0].owner_instance as string;
     ownerContainer = container(`matching-${owner}`);
     docker('pause', ownerContainer);
-    const accepted = await submit(buyer, { ...order, side: 'buy', quantity: '1' });
+    // Через балансувальник запит міг би потрапити на призупинену репліку й зависнути до тайм-ауту
+    // клієнта (він збігається з тайм-аутом nginx), тож заявку приймає жива репліка напряму.
+    const alive = owner === 'engine-1' ? 'matching-engine-2' : 'matching-engine-1';
+    const accepted = await submit(
+      buyer,
+      { ...order, side: 'buy', quantity: '1' },
+      `http://${alive}:3001`,
+    );
     assert([200, 201, 202].includes(accepted.status), await accepted.text());
     docker('pause', settlementContainer);
 
