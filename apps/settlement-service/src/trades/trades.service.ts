@@ -1,12 +1,163 @@
-import { Injectable, NotImplementedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { Asset, parseAmount } from '../ledger/amount';
+import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
+import { PostingBuilder } from '../ledger/posting-builder';
+import {
+  consumeReservation,
+  lockReservations,
+  ReservationRecord,
+} from '../reservations/reservation-record';
 import { SettleTradeDto } from './dto/settle-trade.dto';
 
 @Injectable()
 export class TradesService {
-  // TODO: реалізувати рух коштів між гаманцями покупця й продавця та
-  // ідемпотентну обробку (повторна доставка того самого tradeId не повинна
-  // подвоїти рух коштів) — див. ТЗ, розділ 4.1 і 4.2.
-  settle(_dto: SettleTradeDto): never {
-    throw new NotImplementedException('Розрахунок угод ще не реалізований');
+  constructor(
+    private readonly source: DataSource,
+    private readonly ledger: LedgerWriter,
+  ) {}
+
+  async settle(
+    dto: SettleTradeDto,
+    streamId?: string,
+    traceId?: string,
+  ): Promise<SettlementResult> {
+    const {
+      tradeId,
+      instrument,
+      buyOrderId,
+      sellOrderId,
+      buyerUserId,
+      sellerUserId,
+      baseAsset,
+      quoteAsset,
+      executedAt,
+    } = canonicalTrade(dto);
+    const { price, quantity, buyLimit } = tradeAmounts(dto);
+    const postings = PostingBuilder.trade({
+      buyerUserId,
+      sellerUserId,
+      baseAsset,
+      quoteAsset,
+      price,
+      quantity,
+      buyLimit,
+    });
+    const hash = requestHash({
+      instrument,
+      buyOrderId,
+      sellOrderId,
+      buyerUserId,
+      sellerUserId,
+      baseAsset,
+      quoteAsset,
+      executedAt,
+      price: price.toString(),
+      quantity: quantity.toString(),
+      buyLimit: buyLimit.toString(),
+    });
+
+    return this.source.transaction(async (db) => {
+      const [inserted] = await db.query(
+        `INSERT INTO settled_trades (trade_id,instrument,payload_hash,executed_at,stream_id)
+         VALUES ($1,$2,$3,$4,$5) ON CONFLICT (trade_id) DO NOTHING RETURNING trade_id`,
+        [tradeId, instrument, hash, executedAt, streamId],
+      );
+      if (!inserted) {
+        const [existing] = await db.query(
+          'SELECT payload_hash,entry_id FROM settled_trades WHERE trade_id=$1',
+          [tradeId],
+        );
+        return existing.payload_hash === hash
+          ? { status: 'duplicate', entryId: existing.entry_id }
+          : { status: 'conflict' };
+      }
+      const locked = await lockReservations(db, [buyOrderId, sellOrderId]);
+      const buy = locked.find((reservation) => reservation.reservation_id === buyOrderId);
+      const sell = locked.find((reservation) => reservation.reservation_id === sellOrderId);
+      const reservedQuote = buyLimit * quantity;
+      assertReservation(buy, buyerUserId, quoteAsset, reservedQuote);
+      assertReservation(sell, sellerUserId, baseAsset, quantity);
+      const wallets = [
+        { userId: buyerUserId, asset: baseAsset },
+        { userId: buyerUserId, asset: quoteAsset },
+        { userId: sellerUserId, asset: baseAsset },
+        { userId: sellerUserId, asset: quoteAsset },
+      ];
+      const accounts = await this.ledger.lockWallets(db, wallets);
+      const entryId = await this.ledger.write(
+        db,
+        accounts,
+        { operationId: `trade:${tradeId}`, type: 'trade', tradeId, traceId },
+        postings,
+      );
+      await consumeReservation(db, buyOrderId, reservedQuote);
+      await consumeReservation(db, sellOrderId, quantity);
+      await db.query('UPDATE settled_trades SET entry_id=$2 WHERE trade_id=$1', [tradeId, entryId]);
+      return { status: 'applied', entryId };
+    });
+  }
+}
+
+export type SettlementResult =
+  { status: 'applied' | 'duplicate'; entryId: string } | { status: 'conflict' };
+
+function canonicalTrade(dto: SettleTradeDto): SettleTradeDto {
+  const trade = {
+    ...dto,
+    tradeId: dto.tradeId.toLowerCase(),
+    buyOrderId: dto.buyOrderId.toLowerCase(),
+    sellOrderId: dto.sellOrderId.toLowerCase(),
+    buyerUserId: dto.buyerUserId.toLowerCase(),
+    sellerUserId: dto.sellerUserId.toLowerCase(),
+  };
+  if (
+    trade.instrument !== trade.baseAsset ||
+    trade.baseAsset === 'USD' ||
+    trade.quoteAsset !== 'USD' ||
+    trade.buyerUserId === trade.sellerUserId ||
+    trade.buyOrderId === trade.sellOrderId
+  )
+    throw new BadRequestException('Некоректні дані угоди');
+  const date = new Date(trade.executedAt);
+  if (!Number.isFinite(date.getTime())) throw new BadRequestException('Некоректний час угоди');
+  return { ...trade, executedAt: date.toISOString() };
+}
+
+function tradeAmounts(dto: SettleTradeDto) {
+  try {
+    const price = parseAmount(dto.price, 2);
+    const buyLimit = parseAmount(dto.buyLimitPrice, 2);
+    const quantity = parseAmount(dto.quantity, 8);
+    if (
+      price <= 0n ||
+      price > buyLimit ||
+      buyLimit > 100_000_000n ||
+      quantity <= 0n ||
+      quantity > 100_000_000_000_000n
+    )
+      throw new Error();
+    return { price, quantity, buyLimit };
+  } catch {
+    throw new BadRequestException('Некоректні суми угоди');
+  }
+}
+
+function assertReservation(
+  row: ReservationRecord | undefined,
+  userId: string,
+  asset: Asset,
+  amount: bigint,
+): void {
+  if (
+    row?.status !== 'active' ||
+    row.user_id !== userId ||
+    row.asset !== asset ||
+    BigInt(row.remaining) < amount
+  ) {
+    throw new ConflictException({
+      code: 'RESERVATION_MISMATCH',
+      message: 'Резерв не відповідає угоді',
+    });
   }
 }

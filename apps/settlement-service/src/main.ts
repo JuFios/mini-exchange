@@ -1,11 +1,13 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { configureApp } from './configure-app';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  const port = process.env.PORT ?? 3002;
+  configureApp(app);
+  app.enableShutdownHooks();
+  const port = app.get(ConfigService).getOrThrow<number>('PORT');
   await app.listen(port);
   // eslint-disable-next-line no-console
   console.log(`settlement-service listening on ${port}`);
