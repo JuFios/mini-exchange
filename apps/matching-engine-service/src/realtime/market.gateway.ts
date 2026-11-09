@@ -67,6 +67,8 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
     return this.inOrder(client, instrument, async () => {
+      // Запит, що простояв у черзі, міг дочекатися розриву: читати snapshot для нього зайве.
+      if (!client.connected) return { ok: false, error: 'DISCONNECTED' };
       const room = bookRoom(instrument);
       // Повторна підписка (resync) не повинна виселяти сокет, який уже в кімнаті: інакше збій
       // читання snapshot лишив би клієнта без delta і heartbeat, які він використовує для перевірки.
