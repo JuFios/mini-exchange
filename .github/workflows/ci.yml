@@ -226,6 +226,8 @@ jobs:
         run: docker compose run --rm system-tests npm run ownership:blackhole
       - name: Check settlement recovery after a lost stream
         run: docker compose run --rm system-tests npm run settlement:redrive
+      - name: Check wallet push to the private WebSocket
+        run: docker compose run --rm system-tests npm run wallet:push
       - name: Diagnose failure before cleanup
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200
