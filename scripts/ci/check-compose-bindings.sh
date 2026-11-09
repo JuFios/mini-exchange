@@ -84,6 +84,6 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml config --format 
   (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].init == true)) and
   ($s.frontend.environment.MATCHING_ENGINE_URL == "http://engine-lb:8080") and
   (["matching-engine-1","matching-engine-2"] |
-    all(. as $name | $s[$name].environment.RESERVATIONS_ENABLED == "false")) and
+    all(. as $name | $s[$name].environment.RESERVATIONS_ENABLED == "true")) and
   ($s["matching-engine-1"].environment.LEASE_TTL_MS == "5000") and
   (.volumes | keys == ["system-db-data","system-redis-data"])'

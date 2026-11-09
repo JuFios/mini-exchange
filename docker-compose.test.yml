@@ -27,6 +27,9 @@ services:
   settlement-service:
     restart: 'no'
     ports: !reset []
+    environment:
+      # Коротка пауза дає звірці побачити втрачену угоду без очікування 30 с.
+      SETTLEMENT_GRACE_MS: '1000'
   frontend:
     restart: 'no'
     ports: !reset []
