@@ -242,6 +242,71 @@ describe('with a reader that stops following the stream', () => {
   }, 60000);
 });
 
+describe('with a reader that stops following entries that carry no new delta', () => {
+  const entry = (type: string, payload: Record<string, unknown>, seq?: string) => {
+    const eventId = `00000000-0000-4000-8000-${String(Date.now()).padStart(12, '0')}`;
+    const envelope = JSON.stringify({ eventId, type, version: 1, payload });
+    return ['eventId', eventId, ...(seq ? ['seq', seq] : []), 'envelope', envelope];
+  };
+
+  it.each([
+    [
+      'a trade of the command whose delta it already emitted',
+      'exchange:market:{ABC}',
+      entry(
+        'trade.public',
+        {
+          tradeId: 't1',
+          instrument: 'ABC',
+          seq: '1',
+          price: '100.00',
+          quantity: '1.00000000',
+          takerSide: 'buy',
+          executedAt: '2026-01-01T00:00:00.000Z',
+        },
+        '1',
+      ),
+    ],
+    [
+      'an update on the user stream',
+      'exchange:user-events',
+      entry('order.updated', { userId: 'u1', orderId: 'o1', instrument: 'ABC' }),
+    ],
+  ])(
+    'leaves the pool when it misses %s',
+    async (_name, stream, fields) => {
+      peer = await api.build({
+        INSTANCE_ID: 'peer-frozen-entries',
+        ENGINE_WORKER_ENABLED: false,
+        CHAOS_ENABLED: true,
+        WS_REPLICA_MAX_LAG_MS: 1000,
+      });
+      const peerUrl = await peer.getUrl();
+      const owner = await api.register();
+      expect((await api.submit(owner)).status).toBe(201);
+      await waitFor(async () => peer!.get(RealtimeStreamReader).emittedSeq('ABC') === 1n, 5000);
+
+      peer.get(ChaosHooks).arm({ point: 'freeze_stream_reader' });
+      const admin = new Redis({
+        host: process.env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT),
+      });
+      try {
+        await admin.xadd(stream, '*', ...fields);
+      } finally {
+        admin.disconnect();
+      }
+
+      await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 503, 15000, 100);
+      expect((await fetch(`${api.url()}/ready`)).status).toBe(200);
+
+      peer.get(ChaosHooks).arm({ point: 'unfreeze_stream_reader' });
+      await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 15000, 100);
+    },
+    60000,
+  );
+});
+
 describe('snapshots taken while commands are being applied', () => {
   const units = (text: string, scale: number) => {
     const [whole, fraction = ''] = text.split('.');
