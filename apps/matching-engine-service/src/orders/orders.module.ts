@@ -12,6 +12,7 @@ import { PgNotifications } from '../engine/pg-notifications';
 import { HttpReservationClient } from '../intake/http-reservation.client';
 import { ReservationFundingCheck } from '../intake/reservation-funding.check';
 import { ReservationSweeper } from '../intake/reservation-sweeper';
+import { InternalOrdersController } from '../outbox/internal-orders.controller';
 import { InternalTradesController } from '../outbox/internal-trades.controller';
 import { OutboxRedriveController } from '../outbox/outbox-redrive.controller';
 import { IntakeService } from '../intake/intake.service';
@@ -36,6 +37,7 @@ import { InstrumentCatalog } from './instrument-catalog';
     AdminInstrumentsController,
     ReadinessController,
     InternalTradesController,
+    InternalOrdersController,
     OutboxRedriveController,
   ],
   providers: [
