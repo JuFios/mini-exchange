@@ -50,8 +50,9 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
   handleConnection(client: Socket): void {
     void client.join(userRoom(client.data.userId));
     // Сервер розриває сокет на `exp`: інакше протермінований токен тримав би з'єднання відкритим.
+    // Без `true`: транспорт спільний із `/market`, тож закривається лише ця namespace.
     const timer = setTimeout(
-      () => client.disconnect(true),
+      () => client.disconnect(),
       Math.min(Math.max(0, client.data.exp * 1000 - Date.now()), MAX_TIMER_MS),
     );
     timer.unref();
