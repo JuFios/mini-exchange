@@ -19,6 +19,7 @@
     "format": "prettier --write \"{src,test}/**/*.ts\"",
     "format:check": "prettier --check \"{src,test}/**/*.ts\"",
     "test:e2e": "jest --config test/jest-e2e.json --runInBand",
+    "reconcile": "ts-node src/reconcile.ts",
     "migration:run": "ts-node src/migrate.ts run",
     "migration:revert": "ts-node src/migrate.ts revert"
   },

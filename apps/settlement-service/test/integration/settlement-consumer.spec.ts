@@ -5,6 +5,9 @@ import Redis from 'ioredis';
 import { SettlementConsumer } from '../../src/consumer/settlement-consumer.service';
 import { SettlementStats } from '../../src/consumer/settlement-stats';
 import { DEAD_LETTER_STREAM } from '../../src/consumer/streams';
+import { EngineTradesClient } from '../../src/reconciliation/engine-trades.client';
+import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
+import type { EngineTrade } from '../../src/reconciliation/trade-comparison';
 import { ledgerApp, tradeFixture } from '../ledger-app';
 import {
   abcStream,
@@ -19,7 +22,19 @@ import {
   USER_EVENTS,
 } from '../stream-fixtures';
 
-const ledger = ledgerApp();
+// Engine знає про всі угоди, тож звірка бачить ті, чий запис обрізано з stream.
+let known: EngineTrade[] = [];
+const ledger = ledgerApp(
+  {},
+  {
+    customize: (builder) =>
+      builder.overrideProvider(EngineTradesClient).useValue({
+        async *trades() {
+          yield* known;
+        },
+      }),
+  },
+);
 let redis: Redis;
 let consumer: SettlementConsumer | undefined;
 const source = () => ledger.source();
@@ -168,6 +183,19 @@ it('dead-letters an invalid record at once and a conflicting trade without movin
   ]);
 });
 
+it('keeps a record that jsonb cannot store by dead-lettering an encoded copy', async () => {
+  consumer = startConsumer(ledger.app());
+  await redis.xadd(abcStream, '*', 'envelope', 'bad\u0000record');
+
+  await until(
+    () => redis.xlen(DEAD_LETTER_STREAM),
+    (length) => length === 1,
+  );
+  const [failure] = await source().query('SELECT payload FROM settlement_failures');
+  expect(failure.payload.encoding).toBe('base64');
+  expect(await pendingCount(redis)).toBe(0);
+});
+
 it('never dead-letters a transient failure, however many times it is delivered', async () => {
   let calls = 0;
   const flaky = {
@@ -230,7 +258,17 @@ it('survives a trimmed pending record and settles the records after it', async (
   );
   expect(ledger.app().get(SettlementStats).trimmedPending).toBe(before + 1);
   expect(await entries(lost)).toHaveLength(0);
-
+  known = [lost, next]
+    .map((trade) => ({ ...trade, quantity: '0.50000000' }))
+    .sort((a, b) => a.tradeId.localeCompare(b.tradeId));
+  const report = await ledger
+    .app()
+    .get(ReconciliationService)
+    .run({ from: '2026-01-01T00:00:00.000Z', to: '2026-01-02T00:00:00.000Z' });
+  // Попередні тести залишили в ledger інші угоди, тож перевіряємо лише клас missing.
+  expect(
+    report.discrepancies.filter(({ type }) => type === 'missing').map(({ tradeId }) => tradeId),
+  ).toEqual([lost.tradeId]);
   await until(
     () => pendingCount(redis),
     (pending) => pending === 0,
@@ -322,3 +360,64 @@ it('reports queue depth, lag and failures', async () => {
   });
   expect(info).toMatchObject({ deadLetters: 0, failures: 0, consumer: 'test-consumer' });
 });
+
+// Детермінований генератор: однакове насіння відтворює ту саму послідовність доставок.
+function mulberry32(seed: number) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+it.each([20261105, 7, 99])(
+  'keeps the ledger consistent for duplicated, shuffled and restarted deliveries (seed %i)',
+  async (seed) => {
+    const random = mulberry32(seed);
+    const trades = Array.from({ length: 12 }, () => tradeFixture());
+    for (const trade of trades) await reserveTrade(ledger.app(), trade);
+    const deliveries = trades
+      .flatMap((trade) => Array.from({ length: 1 + Math.floor(random() * 3) }, () => trade))
+      .sort(() => random() - 0.5);
+    known = trades
+      .map((trade) => ({ ...trade, quantity: '0.50000000' }))
+      .sort((a, b) => a.tradeId.localeCompare(b.tradeId));
+
+    consumer = startConsumer(ledger.app());
+    for (const [index, trade] of deliveries.entries()) {
+      await redis.xadd(abcStream, '*', ...tradeFields(trade));
+      if (index === Math.floor(deliveries.length / 2)) {
+        // Рестарт посеред потоку: незавершені записи повертаються через reclaim.
+        await consumer.beforeApplicationShutdown();
+        consumer = startConsumer(ledger.app());
+      }
+    }
+    await until(
+      () => consumer!.queue(),
+      ({ streams }) => streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+      15000,
+    );
+
+    expect(
+      await source().query(
+        'SELECT count(*)::int AS n FROM journal_entries WHERE trade_id = ANY($1)',
+        [trades.map(({ tradeId }) => tradeId)],
+      ),
+    ).toEqual([{ n: trades.length }]);
+    expect(await redis.xlen(DEAD_LETTER_STREAM)).toBe(0);
+    // Кожна угода застосована один раз: звірка не знаходить ні дублів, ні витоку резерву.
+    const report = await ledger
+      .app()
+      .get(ReconciliationService)
+      .run({ from: '2026-01-01T00:00:00.000Z', to: '2026-01-02T00:00:00.000Z' });
+    expect(report.counts).toMatchObject({ duplicate: 0, amount_mismatch: 0, reservation_leak: 0 });
+    expect(
+      report.perAsset.every(
+        ({ balanced, balanceSum, replayMismatches }) =>
+          balanced && balanceSum === '0' && replayMismatches === 0,
+      ),
+    ).toBe(true);
+  },
+  30000,
+);

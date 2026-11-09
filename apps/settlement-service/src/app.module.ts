@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { validateDatabaseEnv, validateEnv } from './config/env.validation';
 import { ledgerDataSourceOptions } from './data-source';
 import { ConsumerModule } from './consumer/consumer.module';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { ReservationsModule } from './reservations/reservations.module';
 import { WalletsModule } from './wallets/wallets.module';
 import { TradesModule } from './trades/trades.module';
@@ -19,6 +20,7 @@ import { HealthController } from './health.controller';
     ReservationsModule,
     WalletsModule,
     ConsumerModule,
+    ReconciliationModule,
   ],
   controllers: [HealthController],
 })

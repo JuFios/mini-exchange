@@ -23,7 +23,7 @@ it('protects every registered admin route with authentication and an admin role'
   const routes = router._router.stack.flatMap((layer) =>
     layer.route?.path.startsWith('/admin') ? [layer.route] : [],
   );
-  expect(routes.map(({ path }) => path).sort()).toEqual(['/admin/queue']);
+  expect(routes.map(({ path }) => path).sort()).toEqual(['/admin/queue', '/admin/reconciliation']);
   for (const route of routes)
     for (const method of Object.keys(route.methods) as ('get' | 'post')[]) {
       await request(server)[method](route.path).expect(401);
