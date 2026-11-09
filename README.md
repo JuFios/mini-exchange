@@ -796,8 +796,8 @@ recovery на своїй БД. Знімки книги для прискорен
 через HTTP, worker і реальний PG у `worker-contracts.e2e-spec.ts`, з тими самими сумами
 та сильнішими перевірками `filledQuantity`. Unit перевіряє нормалізацію перед прийомом.
 Тест глибини перевіряє додане поле `seq`; інші assertions не послаблено.
-Тест `realtime-replicas` про завислу репліку очікував повідомлення `REPLICA_UNAVAILABLE` від namespace; тепер upgrade
-відхиляється ще до namespace, тож тест очікує помилку `websocket error`, а відмову namespace перевіряє окремий unit-тест.
+Тест `realtime-replicas` про завислу репліку перевіряє відмову на рівні upgrade (клієнт бачить `websocket error`); відмову
+namespace перевіряє окремий unit-тест `replica-guard`.
 Frontend-форма читає `{order,trades}`, окремо показує `pending` і надсилає точні рядки сум.
 
 
