@@ -40,11 +40,15 @@ export default function OrderBookPage() {
     };
 
     socket.on('connect', () => {
-      delay = RETRY_MIN_MS;
       setStatus('live');
       socket.emit('subscribe', INSTRUMENT);
     });
-    socket.on('book', (data: BookState) => setBook(data));
+    socket.on('book', (data: BookState) => {
+      // Затримка скидається лише після справжньої книги: сервер, що приймає й одразу розриває
+      // з'єднання, не повинен отримувати спробу кожні 250 мс.
+      delay = RETRY_MIN_MS;
+      setBook(data);
+    });
     socket.on('disconnect', (reason) => {
       setStatus('disconnected');
       if (reason === 'io server disconnect') reconnect();
