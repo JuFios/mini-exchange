@@ -9,7 +9,7 @@ const stream = 'exchange:settlement:{ABC}';
 type Report = {
   ok: boolean;
   counts: Record<string, number>;
-  discrepancies: { type: string; tradeId: string }[];
+  discrepancies: { type: string; tradeId: string; actual?: { reservationId?: string } }[];
 };
 
 async function main() {
@@ -115,12 +115,72 @@ async function main() {
     const repaired = await until(reconcile, (report) => report.ok && report.counts.matched >= 1);
     assert.equal(repaired.counts.missing, 0);
     assert.equal(cli().code, 0, 'reconcile must exit 0 after the redrive');
+    // Втрачений order.closed: заявка скасована, а резерв у ledger лишається активним. Звірка
+    // має його назвати, а redrive за orderIds — зняти.
+    const maker = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
+    const makerOrder = await submit(maker, {
+      instrument: 'ABC',
+      price: '200',
+      side: 'sell',
+      quantity: '1',
+    });
+    assert([200, 201, 202].includes(makerOrder.status), await makerOrder.clone().text());
+    const orderId = ((await makerOrder.json()) as { order: { id: string } }).order.id;
+    await until(
+      async () => (await db.query('SELECT status FROM orders WHERE id=$1', [orderId])).rows[0],
+      (row) => row?.status === 'open',
+    );
+    docker('pause', settlementContainer);
+    // XREADGROUP BLOCK, відкритий до паузи, отримав би подію й залишив її у сокеті зупиненого
+    // процесу: DEL stream цього не скасує. Чекаємо, поки сервер закриє такі читання за тайм-аутом.
+    const blockedReaders = () =>
+      docker('exec', redis, 'redis-cli', 'CLIENT', 'LIST')
+        .split('\n')
+        .filter((client) => client.includes('cmd=xreadgroup') && /flags=[A-Za-z]*b/.test(client))
+        .length;
+    await until(
+      async () => blockedReaders(),
+      (blocked) => blocked === 0,
+    );
+    const cancel = await request(`/orders/${orderId}`, 'DELETE', maker);
+    assert([200, 202].includes(cancel.status), await cancel.text());
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT published_at FROM outbox WHERE type='order.closed' AND payload->>'orderId'=$1",
+            [orderId],
+          )
+        ).rows[0],
+      (row) => row?.published_at,
+      30000,
+    );
+    assert.equal(docker('exec', redis, 'redis-cli', 'DEL', stream), '1');
+    docker('unpause', settlementContainer);
+
+    const stuckOf = (report: Report) =>
+      report.discrepancies.filter(({ type }) => type === 'stuck_reservation');
+    const stuck = await until(reconcile, (report) => stuckOf(report).length > 0, 20000);
+    assert.equal(stuck.ok, false);
+    assert.equal(stuck.counts.stuck_reservation, 1);
+    assert.equal(stuckOf(stuck)[0].actual?.reservationId, orderId);
+    assert.equal(cli().code, 1, 'reconcile must exit 1 while a reservation is stuck');
+
+    const release = await request('/admin/outbox/redrive', 'POST', admin, { orderIds: [orderId] });
+    assert.equal(release.status, 200, await release.clone().text());
+    assert.deepEqual(await release.json(), { requeued: 1 });
+    const released = await until(reconcile, (report) => report.ok && stuckOf(report).length === 0);
+    assert.equal(released.counts.stuck_reservation, 0);
+    assert.equal(cli().code, 0, 'reconcile must exit 0 after the reservation is released');
+
     const queue = await (await request('/admin/queue', 'GET', admin, undefined, settlement)).json();
     assert.equal(
       queue.streams.reduce((n: number, s: { pending: number }) => n + s.pending, 0),
       0,
     );
-    console.log(`redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched}`);
+    console.log(
+      `redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched} orderId=${orderId} stuck_reservation->ok`,
+    );
   } finally {
     // Контейнери не лишаються на паузі, якщо перевірка впала посередині.
     for (const id of [settlementContainer, ownerContainer]) {
