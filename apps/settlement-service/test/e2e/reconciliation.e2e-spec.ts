@@ -1,36 +1,48 @@
 import { randomUUID } from 'node:crypto';
+import { BadGatewayException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
+import { EngineOrdersClient, TerminalOrder } from '../../src/reconciliation/engine-orders.client';
 import { EngineTradesClient, Period } from '../../src/reconciliation/engine-trades.client';
 import { EngineTrade } from '../../src/reconciliation/trade-comparison';
+import { ReservationsService } from '../../src/reservations/reservations.service';
 import { TradesService } from '../../src/trades/trades.service';
 import { ledgerApp } from '../ledger-app';
 import { reserveTrade, type Trade } from '../stream-fixtures';
 
 let engineTrades: EngineTrade[] = [];
 let engineDelayMs = 0;
+// Заявки, які engine вважає термінальними; решта заявок для нього відкриті.
+let terminalOrders: TerminalOrder[] = [];
 // Угоди першого тесту лишаються в тій самій БД.
 const earlier: EngineTrade[] = [];
 const ledger = ledgerApp(
   {},
   {
     customize: (builder) =>
-      builder.overrideProvider(EngineTradesClient).useValue({
-        async *trades({ from, to, instrument }: Period) {
-          await new Promise((resolve) => setTimeout(resolve, engineDelayMs));
-          // Engine віддає угоди в порядку (executedAt, tradeId).
-          const sorted = [...engineTrades].sort(
-            (a, b) =>
-              a.executedAt.localeCompare(b.executedAt) || a.tradeId.localeCompare(b.tradeId),
-          );
-          yield* sorted.filter(
-            (trade) =>
-              trade.executedAt >= from &&
-              trade.executedAt < to &&
-              (!instrument || trade.instrument === instrument),
-          );
-        },
-      }),
+      builder
+        .overrideProvider(EngineOrdersClient)
+        .useValue({
+          terminal: async (ids: string[]) =>
+            terminalOrders.filter(({ orderId }) => ids.includes(orderId)),
+        })
+        .overrideProvider(EngineTradesClient)
+        .useValue({
+          async *trades({ from, to, instrument }: Period) {
+            await new Promise((resolve) => setTimeout(resolve, engineDelayMs));
+            // Engine віддає угоди в порядку (executedAt, tradeId).
+            const sorted = [...engineTrades].sort(
+              (a, b) =>
+                a.executedAt.localeCompare(b.executedAt) || a.tradeId.localeCompare(b.tradeId),
+            );
+            yield* sorted.filter(
+              (trade) =>
+                trade.executedAt >= from &&
+                trade.executedAt < to &&
+                (!instrument || trade.instrument === instrument),
+            );
+          },
+        }),
   },
 );
 const source = () => ledger.source();
@@ -178,5 +190,62 @@ it('refuses a second reconciliation while one holds the database connection', as
     await call().expect(200);
   } finally {
     engineDelayMs = 0;
+  }
+});
+
+it('finds a reservation that stays active after its order closed and clears it after the release', async () => {
+  engineTrades = [];
+  const t = trade('2026-01-01T10:00:00.000Z');
+  await reserveTrade(ledger.app(), t);
+  const closedAt = (ageMs: number) => new Date(Date.now() - ageMs).toISOString();
+  const closed = (orderId: string, ageMs: number): TerminalOrder => ({
+    orderId,
+    instrument: 'ABC',
+    status: 'cancelled',
+    closedAt: closedAt(ageMs),
+  });
+  // Купівля закрита давно, продаж — щойно: подія release для нього ще може бути в дорозі.
+  terminalOrders = [closed(t.buyOrderId, 120_000), closed(t.sellOrderId, 1_000)];
+
+  const stuck = await report();
+  expect(stuck.ok).toBe(false);
+  expect(stuck.counts.stuck_reservation).toBe(1);
+  const found = stuck.discrepancies.filter(
+    ({ type }: { type: string }) => type === 'stuck_reservation',
+  );
+  expect(found).toEqual([
+    expect.objectContaining({
+      tradeId: null,
+      instrument: 'ABC',
+      expected: { reservationId: t.buyOrderId, remaining: '0' },
+      actual: expect.objectContaining({
+        reservationId: t.buyOrderId,
+        userId: t.buyerUserId,
+        asset: 'USD',
+        remaining: '505000000000',
+        orderStatus: 'cancelled',
+      }),
+    }),
+  ]);
+  expect((await report('&instrument=XYZ')).counts.stuck_reservation).toBe(0);
+  expect((await report('&instrument=ABC')).counts.stuck_reservation).toBe(1);
+
+  await ledger.app().get(ReservationsService).release(t.buyOrderId);
+  expect((await report()).counts.stuck_reservation).toBe(0);
+  terminalOrders = [];
+});
+
+it('reports an unavailable engine order lookup instead of a clean reservation check', async () => {
+  const t = trade('2026-01-01T10:00:00.000Z');
+  await reserveTrade(ledger.app(), t);
+  const orders = ledger.app().get(EngineOrdersClient);
+  const lookup = jest.spyOn(orders, 'terminal').mockRejectedValue(new BadGatewayException());
+  try {
+    await request(ledger.app().getHttpServer())
+      .get('/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z')
+      .auth(admin(), { type: 'bearer' })
+      .expect(502);
+  } finally {
+    lookup.mockRestore();
   }
 });

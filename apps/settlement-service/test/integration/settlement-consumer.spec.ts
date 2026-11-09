@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { SettlementConsumer } from '../../src/consumer/settlement-consumer.service';
 import { SettlementStats } from '../../src/consumer/settlement-stats';
 import { DEAD_LETTER_STREAM } from '../../src/consumer/streams';
+import { EngineOrdersClient } from '../../src/reconciliation/engine-orders.client';
 import { EngineTradesClient } from '../../src/reconciliation/engine-trades.client';
 import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
 import type { EngineTrade } from '../../src/reconciliation/trade-comparison';
@@ -28,11 +29,15 @@ const ledger = ledgerApp(
   {},
   {
     customize: (builder) =>
-      builder.overrideProvider(EngineTradesClient).useValue({
-        async *trades() {
-          yield* known;
-        },
-      }),
+      builder
+        .overrideProvider(EngineOrdersClient)
+        .useValue({ terminal: async () => [] })
+        .overrideProvider(EngineTradesClient)
+        .useValue({
+          async *trades() {
+            yield* known;
+          },
+        }),
   },
 );
 let redis: Redis;

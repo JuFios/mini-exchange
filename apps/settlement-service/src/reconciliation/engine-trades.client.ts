@@ -1,9 +1,9 @@
-import { BadGatewayException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { engineCall } from './engine-call';
 import type { EngineTrade } from './trade-comparison';
 
 const PAGE_SIZE = 1000;
-const REQUEST_TIMEOUT_MS = 10_000;
 
 interface Page {
   trades: EngineTrade[];
@@ -42,16 +42,6 @@ export class EngineTradesClient {
     url.searchParams.set('limit', String(PAGE_SIZE));
     if (instrument) url.searchParams.set('instrument', instrument);
     if (after) url.searchParams.set('after', after);
-    try {
-      const response = await fetch(url, {
-        redirect: 'error',
-        headers: { 'x-internal-token': this.token },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-      if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
-      return (await response.json()) as Page;
-    } catch (error) {
-      throw new BadGatewayException(`Engine trades are unavailable: ${(error as Error).message}`);
-    }
+    return engineCall<Page>('trades', url, this.token);
   }
 }
