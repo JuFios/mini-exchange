@@ -1,5 +1,5 @@
 import fc from 'fast-check';
-import { LagTracker, RecentIds } from '../../src/realtime/replica-lag';
+import { LagTracker, RecentIds, streamPosition } from '../../src/realtime/replica-lag';
 
 describe('LagTracker', () => {
   const max = 5000;
@@ -93,5 +93,24 @@ describe('RecentIds', () => {
     expect(ids.add('c')).toBe(true);
     expect(ids.add('b')).toBe(false);
     expect(ids.add('a')).toBe(true);
+  });
+});
+
+describe('streamPosition', () => {
+  it('orders positions exactly as Redis orders entry IDs', () => {
+    const id = fc.tuple(fc.nat(2 ** 40), fc.nat(2 ** 20));
+    fc.assert(
+      fc.property(id, id, ([msA, seqA], [msB, seqB]) => {
+        const redisOrder = msA - msB || seqA - seqB;
+        const a = streamPosition(`${msA}-${seqA}`);
+        const b = streamPosition(`${msB}-${seqB}`);
+        expect(a < b).toBe(redisOrder < 0);
+        expect(a === b).toBe(redisOrder === 0);
+      }),
+    );
+  });
+
+  it.each(['', '0', 'abc', '1-', '-1', '1-2-3'])('reads %j as the start of the stream', (id) => {
+    expect(streamPosition(id)).toBe(0n);
   });
 });

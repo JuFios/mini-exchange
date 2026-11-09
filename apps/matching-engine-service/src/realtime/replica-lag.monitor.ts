@@ -10,7 +10,7 @@ export const HEARTBEAT_INTERVAL_MS = 2000;
 /**
  * Раз на HEARTBEAT_INTERVAL_MS читає `last_applied_seq` з PG і роздає його як heartbeat:
  * клієнт порівнює його з тим, що отримав, тож завислий XREAD-цикл репліки не лишає клієнтів
- * `live` на застарілій книзі. Окремо стежить, чи репліка просувається за опублікованим relay.
+ * `live` на застарілій книзі. Окремо стежить, чи репліка просувається за кожним stream, який опублікував relay.
  */
 @Injectable()
 export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestroy {
@@ -79,16 +79,14 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
         for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
       }
       const stalled = await Promise.all(
-        rows
-          .filter(({ instrument }) => this.instruments.has(instrument))
-          .map(async ({ instrument }) => {
-            const emitted = this.reader.emittedSeq(instrument);
-            const tracker = this.trackers.get(instrument) ?? new LagTracker(this.maxLagMs);
-            this.trackers.set(instrument, tracker);
-            // Недоступний Redis не доводить зависання читача: цей випадок ловить `/ready` через lease.
-            const published = await this.reader.publishedSeq(instrument).catch(() => emitted);
-            return tracker.check(published, emitted, now).stale;
-          }),
+        this.reader.streams.map(async (stream) => {
+          const cursor = this.reader.cursor(stream);
+          const tracker = this.trackers.get(stream) ?? new LagTracker(this.maxLagMs);
+          this.trackers.set(stream, tracker);
+          // Недоступний Redis не доводить зависання читача: цей випадок ловить `/ready` через lease.
+          const head = await this.reader.head(stream).catch(() => cursor);
+          return tracker.check(head, cursor, now).stale;
+        }),
       );
       const anyStale = stalled.some(Boolean);
       this.update(anyStale);

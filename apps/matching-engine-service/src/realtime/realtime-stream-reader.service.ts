@@ -6,7 +6,7 @@ import { ChaosHooks } from '../chaos/chaos-hooks';
 import { marketStream, USER_EVENTS_STREAM } from '../outbox/streams';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { MarketEvent, parseEnvelope, UserEvent } from './realtime-events';
-import { RecentIds } from './replica-lag';
+import { RecentIds, streamPosition } from './replica-lag';
 
 const BLOCK_MS = 1000;
 const REDIS_TIMEOUT_MS = 3000;
@@ -99,10 +99,20 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     return this.emitted.get(instrument) ?? 0n;
   }
 
-  /** `seq` останнього запису market-stream: що relay уже опублікував для інструмента. */
-  async publishedSeq(instrument: string): Promise<bigint> {
-    const [tail] = await this.probe.xrevrange(marketStream(instrument), '+', '-', 'COUNT', 1);
-    return BigInt(tail?.[1][tail[1].indexOf('seq') + 1] || 0);
+  /** Stream, які читає репліка: market усіх інструментів і події користувачів. */
+  get streams(): readonly string[] {
+    return this.keys;
+  }
+
+  /** Позиція, до якої репліка вже прочитала stream (на старті це його хвіст). */
+  cursor(stream: string): bigint {
+    return streamPosition(this.ids?.get(stream) ?? '0-0');
+  }
+
+  /** Позиція останнього запису stream: що relay уже опублікував. */
+  async head(stream: string): Promise<bigint> {
+    const [tail] = await this.probe.xrevrange(stream, '+', '-', 'COUNT', 1);
+    return streamPosition(tail?.[0] ?? '0-0');
   }
 
   private async run(): Promise<void> {
