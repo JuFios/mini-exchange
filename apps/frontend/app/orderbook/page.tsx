@@ -14,6 +14,8 @@ interface BookState {
 }
 
 const INSTRUMENT = 'ABC';
+const RETRY_MIN_MS = 250;
+const RETRY_MAX_MS = 2000;
 
 // NOTE (стартовий код): підписка на WebSocket без обробки номера
 // послідовності — якщо з'єднання розірветься й перепідключиться, клієнт
@@ -26,15 +28,34 @@ export default function OrderBookPage() {
   useEffect(() => {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001';
     const socket: Socket = io(wsUrl, { transports: ['websocket'] });
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let delay = RETRY_MIN_MS;
+
+    // Після розриву сервером чи відмови на handshake Socket.IO сам не підключається: потрібен
+    // явний connect(). Затримка зростає, щоб відмовлена репліка не отримувала шквал спроб.
+    const reconnect = () => {
+      clearTimeout(retry);
+      retry = setTimeout(() => socket.connect(), delay);
+      delay = Math.min(delay * 2, RETRY_MAX_MS);
+    };
 
     socket.on('connect', () => {
+      delay = RETRY_MIN_MS;
       setStatus('live');
       socket.emit('subscribe', INSTRUMENT);
     });
     socket.on('book', (data: BookState) => setBook(data));
-    socket.on('disconnect', () => setStatus('disconnected'));
+    socket.on('disconnect', (reason) => {
+      setStatus('disconnected');
+      if (reason === 'io server disconnect') reconnect();
+    });
+    socket.on('connect_error', () => {
+      setStatus('disconnected');
+      if (!socket.active) reconnect();
+    });
 
     return () => {
+      clearTimeout(retry);
       socket.disconnect();
     };
   }, []);
