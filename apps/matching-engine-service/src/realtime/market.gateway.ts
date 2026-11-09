@@ -29,6 +29,7 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
 
   private readonly instance: string;
   private readonly detach: (() => void)[] = [];
+  private readonly queues = new Map<string, Promise<void>>();
 
   constructor(
     config: ConfigService,
@@ -62,28 +63,50 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
    * вже після приєднання, тож клієнт не втрачає delta між snapshot і першою подією.
    */
   @SubscribeMessage('book.subscribe')
-  async subscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
+  subscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
-    const room = bookRoom(instrument);
-    // Повторна підписка (resync) не повинна виселяти сокет, який уже в кімнаті: інакше збій
-    // читання snapshot лишив би клієнта без delta і heartbeat, які він використовує для перевірки.
-    const joined = !client.rooms.has(room);
-    await client.join(room);
-    try {
-      return { ok: true, instance: this.instance, snapshot: await this.book.read(instrument) };
-    } catch (error) {
-      if (joined) await client.leave(room);
-      return { ok: false, error: errorCode(error) };
-    }
+    return this.inOrder(client, instrument, async () => {
+      const room = bookRoom(instrument);
+      // Повторна підписка (resync) не повинна виселяти сокет, який уже в кімнаті: інакше збій
+      // читання snapshot лишив би клієнта без delta і heartbeat, які він використовує для перевірки.
+      const joined = !client.rooms.has(room);
+      await client.join(room);
+      try {
+        return { ok: true, instance: this.instance, snapshot: await this.book.read(instrument) };
+      } catch (error) {
+        if (joined) await client.leave(room);
+        return { ok: false, error: errorCode(error) };
+      }
+    });
   }
 
   @SubscribeMessage('book.unsubscribe')
-  async unsubscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
+  unsubscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
-    await client.leave(bookRoom(instrument));
-    return { ok: true };
+    return this.inOrder(client, instrument, async () => {
+      await client.leave(bookRoom(instrument));
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Підписки одного сокета на один інструмент виконуються по черзі: невдала повільна підписка
+   * інакше виселила б сокет з кімнати, у яку вже приєднала успішна пізніша.
+   */
+  private inOrder<T>(client: Socket, instrument: string, task: () => Promise<T>): Promise<T> {
+    const key = `${client.id}:${instrument}`;
+    const result = (this.queues.get(key) ?? Promise.resolve()).then(task);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.queues.set(key, tail);
+    void tail.then(() => {
+      if (this.queues.get(key) === tail) this.queues.delete(key);
+    });
+    return result;
   }
 
   private publish(event: MarketEvent): void {
