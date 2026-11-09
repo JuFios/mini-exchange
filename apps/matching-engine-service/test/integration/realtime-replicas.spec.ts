@@ -207,7 +207,7 @@ describe('a subscription queued behind a slow one', () => {
     const remember = (server: { id: string }) => ids.push(server.id);
     gateway.server.on('connection', remember);
     const read = jest.spyOn(book, 'read').mockImplementation(async (...args) => {
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       return original(...args);
     });
     let reads = 0;
@@ -217,7 +217,7 @@ describe('a subscription queued behind a slow one', () => {
       socket.emit('book.subscribe', { instrument: 'ABC' });
       await new Promise((resolve) => setTimeout(resolve, 100));
       socket.disconnect();
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
       reads = read.mock.calls.length;
     } finally {
       read.mockRestore();
@@ -297,11 +297,11 @@ describe('with a reader that stops following the stream', () => {
       instrument: 'ABC',
     });
     expect(ack.snapshot.seq).toBe('5');
-    expect(
-      (await fetch(`${peerUrl}/metrics`).then((response) => response.text())).match(
-        /ws_replica_lag_seq\{instrument="ABC"\} (\d+)/,
-      )?.[1],
-    ).toBe('0');
+    // Метрика рахується на початку тіку, а готовність знімається в його кінці: дати їй наздогнати.
+    await waitFor(async () => {
+      const text = await fetch(`${peerUrl}/metrics`).then((response) => response.text());
+      return text.match(/ws_replica_lag_seq\{instrument="ABC"\} (\d+)/)?.[1] === '0';
+    }, 6000);
   }, 60000);
 });
 
