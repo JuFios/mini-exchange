@@ -335,6 +335,38 @@ describe('with a reader that stops following entries that carry no new delta', (
   );
 });
 
+describe('a stalled reader whose stream probe starts failing', () => {
+  it('stays out of the pool until a probe succeeds and shows it has caught up', async () => {
+    peer = await api.build({
+      INSTANCE_ID: 'peer-probe-fails',
+      ENGINE_WORKER_ENABLED: false,
+      CHAOS_ENABLED: true,
+      WS_REPLICA_MAX_LAG_MS: 1000,
+    });
+    const peerUrl = await peer.getUrl();
+    const owner = await api.register();
+    expect((await api.submit(owner)).status).toBe(201);
+    const reader = peer.get(RealtimeStreamReader);
+    await waitFor(async () => reader.emittedSeq('ABC') === 1n, 5000);
+
+    peer.get(ChaosHooks).arm({ point: 'freeze_stream_reader' });
+    expect((await api.submit(owner, { price: 101 })).status).toBe(201);
+    await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 503, 15000, 100);
+
+    // Збій перевірки не доводить, що читач наздогнав stream: стан лишається останнім відомим.
+    const probe = jest.spyOn(reader, 'head').mockRejectedValue(new Error('probe timeout'));
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      expect((await fetch(`${peerUrl}/ready`)).status).toBe(503);
+    } finally {
+      probe.mockRestore();
+    }
+
+    peer.get(ChaosHooks).arm({ point: 'unfreeze_stream_reader' });
+    await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 15000, 100);
+  }, 60000);
+});
+
 describe('a reader that meets unreadable entries', () => {
   it('skips them on every stream and keeps delivering the entries after them', async () => {
     const received = await join(api.url());
