@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { migrate } from '../../src/database/migrate';
 import { requestHash } from '../../src/ledger/ledger-writer';
 import { backfillReservationTerms } from '../../src/reservations/backfill-reservation-terms';
@@ -154,6 +155,37 @@ it('converts a reservation that commits concurrently with rollback to the legacy
         await migrate(source, 'run');
         await ledger.app().get(ReservationsService).reserve(reservation);
       },
+      () => undefined,
+    );
+  }
+});
+
+it('refuses rollback while a wallet transaction holds accounts without changing schema', async () => {
+  const source = ledger.source();
+  const wallet = source.createQueryRunner();
+  let rollback: Promise<void> | undefined;
+  try {
+    await wallet.startTransaction();
+    await wallet.query('LOCK TABLE accounts IN ROW EXCLUSIVE MODE');
+    rollback = migrate(source, 'revert');
+    const outcome = await Promise.race([
+      rollback.then(
+        () => 'unexpected success',
+        (error: { code?: string }) => error.code,
+      ),
+      delay(2000, 'waited on accounts', { ref: false }),
+    ]);
+    expect(outcome).toBe('55P03');
+    expect(
+      await source.query(
+        "SELECT numeric_precision FROM information_schema.columns WHERE table_name='accounts' AND column_name='balance'",
+      ),
+    ).toEqual([{ numeric_precision: 57 }]);
+  } finally {
+    if (wallet.isTransactionActive) await wallet.rollbackTransaction();
+    await wallet.release();
+    await rollback?.then(
+      () => migrate(source, 'run'),
       () => undefined,
     );
   }

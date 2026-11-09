@@ -1,9 +1,15 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
+// Genesis може тримати accounts, перш ніж FK журналу торкнеться reservations.
+const ledgerSchemaLocks = `
+  LOCK TABLE reservations IN ACCESS EXCLUSIVE MODE;
+  LOCK TABLE accounts IN ACCESS EXCLUSIVE MODE NOWAIT;
+`;
+
 export class ReservationTermsAndBalancePrecision1793980800001 implements MigrationInterface {
   async up(db: QueryRunner): Promise<void> {
     // Сумарний баланс має вміщувати до bigint-кількості проводок із 38 цифрами кожна.
-    await db.query(`
+    await db.query(`${ledgerSchemaLocks}
       ALTER TABLE reservations
         ADD COLUMN instrument text REFERENCES assets(code),
         ADD COLUMN limit_price_ticks bigint,
@@ -22,8 +28,7 @@ export class ReservationTermsAndBalancePrecision1793980800001 implements Migrati
 
   async down(db: QueryRunner): Promise<void> {
     // Старий клієнт повторює reserve за хешем канонічних userId, asset і amount.
-    await db.query(`
-      LOCK TABLE reservations IN ACCESS EXCLUSIVE MODE;
+    await db.query(`${ledgerSchemaLocks}
       UPDATE reservations
       SET request_hash=encode(sha256(convert_to(format(
         '{"userId":%s,"asset":%s,"amount":%s}',
