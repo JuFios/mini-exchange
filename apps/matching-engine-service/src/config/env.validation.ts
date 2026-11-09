@@ -173,6 +173,7 @@ const schema = {
   STREAM_MAXLEN: streamMaxLen,
   ORDER_SYNC_WAIT_MS: milliseconds,
   SEQ_GAP_ALERT_MS: milliseconds,
+  WS_REPLICA_MAX_LAG_MS: milliseconds,
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,

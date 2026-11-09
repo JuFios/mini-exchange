@@ -1,0 +1,94 @@
+import type {
+  BookDeltaV1,
+  Envelope,
+  OrderUpdatedV1,
+  TradePublicV1,
+  WalletUpdatedV1,
+} from '../contracts/events';
+
+export type MarketEvent =
+  | { type: 'book.delta'; eventId: string; payload: BookDeltaV1 }
+  | { type: 'trade.public'; eventId: string; payload: TradePublicV1 };
+
+export type UserEvent =
+  | { type: 'order.updated'; eventId: string; payload: OrderUpdatedV1 }
+  | { type: 'wallet.updated'; eventId: string; payload: WalletUpdatedV1 };
+
+export type RealtimeEvent = MarketEvent | UserEvent;
+
+const MARKET_TYPES = new Set(['book.delta', 'trade.public']);
+const USER_TYPES = new Set(['order.updated', 'wallet.updated']);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isText = (value: unknown): value is string => typeof value === 'string' && value !== '';
+
+/**
+ * Розбирає поле `envelope` запису stream. Невідомий тип чи версія й пошкоджений запис дають
+ * `undefined`: читач пропускає такий запис, а не зупиняється на ньому.
+ */
+export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefined {
+  const raw = fields[fields.indexOf('envelope') + 1];
+  if (fields.indexOf('envelope') < 0 || raw === undefined) return undefined;
+  let envelope: Partial<Envelope<unknown>>;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const { type, eventId, version, payload } = envelope;
+  if (version !== 1 || !isText(eventId) || !isText(type) || !isRecord(payload)) return undefined;
+  // Форму payload гарантує виробник (контрактні тести); тут перевіряються лише ключі маршрутизації.
+  if (MARKET_TYPES.has(type)) {
+    if (!isText(payload.instrument) || !isText(payload.seq)) return undefined;
+    return { type, eventId, payload } as unknown as MarketEvent;
+  }
+  if (USER_TYPES.has(type)) {
+    if (!isText(payload.userId)) return undefined;
+    return { type, eventId, payload } as unknown as UserEvent;
+  }
+  return undefined;
+}
+
+// Нижче поля перелічені явно: нова внутрішня властивість події не потрапить до клієнта сама.
+
+export const publicDelta = ({ instrument, seq, changes }: BookDeltaV1) => ({
+  instrument,
+  seq,
+  changes,
+});
+
+export const publicTrade = ({
+  instrument,
+  tradeId,
+  seq,
+  price,
+  quantity,
+  takerSide,
+  executedAt,
+}: TradePublicV1) => ({ instrument, tradeId, seq, price, quantity, takerSide, executedAt });
+
+export const privateOrder = ({
+  orderId,
+  instrument,
+  version,
+  status,
+  remainingQuantity,
+  filledQuantity,
+  cancelReason,
+}: OrderUpdatedV1) => ({
+  orderId,
+  instrument,
+  version,
+  status,
+  remainingQuantity,
+  filledQuantity,
+  cancelReason,
+});
+
+export const privateWallet = ({ asset, available, reserved, version }: WalletUpdatedV1) => ({
+  asset,
+  available,
+  reserved,
+  version,
+});

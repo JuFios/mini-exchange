@@ -4,6 +4,7 @@ import { ReservationSweeper } from '../intake/reservation-sweeper';
 import { BookLoader } from '../engine/book-loader';
 import { LeaseManager } from './lease-manager';
 import { OwnershipCoordinator } from './ownership-coordinator';
+import { ReplicaLagMonitor } from '../realtime/replica-lag.monitor';
 
 @Controller()
 export class ReadinessController {
@@ -13,6 +14,7 @@ export class ReadinessController {
     private readonly loader: BookLoader,
     private readonly ownership: OwnershipCoordinator,
     private readonly sweeper: ReservationSweeper,
+    private readonly realtime: ReplicaLagMonitor,
   ) {}
 
   // showMigrations() створює таблицю міграцій і не звільняє з’єднання після помилки.
@@ -35,7 +37,7 @@ export class ReadinessController {
         this.leases.redisReady(),
         this.hasPendingMigrations(),
       ]);
-      if (!redisReady || pending) throw new Error();
+      if (!redisReady || pending || !this.realtime.healthy()) throw new Error();
       return { status: 'ok' };
     } catch {
       throw new ServiceUnavailableException({ status: 'unavailable' });
@@ -54,6 +56,9 @@ export class ReadinessController {
         `engine_fenced_writes_total ${this.ownership.fencedWrites}`,
         `engine_lease_renew_failures_total ${this.leases.renewFailures}`,
         `reservation_release_failures_total ${this.sweeper.releaseFailures}`,
+        ...[...this.realtime.lag()].map(
+          ([instrument, lag]) => `ws_replica_lag_seq{instrument="${instrument}"} ${lag}`,
+        ),
         ...states.map(
           (s) =>
             `engine_instrument_halted{instrument="${s.instrument}"} ${Number(s.status === 'halted')}`,

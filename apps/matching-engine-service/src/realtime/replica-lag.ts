@@ -1,0 +1,36 @@
+/**
+ * Відставання репліки від stream за seq: що relay уже опублікував і чого репліка ще не роздала.
+ * Під навантаженням воно коротко ненульове й без зависання, тож саме відставання нічого не
+ * доводить. Репліка вважається завислою, коли вона відстає й не просувається довше `maxLagMs`.
+ */
+export class LagTracker {
+  private seen = -1n;
+  private behind = false;
+  private progressAt = 0;
+
+  constructor(private readonly maxLagMs: number) {}
+
+  check(published: bigint, emitted: bigint, now: number): { lag: bigint; stale: boolean } {
+    const lag = published > emitted ? published - emitted : 0n;
+    // Відлік починається, коли відставання з'явилося, і скидається при просуванні чи наздоганянні.
+    if (lag === 0n || emitted !== this.seen || !this.behind) this.progressAt = now;
+    this.seen = emitted;
+    this.behind = lag > 0n;
+    return { lag, stale: lag > 0n && now - this.progressAt > this.maxLagMs };
+  }
+}
+
+/** Пам'ять про вже оброблені `eventId`: relay може повторити останній запис після збою. */
+export class RecentIds {
+  private readonly ids = new Set<string>();
+
+  constructor(private readonly capacity: number) {}
+
+  /** Повертає `true`, якщо ID бачимо вперше. */
+  add(id: string): boolean {
+    if (this.ids.has(id)) return false;
+    if (this.ids.size >= this.capacity) this.ids.delete(this.ids.values().next().value as string);
+    this.ids.add(id);
+    return true;
+  }
+}
