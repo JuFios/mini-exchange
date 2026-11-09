@@ -44,12 +44,16 @@ it('applies, reverts, and reapplies the schema with database constraints', async
   ).rejects.toMatchObject({ code: '23514' });
 
   await source.query('DELETE FROM order_commands WHERE order_id = $1', [orderId]);
+  const objects = (): Promise<{ claim: boolean; funded: boolean; redrive: boolean }[]> =>
+    source.query(`SELECT to_regclass('order_requests_release_due_idx') IS NOT NULL AS claim,
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_name='order_requests' AND column_name='reserved') AS funded,
+      to_regclass('outbox_trade_executed_idx') IS NOT NULL
+        AND to_regclass('outbox_order_closed_idx') IS NOT NULL AS redrive`);
   for (let cycle = 0; cycle < 2; cycle++) {
-    expect(
-      await source.query(
-        "SELECT to_regclass('order_requests_release_due_idx') IS NOT NULL AS present",
-      ),
-    ).toEqual([{ present: true }]);
+    expect(await objects()).toEqual([{ claim: true, funded: true, redrive: true }]);
+    await migrate(source, 'revert');
+    expect(await objects()).toEqual([{ claim: true, funded: false, redrive: false }]);
     await migrate(source, 'revert');
     expect(
       await source.query(
@@ -81,7 +85,7 @@ it('serializes concurrent migrations on an empty schema', async () => {
   try {
     await Promise.all([migrate(source, 'run'), migrate(second, 'run')]);
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 6 },
+      { count: 7 },
     ]);
     expect(await source.query('SELECT count(*)::int AS count FROM instruments')).toEqual([
       { count: 2 },
@@ -92,7 +96,7 @@ it('serializes concurrent migrations on an empty schema', async () => {
 });
 
 it('rolls back schema and history when the migration connection is terminated', async () => {
-  class Interrupted1793980800006 implements MigrationInterface {
+  class Interrupted1793980800099 implements MigrationInterface {
     async up(runner: QueryRunner): Promise<void> {
       await runner.query('CREATE TABLE migration_probe (id integer)');
       const [{ pid }] = (await runner.query('SELECT pg_backend_pid() AS pid')) as { pid: number }[];
@@ -104,7 +108,7 @@ it('rolls back schema and history when the migration connection is terminated', 
       await runner.query('DROP TABLE migration_probe');
     }
   }
-  source.migrations.push(new Interrupted1793980800006());
+  source.migrations.push(new Interrupted1793980800099());
   await expect(migrate(source, 'run')).rejects.toThrow(/terminat|released/i);
   source.migrations.pop();
 
@@ -116,7 +120,7 @@ it('rolls back schema and history when the migration connection is terminated', 
   ).toEqual([{ orders: null, migrations: null, probe: null }]);
   await migrate(source, 'run');
   expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-    { count: 6 },
+    { count: 7 },
   ]);
 });
 
@@ -138,7 +142,7 @@ it('fails with a clear error instead of waiting forever for a migration lock hel
     await runner.commitTransaction();
     await migrate(source, 'run', { lockTimeoutMs: 200 });
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 6 },
+      { count: 7 },
     ]);
   } finally {
     if (runner.isTransactionActive) await runner.rollbackTransaction();

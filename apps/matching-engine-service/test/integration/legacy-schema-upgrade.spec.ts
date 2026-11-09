@@ -59,6 +59,8 @@ it('quarantines legacy resting orders while preserving deterministic forensic re
   const settings = {
     ...parseEnv(readFileSync('.env.example', 'utf8')),
     ...database.env,
+    // Імпортована історія не має резервів, тож перевірка карантину йде без них.
+    RESERVATIONS_ENABLED: 'false',
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
   };

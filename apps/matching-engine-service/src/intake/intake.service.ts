@@ -164,7 +164,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
     const result = await this.source.transaction(async (db) => {
       await db.query("SET LOCAL lock_timeout='3s'");
       const [rows] = await db.query(
-        `UPDATE order_requests SET status=$3, updated_at=now(), response=$4
+        `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
         WHERE user_id=$1 AND idempotency_key=$2 AND status='reserving' RETURNING order_id`,
         [
           userId,
@@ -173,6 +173,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
           accepted === 'accepted'
             ? null
             : new UnprocessableEntityException('Недостатньо коштів').getResponse(),
+          accepted === 'accepted' && this.config.getOrThrow('RESERVATIONS_ENABLED'),
         ],
       );
       if (!rows.length) return undefined;
