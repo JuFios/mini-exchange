@@ -51,6 +51,7 @@ export const OrderRequest = new EntitySchema({
     response: { type: 'jsonb', nullable: true },
     createdAt: { name: 'created_at', type: 'timestamptz', default: () => 'now()' },
     updatedAt: { name: 'updated_at', type: 'timestamptz', default: () => 'now()' },
+    releaseDueAt: { name: 'release_due_at', type: 'timestamptz', nullable: true },
     releaseAttempts: { name: 'release_attempts', type: 'integer', default: 0 },
   },
 });

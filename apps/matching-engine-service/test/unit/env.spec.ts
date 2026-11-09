@@ -90,3 +90,29 @@ it('rejects renew intervals and safety windows that exceed the lease budget', ()
     validateEnv({ ...example, LEASE_SAFETY_MS: '1600', LEASE_RENEW_INTERVAL_MS: '1500' }),
   ).toThrow('LEASE_SAFETY_MS');
 });
+
+it('requires an internal token of at least 32 characters', () => {
+  expect(() => validateEnv({ ...example, INTERNAL_API_TOKEN: 'a'.repeat(31) })).toThrow(
+    'INTERNAL_API_TOKEN',
+  );
+});
+
+it.each([
+  'ftp://settlement.test',
+  'https://name:secret@settlement.test',
+  'https://settlement.test/path',
+])('rejects a settlement endpoint that is not a plain HTTP origin', (SETTLEMENT_URL) =>
+  expect(() => validateEnv({ ...example, SETTLEMENT_URL })).toThrow('SETTLEMENT_URL'),
+);
+
+it.each([
+  ' ' + 'a'.repeat(32),
+  'a'.repeat(32) + ' ',
+  'a'.repeat(32) + '\n',
+  'а'.repeat(32),
+  'a'.repeat(1025),
+])('rejects an internal token that cannot be sent as a bounded HTTP header', (value) => {
+  expect(() => validateEnv({ ...example, INTERNAL_API_TOKEN: value })).toThrow(
+    'INTERNAL_API_TOKEN',
+  );
+});

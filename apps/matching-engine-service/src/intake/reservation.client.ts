@@ -9,6 +9,7 @@ export interface Reservation {
 
 export abstract class ReservationClient {
   abstract reserve(request: Reservation): Promise<'accepted' | 'rejected'>;
+  abstract release(reservationId: string): Promise<void>;
 }
 
 @Injectable()
@@ -16,4 +17,6 @@ export class NoopReservationClient extends ReservationClient {
   async reserve(_request: Reservation): Promise<'accepted'> {
     return 'accepted';
   }
+
+  async release(_reservationId: string): Promise<void> {}
 }

@@ -117,6 +117,25 @@ function streamMaxLen(value: unknown, key: string): number {
   return length;
 }
 
+function settlementUrl(value: unknown, key: string): string {
+  const text = required(value, key);
+  try {
+    const url = new URL(text);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    )
+      throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error(`${key} must be an HTTP or HTTPS origin`);
+  }
+}
+
 const databaseSchema = {
   DATABASE_HOST: required,
   DATABASE_PORT: port,
@@ -124,6 +143,13 @@ const databaseSchema = {
   DATABASE_PASSWORD: required,
   DATABASE_NAME: required,
 };
+
+function internalToken(value: unknown, key: string): string {
+  const text = required(value, key);
+  if (text.length < 32 || text.length > 1024 || /[^\x21-\x7e]/.test(text))
+    throw new Error(`${key} must contain 32 to 1024 visible ASCII characters`);
+  return text;
+}
 
 const schema = {
   LEASE_TTL_MS: milliseconds,
@@ -134,6 +160,11 @@ const schema = {
   CHAOS_STALL_BEFORE_COMMIT_MS: milliseconds,
   ENGINE_WORKER_ENABLED: boolean,
   RESERVATIONS_ENABLED: boolean,
+  SETTLEMENT_URL: settlementUrl,
+  INTERNAL_API_TOKEN: internalToken,
+  RESERVATION_TIMEOUT_MS: milliseconds,
+  RESERVATION_SWEEP_AFTER_MS: milliseconds,
+  RESERVATION_SWEEP_INTERVAL_MS: milliseconds,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
   OUTBOX_POLL_INTERVAL_MS: (value: unknown, key: string) => milliseconds(value ?? '100', key),
   STREAM_MAXLEN: streamMaxLen,
