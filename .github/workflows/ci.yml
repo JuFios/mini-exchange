@@ -85,7 +85,24 @@ jobs:
   settlement-service:
     name: Settlement
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledger
+          POSTGRES_PASSWORD: ledger
+          POSTGRES_DB: ledger
+        ports: ['127.0.0.1::5432/tcp']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U ledger -d ledger"
+          --health-start-period 120s --health-interval 5s --health-timeout 3s --health-retries 24
+      redis:
+        image: redis:7-alpine
+        ports: ['127.0.0.1::6379/tcp']
+        options: >-
+          --health-cmd "redis-cli -h 127.0.0.1 ping"
+          --health-start-period 120s --health-interval 5s --health-timeout 3s --health-retries 24
     defaults:
       run:
         working-directory: apps/settlement-service
@@ -101,6 +118,33 @@ jobs:
       - run: npm run lint:check
       - run: npm run typecheck
       - run: npm test
+      - name: Run ledger migrations and settlement end-to-end tests
+        env:
+          LEDGER_DATABASE_HOST: 127.0.0.1
+          LEDGER_DATABASE_PORT: ${{ job.services.postgres.ports[5432] }}
+          LEDGER_DATABASE_USER: ledger
+          LEDGER_DATABASE_PASSWORD: ledger
+          LEDGER_DATABASE_NAME: ledger
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: ${{ job.services.redis.ports[6379] }}
+        run: |
+          npm run migration:run
+          for _ in src/migrations/*.ts; do
+            npm run migration:revert
+          done
+          npm run migration:run
+          npm run test:e2e
+      - name: Diagnose settlement service failure
+        if: failure()
+        env:
+          POSTGRES_ID: ${{ job.services.postgres.id }}
+          REDIS_ID: ${{ job.services.redis.id }}
+        run: |
+          for container in "$POSTGRES_ID" "$REDIS_ID"; do
+            [ -n "$container" ] || continue
+            docker inspect --format '{{json .State.Health}}' "$container" || true
+            docker logs --tail=200 "$container" || true
+          done
 
   frontend:
     name: Frontend
@@ -132,11 +176,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify the local and remote port bindings
         run: scripts/ci/check-compose-bindings.sh
+      - name: Verify recovery and access isolation for PostgreSQL bootstrap
+        run: scripts/ci/check-postgres-bootstrap.sh
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
       - name: Verify the frontend address and Redis port
         run: |
-          test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q engine-migrate)")" = 0
+          for service in postgres-bootstrap engine-migrate settlement-migrate; do
+            test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q "$service")")" = 0
+          done
           docker compose exec -T frontend sh -ec 'grep -rqF "$1" .next/static/chunks/app/orderbook' sh "$NEXT_PUBLIC_WS_URL"
           docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
             jq -e '(. // {}) == {}'
