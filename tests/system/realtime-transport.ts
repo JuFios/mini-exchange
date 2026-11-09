@@ -32,6 +32,7 @@ async function routesAroundStaleReplica() {
   const seller = await token('register', `${randomUUID()}@system.test`, 'transport-user-password');
   const stale = 'http://matching-engine-2:3001';
   const chaos = (point: string) => request('/admin/chaos', 'POST', admin, { point }, stale);
+  let restingOrderId: string | undefined;
   try {
     assert.equal((await chaos('freeze_stream_reader')).status, 201);
     const accepted = await submit(seller, {
@@ -41,6 +42,7 @@ async function routesAroundStaleReplica() {
       quantity: '1',
     });
     assert([200, 201, 202].includes(accepted.status));
+    restingOrderId = ((await accepted.json()) as { order: { id: string } }).order.id;
     await until(
       async () => (await request('/ready', 'GET', undefined, undefined, stale)).status,
       (status) => status === 503,
@@ -53,6 +55,8 @@ async function routesAroundStaleReplica() {
   } finally {
     await chaos('unfreeze_stream_reader');
     await waitReady('matching-engine-2');
+    // Заявка не повинна лишатися на ABC для наступних сценаріїв.
+    if (restingOrderId) await request(`/orders/${restingOrderId}`, 'DELETE', seller);
   }
 }
 
