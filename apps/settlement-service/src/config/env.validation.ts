@@ -59,12 +59,22 @@ function internalToken(value: unknown, key: string): string {
   return text;
 }
 
+function consumerName(value: unknown, key: string): string {
+  const text = required(value, key);
+  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(text))
+    throw new Error(`${key} must contain 1 to 64 letters, digits, dots, dashes or underscores`);
+  return text;
+}
+
 const schema = {
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,
   REDIS_PORT: port,
   STREAM_MAXLEN: integer(1, Number.MAX_SAFE_INTEGER),
+  CONSUMER_NAME: consumerName,
+  CONSUMER_CLAIM_IDLE_MS: integer(1000, 3_600_000),
+  CONSUMER_MAX_DELIVERIES: integer(1, 1000),
   JWT_ACCESS_SECRET: secret,
   INTERNAL_API_TOKEN: internalToken,
   DEMO_INITIAL_BALANCES: demoBalances,

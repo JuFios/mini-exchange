@@ -1,21 +1,11 @@
 import { Module } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
 import { LedgerModule } from '../ledger/ledger.module';
+import { SecurityModule } from '../security/security.module';
 import { WalletsController } from './wallets.controller';
 import { WalletPublisher } from './wallet-publisher';
 
 @Module({
-  imports: [
-    LedgerModule,
-    JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        secret: config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        verifyOptions: { algorithms: ['HS256'] },
-      }),
-    }),
-  ],
+  imports: [LedgerModule, SecurityModule],
   controllers: [WalletsController],
   providers: [WalletPublisher],
   exports: [WalletPublisher],
