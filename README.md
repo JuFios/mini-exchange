@@ -11,12 +11,13 @@
   committed знімка order book через WebSocket.
 - Дві репліки engine: Redis lease з TTL і renewal, PG fencing, recovery та admin resume.
 - Transactional outbox публікує події книги, угод і заявок у Redis Streams.
+- Settlement записує резерви, розраховує угоди через внутрішній HTTP і повертає
+  баланси гаманців власнику access-токена.
 - `apps/frontend` — форма подачі заявки і сторінка order book з live-оновленням.
 
 ## Що ще НЕ реалізовано / потребує уваги
 
-- `apps/settlement-service` — лише каркас, розрахунок угод не реалізовано
-  (`NotImplementedException`).
+- Settlement ще не споживає `trade.executed` і `order.closed` із Redis Streams.
 - Обробка розриву WebSocket-з'єднання на фронтенді (resync за номером
   послідовності).
 
@@ -36,10 +37,14 @@ docker compose up --build
 Якщо встановлено alias `docker-compose`, можна запустити `docker-compose up --build`.
 Для запуску у фоні з очікуванням усіх healthcheck використовуйте `docker compose up -d --build --wait`.
 
-### Схема engine
+### Схеми PostgreSQL
 
-Compose запускає `engine-migrate` після готовності PostgreSQL. Engine стартує після
-успішних міграцій. При збої перегляньте `docker compose logs engine-migrate`.
+Після готовності PostgreSQL сервіс `postgres-bootstrap` створює БД `exchange` і `ledger` та ролі
+`engine` та `ledger`. Кожна роль має доступ до своєї БД. Після bootstrap запускаються
+`engine-migrate` і `settlement-migrate`, а після їхнього успішного завершення — застосунки.
+При збої збережіть вивід `docker compose ps -a` і
+`docker compose logs postgres-bootstrap engine-migrate settlement-migrate`. Повторний
+`docker compose up -d --build --wait` продовжить bootstrap на тому самому томі.
 Повторний запуск застосує лише відсутні міграції. Паралельні запуски на одній БД
 виконують міграції по черзі під блокуванням PostgreSQL. Очікування блокування обмежено
 60 с, а один SQL-оператор міграції — 300 с. Якщо інша міграція тримає блокування довше,
@@ -52,10 +57,19 @@ Compose запускає `engine-migrate` після готовності Postgr
 `npm run migration:revert` відкочує одну міграцію. Перевіряйте відкат на окремій
 тестовій БД, бо відкат початкової міграції видаляє таблиці та їхні дані.
 
-Том PostgreSQL із таблицями, створеними автоматично в starter, потребує окремого
-перенесення даних. Для одноразового локального стеку зі збереженою резервною копією
-можна скинути томи через `docker compose down -v` і запустити стек знову.
-Ця команда видалить також локальний том Redis.
+Для settlement поза Compose задайте `LEDGER_DATABASE_*`, адресу Redis, власні
+`INTERNAL_API_TOKEN` і `JWT_ACCESS_SECRET` та початкові демобаланси за прикладом
+`apps/settlement-service/.env.example`. У каталозі settlement виконайте
+`npm ci` і `npm run migration:run` перед `npm run start:dev`. У конфігурації engine
+вкажіть доступний `SETTLEMENT_URL` і той самий внутрішній токен. Для доступу до
+`GET /wallets` settlement має використовувати секрет access-токена від engine.
+
+Після переходу на окремі ролі запускайте локальний стек із новим томом PostgreSQL.
+Старий том має іншу роль адміністратора і може містити заявки без резервів.
+Для окремого проєкту зі свіжим томом запустіть
+`docker compose -p exchange-ledger up -d --build --wait`, попередньо зупинивши старий
+стек, щоб звільнити порти. Для одноразового стеку зі збереженою резервною копією
+можна скинути томи через `docker compose down -v`. Команда видалить дані PostgreSQL і Redis.
 
 - engine-lb: http://localhost:3001; репліки для діагностики: `127.0.0.1:3101` і `127.0.0.1:3102`
 - settlement-service: http://localhost:3002
@@ -79,10 +93,12 @@ AOF, невдалі healthcheck не враховуються протягом `
 `.env.example` містить публічні демо-секрети JWT для цього режиму. Для доступу з інших
 хостів використовуйте `docker-compose.remote.yml`. Він публікує ці порти на всіх
 інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
-`ADMIN_PASSWORD` та адресу WebSocket, доступну браузеру. Використовуйте окремий
+`ADMIN_PASSWORD`, `INTERNAL_API_TOKEN`, `POSTGRES_PASSWORD`, `ENGINE_DB_PASSWORD`,
+`LEDGER_DB_PASSWORD` та адресу WebSocket, доступну браузеру. Використовуйте окремий
 Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
-отримає окрему БД та власні облікові дані. Override передає секрети **обом** реплікам;
-прямі порти реплік лишаються на loopback. Публічний nginx listener `:3001` блокує
+отримає окремі БД та власні облікові дані. Override передає секрети реплікам,
+settlement і службам запуску за їхніми ролями. Прямі порти реплік і settlement
+лишаються на loopback. Публічний nginx listener `:3001` блокує
 `/internal/` і `/metrics` (також `/Metrics` і `/metrics/`) та перезаписує `X-Forwarded-For`. Внутрішній `:8080` не публікується;
 frontend звертається до нього через `MATCHING_ENGINE_URL=http://engine-lb:8080`.
 
@@ -92,12 +108,19 @@ export JWT_ACCESS_SECRET="$(openssl rand -hex 32)"
 export JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
 export ADMIN_EMAILS=admin@exchange.example.com
 export ADMIN_PASSWORD="$(openssl rand -hex 24)"
+export INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
+export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export ENGINE_DB_PASSWORD="$(openssl rand -hex 32)"
+export LEDGER_DB_PASSWORD="$(openssl rand -hex 32)"
 export NEXT_PUBLIC_WS_URL=wss://exchange.example.com
 docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 ```
 
-Збережіть секрети в захищеному сховищі. Зміна JWT-секретів робить видані токени
+Збережіть секрети в захищеному сховищі. `INTERNAL_API_TOKEN` має містити 32–1024
+видимих ASCII-символів без пробілів. Зміна JWT-секретів робить видані токени
 недійсними. `ADMIN_PASSWORD` задає початковий пароль нових admin-акаунтів.
+Для повторного запуску з тим самим томом використовуйте чинний `POSTGRES_PASSWORD`:
+змінюйте пароль адміністратора в PostgreSQL перед оновленням змінної.
 
 Для локального запуску frontend використовує `ws://localhost:3001`.
 Compose також читає значення з `.env` поруч із `docker-compose.yml`. Якщо адреса вже є
@@ -299,12 +322,16 @@ HTTP-тесті точності використано дійсний симв�
 
 Тести відхиленого submit і cancel фільтрують outbox за `seq` перевірюваної команди,
 бо звичайні команди теж створюють події. Перевірки фактичної delta та release збережено.
+Тести міграцій engine враховують нову міграцію для строку повтору release:
+відкат перевіряє видалення її індексу, а перевірки базової схеми та constraints збережено.
+Спільний e2e-хелпер engine вимикає реальні резерви для наявних тестів matching.
+Тести резервів підключають HTTP-двійник і перевіряють відновлення після SIGKILL.
 Інтеграційні тести вбивають relay до та після XADD і звіряють усі рядки outbox
 з Redis після рестарту. Окремий сценарій запускає два relay на 1000 застосованих командах.
 
-### Engine e2e
+### Engine і settlement e2e
 
-Запустіть з кореня репозиторію після `npm ci` у пакеті matching engine. Кожен запуск
+Запустіть з кореня репозиторію після `npm ci` в обох backend-пакетах. Кожен запуск
 створює окремий Compose-проєкт зі своїми томами й динамічними портами на loopback.
 Тестова роль PostgreSQL створює окрему БД для кожного набору, а після тестів її видаляє.
 Перед запуском застосунку тестовий хелпер виконує міграції в цій БД.
@@ -331,12 +358,16 @@ HTTP-тесті точності використано дійсний симв�
   trap cleanup EXIT
   printf 'Compose project: %s\n' "$project"
   e2e up -d --wait --wait-timeout 240 exchange-db redis
+  e2e run --rm --no-deps postgres-bootstrap
   pg_address=$(e2e port exchange-db 5432)
   redis_address=$(e2e port redis 6379)
   export DATABASE_HOST=127.0.0.1 DATABASE_PORT=${pg_address##*:}
-  export DATABASE_USER=exchange DATABASE_PASSWORD=exchange DATABASE_NAME=postgres
+  export DATABASE_USER=postgres DATABASE_PASSWORD=postgres-local-only DATABASE_NAME=postgres
+  export LEDGER_DATABASE_HOST=127.0.0.1 LEDGER_DATABASE_PORT=${pg_address##*:}
+  export LEDGER_DATABASE_USER=postgres LEDGER_DATABASE_PASSWORD=postgres-local-only LEDGER_DATABASE_NAME=ledger
   export REDIS_HOST=127.0.0.1 REDIS_PORT=${redis_address##*:}
   (cd apps/matching-engine-service && npm run test:e2e)
+  (cd apps/settlement-service && npm run test:e2e)
 )
 ```
 
@@ -370,8 +401,8 @@ Matching зберігає incoming, усі зачеплені resting-заявк
 вставляє команду та заявку `pending`. Row lock серіалізує прийом із різних процесів.
 Помилка або дубль відкочує інкремент разом із командою, тому номерів без команд немає.
 «Надходження» означає COMMIT видачі `seq`, після резервування: повільніший reserve може
-отримати пізніший номер. Наразі `RESERVATIONS_ENABLED=false`: Noop-клієнт дозволяє
-прийом без перевірки балансу. Увімкнення резервів без HTTP-клієнта відхиляє старт.
+отримати пізніший номер. У Compose `RESERVATIONS_ENABLED=true`, тому прийом
+звертається до settlement перед видачею номера.
 
 Worker бере строго наступний `seq`. Книга живе в пам’яті; кожна команда синхронно
 комітиться до підтвердження й зміни книги. Це посилює періодичну персистенцію:
@@ -380,7 +411,7 @@ Worker бере строго наступний `seq`. Книга живе в п
 Перевірка `version` не дає перезаписати неочікувано змінену заявку.
 Для poison-команди зберігаються `rejected_internal`, скасована заявка з причиною
 `rejected`, `book.delta` фактично змінених рівнів (порожня для відхиленого submit) й `order.closed` із сумою release в outbox; черга продовжується.
-Публікація штатних подій і їхній relay ще не підключені.
+Relay публікує збережені події в Redis Streams.
 
 LISTEN/NOTIFY лише пришвидшує роботу: polling кожні `COMMAND_POLL_INTERVAL_MS` читає PG,
 а HTTP після сигналу або таймауту читає committed стан. Втрачений NOTIFY не губить команду.
@@ -414,6 +445,39 @@ sequence/resync або потоку оновлень; для актуально�
 `GET /instruments/ABC/trades?limit=50` публічний. Ліміт 1–100. Новіші `seq` і fill йдуть
 першими. Поля: `tradeId`, `seq`, `price`, `quantity`, `takerSide`, `executedAt`;
 ID ордерів і користувачів у публічній стрічці відсутні.
+
+## Резерви та гаманці
+
+Engine резервує актив перед видачею `seq`: для купівлі це лімітна ціна × кількість у
+USD, для продажу — кількість базового активу. Порядок надходження визначає коміт видачі
+`seq`, тож заявка, що раніше почала резервування, може отримати пізніший номер.
+За недостатнього балансу `POST /orders` повертає 422 і номер команди не видається.
+Якщо результат резервування невідомий після трьох спроб, engine повертає 503.
+Повторіть запит з тим самим `Idempotency-Key`. Після того як сапер почав звільнення
+простроченого резерву, повтор повертає 409 `REQUEST_EXPIRED`.
+
+Кожна репліка engine підбирає прострочені запити невеликими пачками. Рядок переходить у
+`releasing` до HTTP-виклику. Після збоїв release повторюється, а після підтвердження рядок
+стає `expired`. Settlement застосовує звільнення один раз. Для невідомого ID зберігається
+tombstone, який відхиляє запізнілий reserve. Метрика
+`reservation_release_failures_total` зростає за кожної невдалої спроби, яку зафіксував
+сапер. Після 10 хв понад строк резерву перевірте логи engine за
+`reservation_release_stuck` і доступність settlement.
+
+`GET /wallets` потребує access JWT і повертає лише гаманці власника токена. Резерви,
+звільнення й розрахунок угоди записують збалансовані проводки та баланси однією транзакцією.
+Шкали ABC і XYZ — 8 знаків, USD — 10. Початкові демобаланси з
+`DEMO_INITIAL_BALANCES` проводяться один раз при першому зверненні до гаманця.
+Резерви та звільнення також публікують `wallet.updated` після коміту, коли Redis доступний.
+Для актуального балансу перечитайте `GET /wallets`.
+
+Внутрішній `POST /trades/settle` потребує `x-internal-token`. Він приймає ID угоди й обох
+заявок, ID покупця й продавця, інструмент, обидва активи, ціну, кількість,
+ліміт покупця та `executedAt`. Ціна й кількість передаються десятковими рядками.
+За успіху відповідь містить `status: applied` та `entryId`. Повтор тих самих даних
+повертає `duplicate` з тим самим ID. Інший вміст з тим самим `tradeId` дає 409.
+Поки консюмер не підключено, matching пише угоди й закриття заявок до stream.
+Для ручного розрахунку угоди використовуйте захищений HTTP-маршрут settlement.
 
 ## Події й доставка
 
@@ -496,8 +560,8 @@ publish, а прострочений запит власнику не надси
 
 ```bash
 docker compose logs --no-color --tail=200 matching-engine-1 matching-engine-2
-docker compose exec -T exchange-db psql -U exchange -d exchange -c 'SELECT * FROM instrument_state;'
-docker compose exec -T exchange-db psql -U exchange -d exchange -c 'SELECT instrument,seq,type,order_id,applied_at,result FROM order_commands ORDER BY instrument,seq;'
+docker compose exec -T exchange-db psql -U engine -d exchange -c 'SELECT * FROM instrument_state;'
+docker compose exec -T exchange-db psql -U engine -d exchange -c 'SELECT instrument,seq,type,order_id,applied_at,result FROM order_commands ORDER BY instrument,seq;'
 ```
 
 Для довгого recovery healthcheck має початкове вікно 120 с і 10 спроб через 5 с. Прогін на 10 000 resting-заявках
@@ -659,9 +723,6 @@ PID 1, тому self-SIGKILL hooks справді завершують проц�
 чекає `CHAOS_STALL_BEFORE_COMMIT_MS`. Інтеграційний тест таймауту сесії (`fencing.spec.ts`) відтворює
 зависання сирим `pg`-з’єднанням із тими самими опціями сесії, а не хуком у воркері: після
 стоп-хука власник із чинним lease сам відновився б, тож failover він не перевіряє. `fromSeq` та `requireTrades` обмежують спрацювання.
-
-Settlement поки не має тестових сценаріїв. Його `npm test` явно дозволяє порожній набір
-через `--passWithNoTests`; CI викликає той самий скрипт.
 
 ### Транспорт і точність публічної книги
 
