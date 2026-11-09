@@ -253,8 +253,9 @@ describe('with a reader that stops following the stream', () => {
     expect(metrics).toMatch(/ws_replica_lag_seq\{instrument="ABC"\} 5\n/);
     expect((await fetch(`${api.url()}/ready`)).status).toBe(200);
     expect(sockets[0].connected).toBe(true);
-    await expect(connect(peerUrl, '/market')).rejects.toThrow('REPLICA_UNAVAILABLE');
-    await expect(connect(peerUrl, '/private', 'x')).rejects.toThrow('REPLICA_UNAVAILABLE');
+    // Відмова приходить на upgrade (503), ще до namespace.
+    await expect(connect(peerUrl, '/market')).rejects.toThrow('websocket error');
+    await expect(connect(peerUrl, '/private', 'x')).rejects.toThrow('websocket error');
 
     peer.get(ChaosHooks).arm({ point: 'unfreeze_stream_reader' });
     await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 15000, 100);
@@ -384,7 +385,7 @@ describe('a replica that cannot follow the stream', () => {
     await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 503, 15000, 100);
 
     // Після 101 відмову бачить лише клієнт, а nginx уже не може вибрати іншу репліку.
-    expect(await upgradeStatus(peerUrl)).toBe(403);
+    expect(await upgradeStatus(peerUrl)).toBe(503);
     expect(await upgradeStatus(api.url())).toBe(101);
 
     peer.get(ChaosHooks).arm({ point: 'unfreeze_stream_reader' });

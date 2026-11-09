@@ -1,4 +1,5 @@
 import { DatabaseExceptionFilter } from './database/database-exception.filter';
+import { ReplicaIoAdapter } from './realtime/replica-io.adapter';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -42,4 +43,5 @@ export function configureApp(app: INestApplication): void {
   );
   app.useGlobalFilters(new DatabaseExceptionFilter(app.getHttpAdapter()));
   app.enableCors();
+  app.useWebSocketAdapter(new ReplicaIoAdapter(app));
 }
