@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { INestApplication, ServiceUnavailableException } from '@nestjs/common';
 import Redis from 'ioredis';
 import { Socket } from 'socket.io-client';
@@ -333,6 +335,62 @@ describe('with a reader that stops following entries that carry no new delta', (
     },
     60000,
   );
+});
+
+/** Статус відповіді на запит upgrade: 101, якщо репліка його прийняла. */
+function upgradeStatus(base: string): Promise<number> {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname,
+      port,
+      path: '/socket.io/?EIO=4&transport=websocket',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+      },
+    });
+    request.on('upgrade', (_response, socket) => {
+      socket.destroy();
+      resolve(101);
+    });
+    request.on('response', (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+describe('a replica that cannot follow the stream', () => {
+  it('refuses the WebSocket upgrade with an HTTP status the load balancer can retry', async () => {
+    peer = await api.build({
+      INSTANCE_ID: 'peer-refuses-upgrade',
+      ENGINE_WORKER_ENABLED: false,
+      CHAOS_ENABLED: true,
+      WS_REPLICA_MAX_LAG_MS: 1000,
+    });
+    const peerUrl = await peer.getUrl();
+    const owner = await api.register();
+    expect((await api.submit(owner)).status).toBe(201);
+    await waitFor(async () => peer!.get(RealtimeStreamReader).emittedSeq('ABC') === 1n, 5000);
+    expect(await upgradeStatus(peerUrl)).toBe(101);
+
+    peer.get(ChaosHooks).arm({ point: 'freeze_stream_reader' });
+    expect((await api.submit(owner, { price: 101 })).status).toBe(201);
+    await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 503, 15000, 100);
+
+    // Після 101 відмову бачить лише клієнт, а nginx уже не може вибрати іншу репліку.
+    expect(await upgradeStatus(peerUrl)).toBe(403);
+    expect(await upgradeStatus(api.url())).toBe(101);
+
+    peer.get(ChaosHooks).arm({ point: 'unfreeze_stream_reader' });
+    await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 15000, 100);
+    expect(await upgradeStatus(peerUrl)).toBe(101);
+  }, 60000);
 });
 
 describe('a stalled reader whose stream probe starts failing', () => {
