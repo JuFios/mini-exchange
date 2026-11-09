@@ -4,8 +4,15 @@ import { apply, ApplyResult, Command } from '../matching/engine';
 
 export type WorkerResult = Omit<ApplyResult, 'outcome' | 'orderChanges' | 'closed'> & {
   outcome: ApplyResult['outcome'] | 'rejected_internal';
-  orderChanges: (BookOrder & { status: string; cancelReason?: string })[];
-  closed: { orderId: string; reason: string; releasedAmount: bigint }[];
+  orderChanges: (BookOrder & {
+    status: ApplyResult['orderChanges'][number]['status'];
+    cancelReason?: 'user' | 'self_trade_prevented' | 'rejected';
+  })[];
+  closed: {
+    orderId: string;
+    reason: ApplyResult['closed'][number]['reason'] | 'rejected';
+    releasedAmount: bigint;
+  }[];
 };
 
 @Injectable()

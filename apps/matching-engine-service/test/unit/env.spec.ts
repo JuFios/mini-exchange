@@ -59,13 +59,28 @@ it.each(['ENGINE_WORKER_ENABLED', 'RESERVATIONS_ENABLED'])('requires a boolean %
   expect(() => validateEnv({ ...example, [key]: 'yes' })).toThrow(key);
 });
 
-it.each(['COMMAND_POLL_INTERVAL_MS', 'ORDER_SYNC_WAIT_MS', 'SEQ_GAP_ALERT_MS'])(
-  'bounds %s',
-  (key) => {
-    for (const value of ['0', '-1', '60001', '1.5'])
-      expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
-  },
-);
+it.each([
+  'COMMAND_POLL_INTERVAL_MS',
+  'OUTBOX_POLL_INTERVAL_MS',
+  'ORDER_SYNC_WAIT_MS',
+  'SEQ_GAP_ALERT_MS',
+])('bounds %s', (key) => {
+  for (const value of ['0', '-1', '60001', '1.5'])
+    expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
+});
+
+it('uses outbox defaults for existing environments and rejects invalid stream lengths', () => {
+  const config = validateEnv({
+    ...example,
+    OUTBOX_POLL_INTERVAL_MS: undefined,
+    STREAM_MAXLEN: undefined,
+  });
+  expect(config.OUTBOX_POLL_INTERVAL_MS).toBe(100);
+  expect(config.STREAM_MAXLEN).toBe(1000000);
+  for (const value of ['0', '-1', '1.5', '9007199254740992']) {
+    expect(() => validateEnv({ ...example, STREAM_MAXLEN: value })).toThrow('STREAM_MAXLEN');
+  }
+});
 
 it('rejects renew intervals and safety windows that exceed the lease budget', () => {
   expect(() =>

@@ -108,6 +108,15 @@ function milliseconds(value: unknown, key: string): number {
   return Number(text);
 }
 
+function streamMaxLen(value: unknown, key: string): number {
+  const text = required(value ?? '1000000', key);
+  const length = Number(text);
+  if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(length)) {
+    throw new Error(`${key} must be a positive safe integer`);
+  }
+  return length;
+}
+
 const databaseSchema = {
   DATABASE_HOST: required,
   DATABASE_PORT: port,
@@ -126,6 +135,8 @@ const schema = {
   ENGINE_WORKER_ENABLED: boolean,
   RESERVATIONS_ENABLED: boolean,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
+  OUTBOX_POLL_INTERVAL_MS: (value: unknown, key: string) => milliseconds(value ?? '100', key),
+  STREAM_MAXLEN: streamMaxLen,
   ORDER_SYNC_WAIT_MS: milliseconds,
   SEQ_GAP_ALERT_MS: milliseconds,
   PORT: port,

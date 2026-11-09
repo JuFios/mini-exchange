@@ -1,11 +1,11 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'node:crypto';
 import { DataSource, EntityManager } from 'typeorm';
+import type { EngineEvent, TradeExecutedV1, TradePublicV1 } from '../contracts/events';
 import { Book } from '../matching/book';
 import { Command } from '../matching/engine';
 import { formatPrice, formatQuantity } from '../matching/decimal';
-import { Order, OrderStatus } from '../orders/entities/order.entity';
+import { Order } from '../orders/entities/order.entity';
 import { OrderBookService } from '../orders/order-book.service';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { BookLoader, counters } from './book-loader';
@@ -16,6 +16,7 @@ import { InstrumentLease } from '../ownership/lease-manager';
 import { FencedOutError, haltInstrument, lockEpoch } from '../ownership/fencing';
 import { ChaosHooks } from '../chaos/chaos-hooks';
 import { PgNotifications } from './pg-notifications';
+import { insertOutboxEvents } from '../outbox/outbox-events';
 
 // Resume і shutdown чекають на поточний drain, тому один прохід обмежений часом.
 // Решту backlog забере наступний poll або NOTIFY.
@@ -336,54 +337,43 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         orderId: row.order_id,
       });
     }
-    for (const change of result.orderChanges) {
-      this.step(owned.lease);
-      const previous =
-        change.id === target.id
-          ? target
-          : await db.getRepository(Order).findOneByOrFail({ id: change.id });
-      const updated = await db.getRepository(Order).update(
-        { id: change.id, version: previous.version },
-        {
-          status: change.status as OrderStatus,
-          remainingQuantity: formatQuantity(change.remaining),
-          filledQuantity: formatQuantity(change.quantity - change.remaining),
-          cancelReason: change.cancelReason ?? null,
-          version: previous.version! + 1,
-          updatedAt: new Date(),
+    const delta: EngineEvent = {
+      type: 'book.delta',
+      payload: {
+        instrument: row.instrument,
+        seq: row.seq,
+        changes: result.levelChanges.map((level) => ({
+          side: level.side === 'buy' ? 'bid' : 'ask',
+          price: formatPrice(level.price),
+          quantity: level.quantity === 0n ? '0' : formatQuantity(level.quantity),
+          orders: level.orders,
+        })),
+      },
+    };
+    const events: EngineEvent[] = [
+      delta,
+      ...(await this.writeOrders(db, owned.lease, target, result.orderChanges)),
+      ...(await this.writeTrades(db, owned.lease, row, target, result.trades)),
+    ];
+    for (const closed of result.closed) {
+      if (closed.releasedAmount <= 0n) continue;
+      const { baseAsset, quoteAsset } = this.instrumentAssets(row.instrument);
+      events.push({
+        type: 'order.closed',
+        payload: {
+          orderId: closed.orderId,
+          userId: target.ownerId,
+          instrument: row.instrument,
+          side: target.side,
+          reason: closed.reason === 'user' ? 'cancelled' : closed.reason,
+          releasedAsset: target.side === 'buy' ? quoteAsset : baseAsset,
+          releasedAmount: closed.releasedAmount.toString(),
+          seq: row.seq,
         },
-      );
-      if (updated.affected !== 1) throw new Error('Order version changed');
+      });
     }
-    for (const [index, fill] of result.trades.entries()) {
-      this.step(owned.lease);
-      const buy = await db.getRepository(Order).findOneByOrFail({ id: fill.buyOrderId });
-      const sell = await db.getRepository(Order).findOneByOrFail({ id: fill.sellOrderId });
-      await db.query(
-        `INSERT INTO trades (trade_id,instrument,seq,fill_index,price,quantity,quote_amount,
-        buyer_order_id,seller_order_id,buyer_user_id,seller_user_id,taker_side,executed_at,trace_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [
-          fill.tradeId,
-          row.instrument,
-          row.seq,
-          index,
-          formatPrice(fill.price),
-          formatQuantity(fill.quantity),
-          (fill.price * fill.quantity).toString(),
-          buy.id,
-          sell.id,
-          buy.ownerId,
-          sell.ownerId,
-          target.side,
-          row.accepted_at,
-          row.traceparent?.split('-')[1] ?? null,
-        ],
-      );
-    }
-    if (result.outcome === 'rejected_internal') {
-      await this.rejectionEvents(db, row, target, result);
-    }
+    this.step(owned.lease);
+    await insertOutboxEvents(db, row, events);
     const [, applied] = await db.query(
       `UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
       [
@@ -425,51 +415,114 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     return result;
   }
 
-  private async rejectionEvents(
+  private async writeOrders(
     db: EntityManager,
+    lease: InstrumentLease,
+    target: Order,
+    changes: WorkerResult['orderChanges'],
+  ): Promise<EngineEvent[]> {
+    const events: EngineEvent[] = [];
+    for (const change of changes) {
+      this.step(lease);
+      const previous =
+        change.id === target.id
+          ? target
+          : await db.getRepository(Order).findOneByOrFail({ id: change.id });
+      const state = {
+        status: change.status,
+        remainingQuantity: formatQuantity(change.remaining),
+        filledQuantity: formatQuantity(change.quantity - change.remaining),
+        version: previous.version! + 1,
+      };
+      const updated = await db
+        .getRepository(Order)
+        .update(
+          { id: change.id, version: previous.version },
+          { ...state, cancelReason: change.cancelReason ?? null, updatedAt: new Date() },
+        );
+      if (updated.affected !== 1) throw new Error('Order version changed');
+      events.push({
+        type: 'order.updated',
+        payload: {
+          orderId: change.id,
+          userId: previous.ownerId,
+          instrument: target.instrument,
+          ...state,
+          ...(change.cancelReason && { cancelReason: change.cancelReason }),
+        },
+      });
+    }
+    return events;
+  }
+
+  private async writeTrades(
+    db: EntityManager,
+    lease: InstrumentLease,
     row: CommandRow,
     target: Order,
-    result: WorkerResult,
-  ): Promise<void> {
-    const events: [string, string, object][] = [
-      [
-        `exchange:market:{${row.instrument}}`,
-        'book.delta',
-        {
-          instrument: row.instrument,
-          seq: row.seq,
-          changes: result.levelChanges.map((level) => ({
-            side: level.side === 'buy' ? 'bid' : 'ask',
-            price: formatPrice(level.price),
-            quantity: level.quantity === 0n ? '0' : formatQuantity(level.quantity),
-            orders: level.orders,
-          })),
-        },
-      ],
-      ...result.closed.map((closed): [string, string, object] => [
-        `exchange:settlement:{${row.instrument}}`,
-        'order.closed',
-        {
-          orderId: target.id,
-          userId: target.ownerId,
-          instrument: row.instrument,
-          side: target.side,
-          reason: 'rejected',
-          releasedAsset: this.catalog.list().find(({ symbol }) => symbol === row.instrument)![
-            target.side === 'buy' ? 'quoteAsset' : 'baseAsset'
-          ],
-          releasedAmount: closed.releasedAmount.toString(),
-          seq: row.seq,
-        },
-      ]),
-    ];
-    for (const [stream, type, payload] of events) {
+    trades: WorkerResult['trades'],
+  ): Promise<EngineEvent[]> {
+    if (trades.length === 0) return [];
+    const { baseAsset, quoteAsset } = this.instrumentAssets(row.instrument);
+    const events: EngineEvent[] = [];
+    for (const [fillIndex, fill] of trades.entries()) {
+      this.step(lease);
+      const buy = await db.getRepository(Order).findOneByOrFail({ id: fill.buyOrderId });
+      const sell = await db.getRepository(Order).findOneByOrFail({ id: fill.sellOrderId });
+      const publicTrade: TradePublicV1 = {
+        tradeId: fill.tradeId,
+        instrument: row.instrument,
+        seq: row.seq,
+        price: formatPrice(fill.price),
+        quantity: formatQuantity(fill.quantity),
+        takerSide: target.side,
+        executedAt: row.accepted_at.toISOString(),
+      };
+      const execution: TradeExecutedV1 = {
+        ...publicTrade,
+        fillIndex,
+        baseAsset,
+        quoteAsset,
+        quoteAmount: (fill.price * fill.quantity).toString(),
+        buyOrderId: buy.id,
+        sellOrderId: sell.id,
+        buyerUserId: buy.ownerId,
+        sellerUserId: sell.ownerId,
+        buyLimitPrice: buy.price,
+      };
       await db.query(
-        `INSERT INTO outbox(event_id,stream,type,version,instrument,seq,payload,traceparent)
-        VALUES ($1,$2,$3,1,$4,$5,$6,$7)`,
-        [randomUUID(), stream, type, row.instrument, row.seq, payload, row.traceparent],
+        `INSERT INTO trades (trade_id,instrument,seq,fill_index,price,quantity,quote_amount,
+        buyer_order_id,seller_order_id,buyer_user_id,seller_user_id,taker_side,executed_at,trace_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [
+          execution.tradeId,
+          execution.instrument,
+          execution.seq,
+          execution.fillIndex,
+          execution.price,
+          execution.quantity,
+          execution.quoteAmount,
+          execution.buyOrderId,
+          execution.sellOrderId,
+          execution.buyerUserId,
+          execution.sellerUserId,
+          execution.takerSide,
+          row.accepted_at,
+          row.traceparent?.split('-')[1] ?? null,
+        ],
+      );
+      events.push(
+        { type: 'trade.public', payload: publicTrade },
+        { type: 'trade.executed', payload: execution },
       );
     }
+    return events;
+  }
+
+  private instrumentAssets(instrument: string) {
+    const entry = this.catalog.list().find(({ symbol }) => symbol === instrument);
+    if (!entry) throw new Error('Instrument missing from the catalog');
+    return entry;
   }
 
   async onModuleDestroy(): Promise<void> {

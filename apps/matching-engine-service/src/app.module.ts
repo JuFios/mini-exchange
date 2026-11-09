@@ -6,6 +6,7 @@ import { OrdersModule } from './orders/orders.module';
 import { engineDataSourceOptions } from './data-source';
 import { HealthController } from './health.controller';
 import { EngineEnv, validateEnv } from './config/env.validation';
+import { OutboxRelay } from './outbox/outbox-relay.service';
 
 @Module({
   imports: [
@@ -25,5 +26,6 @@ import { EngineEnv, validateEnv } from './config/env.validation';
     OrdersModule.register(),
   ],
   controllers: [HealthController],
+  providers: [OutboxRelay],
 })
 export class AppModule {}
