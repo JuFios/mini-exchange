@@ -109,11 +109,5 @@ export const Outbox = new EntitySchema({
     traceparent: { type: 'varchar', nullable: true },
     createdAt: { name: 'created_at', type: 'timestamptz', default: () => 'now()' },
     publishedAt: { name: 'published_at', type: 'timestamptz', nullable: true },
-    reservationReleaseDueAt: {
-      name: 'reservation_release_due_at',
-      type: 'timestamptz',
-      nullable: true,
-    },
-    reservationReleasedAt: { name: 'reservation_released_at', type: 'timestamptz', nullable: true },
   },
 });

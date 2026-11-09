@@ -11,7 +11,7 @@ export interface Reservation {
 
 export abstract class ReservationClient {
   abstract reserve(request: Reservation): Promise<'accepted' | 'rejected'>;
-  abstract release(reservationId: string, amount?: string): Promise<void>;
+  abstract release(reservationId: string): Promise<void>;
 }
 
 @Injectable()

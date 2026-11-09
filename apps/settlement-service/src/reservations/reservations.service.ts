@@ -20,8 +20,12 @@ export class ReservationsService {
     const wallet = { userId: dto.userId.toLowerCase(), asset: dto.asset };
     const amount = BigInt(dto.amount);
     const limit = reservationLimit(dto, amount).toString();
-    const previousRequest = { ...wallet, amount: amount.toString() };
-    const hash = requestHash({ ...previousRequest, instrument: dto.instrument, limit });
+    const hash = requestHash({
+      ...wallet,
+      amount: amount.toString(),
+      instrument: dto.instrument,
+      limit,
+    });
     const result = await this.source.transaction(async (db) => {
       const [claimed] = await db.query(
         `INSERT INTO reservations (reservation_id,user_id,asset,amount,remaining,status,request_hash,result,instrument,limit_price_ticks)
@@ -45,17 +49,7 @@ export class ReservationsService {
             message: 'Резерв уже звільнено',
           });
         }
-        if (
-          existing.instrument === null &&
-          (existing.request_hash === hash || existing.request_hash === requestHash(previousRequest))
-        ) {
-          // Міграція зв’язує прийняті заявки. Повтор прийому завершує reserve, який випередив TX2.
-          await db.query(
-            `UPDATE reservations SET instrument=$2,limit_price_ticks=$3,request_hash=$4
-             WHERE reservation_id=$1`,
-            [reservationId, dto.instrument, limit, hash],
-          );
-        } else if (existing.request_hash !== hash) {
+        if (existing.request_hash !== hash) {
           throw new ConflictException({
             code: 'RESERVATION_CONFLICT',
             message: 'Дані резерву відрізняються',
@@ -95,17 +89,12 @@ export class ReservationsService {
       );
       const [reservation] = await lockReservations(db, [reservationId]);
       const operationId =
-        releaseAmount === undefined
-          ? `release:full:${reservationId}`
-          : `release:close:${reservationId}`;
+        releaseAmount === undefined ? `release:full:${reservationId}` : `release:${reservationId}`;
       if (releaseAmount !== undefined) {
-        const operationIds = [operationId];
-        // Старий ключ не розрізняв повний і частковий release.
-        if (reservation.status === 'active') operationIds.push(`release:${reservationId}`);
         const [existing]: { amount: string }[] = await db.query(
           `SELECT p.amount FROM journal_entries j JOIN postings p ON p.entry_id=j.id
-           WHERE j.operation_id=ANY($1::text[]) AND p.direction='credit'`,
-          [operationIds],
+           WHERE j.operation_id=$1 AND p.direction='credit'`,
+          [operationId],
         );
         if (existing) {
           if (BigInt(existing.amount) !== releaseAmount) throw releaseMismatch();

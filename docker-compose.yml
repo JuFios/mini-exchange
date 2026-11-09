@@ -10,8 +10,6 @@ x-engine: &engine
   depends_on:
     engine-migrate:
       condition: service_completed_successfully
-    settlement-service:
-      condition: service_healthy
     redis:
       condition: service_healthy
   healthcheck:
@@ -27,7 +25,7 @@ services:
     image: postgres:16-alpine
     env_file: ./docker/postgres/.env.example
     environment:
-      POSTGRES_USER: postgres
+      POSTGRES_USER: exchange
       POSTGRES_DB: postgres
     ports: ['127.0.0.1:5433:5432']
     volumes: ['exchange-db-data:/var/lib/postgresql/data']
@@ -105,15 +103,9 @@ services:
   settlement-migrate:
     build: &settlement-build ./apps/settlement-service
     env_file: ./apps/settlement-service/.env.example
-    environment:
-      DATABASE_HOST: exchange-db
-      DATABASE_PORT: '5432'
-      DATABASE_USER: engine
-      DATABASE_PASSWORD: engine-local-only
-      DATABASE_NAME: exchange
     command: ['node', 'dist/migrate', 'run']
     depends_on:
-      engine-migrate:
+      postgres-bootstrap:
         condition: service_completed_successfully
 
   settlement-service:

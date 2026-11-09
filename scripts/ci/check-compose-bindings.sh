@@ -66,7 +66,7 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     ($s["postgres-bootstrap"].environment |
       .POSTGRES_PASSWORD == $postgres and .ENGINE_DB_PASSWORD == $engine and .LEDGER_DB_PASSWORD == $ledger) and
     ($s["engine-migrate"].environment.DATABASE_PASSWORD == $engine) and
-    ($s["settlement-migrate"].environment | .LEDGER_DATABASE_PASSWORD == $ledger and .DATABASE_PASSWORD == $engine) and
+    ($s["settlement-migrate"].environment | .LEDGER_DATABASE_PASSWORD == $ledger and .DATABASE_PASSWORD == null) and
     ($s["settlement-service"].environment.DATABASE_PASSWORD == null) and
     (["postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     ($s["settlement-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
@@ -83,5 +83,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml config --format 
     all(. as $name | $s[$name].restart == "no")) and
   (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].init == true)) and
   ($s.frontend.environment.MATCHING_ENGINE_URL == "http://engine-lb:8080") and
+  (["matching-engine-1","matching-engine-2"] |
+    all(. as $name | $s[$name].environment.RESERVATIONS_ENABLED == "false")) and
   ($s["matching-engine-1"].environment.LEASE_TTL_MS == "5000") and
   (.volumes | keys == ["system-db-data","system-redis-data"])'

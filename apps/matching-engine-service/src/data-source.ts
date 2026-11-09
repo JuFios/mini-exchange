@@ -1,4 +1,3 @@
-import { ClosedReservationRelease1793980800006 } from './migrations/1793980800006-closed-reservation-release';
 import { ReservationReleaseClaims1793980800005 } from './migrations/1793980800005-reservation-release-claims';
 import { QuarantineLegacyState1793980800004 } from './migrations/1793980800004-quarantine-legacy-state';
 import { LegacyOrdersAndTradeLookups1793980800003 } from './migrations/1793980800003-legacy-orders-and-trade-lookups';
@@ -52,7 +51,6 @@ export function engineDataSourceOptions(
       LegacyOrdersAndTradeLookups1793980800003,
       QuarantineLegacyState1793980800004,
       ReservationReleaseClaims1793980800005,
-      ClosedReservationRelease1793980800006,
     ],
     synchronize: false,
     migrationsRun: false,

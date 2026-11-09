@@ -17,8 +17,8 @@ export function ledgerApp(overrides: Record<string, string> = {}) {
   const base = {
     LEDGER_DATABASE_HOST: process.env.LEDGER_DATABASE_HOST ?? '127.0.0.1',
     LEDGER_DATABASE_PORT: process.env.LEDGER_DATABASE_PORT ?? '5433',
-    LEDGER_DATABASE_USER: process.env.LEDGER_DATABASE_USER ?? 'postgres',
-    LEDGER_DATABASE_PASSWORD: process.env.LEDGER_DATABASE_PASSWORD ?? 'postgres-local-only',
+    LEDGER_DATABASE_USER: process.env.LEDGER_DATABASE_USER ?? 'exchange',
+    LEDGER_DATABASE_PASSWORD: process.env.LEDGER_DATABASE_PASSWORD ?? 'exchange',
     LEDGER_DATABASE_NAME: process.env.LEDGER_DATABASE_NAME ?? 'postgres',
   };
   const name = `ledger_e2e_${randomUUID().replaceAll('-', '')}`;

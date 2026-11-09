@@ -8,7 +8,7 @@ export PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=10
 
 # CREATE DATABASE не можна помістити в TX. Session lock тримає весь bootstrap разом,
 # а кожен уже закомічений крок можна безпечно повторити після обриву.
-psql --no-psqlrc -v ON_ERROR_STOP=1 -h exchange-db -U postgres -d postgres <<'SQL'
+psql --no-psqlrc -v ON_ERROR_STOP=1 -h exchange-db -U exchange -d postgres <<'SQL'
 \getenv engine_password ENGINE_DB_PASSWORD
 \getenv ledger_password LEDGER_DB_PASSWORD
 SET lock_timeout = '60s';
@@ -37,4 +37,23 @@ ALTER ROLE ledger WITH LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION N
 COMMIT;
 
 SELECT pg_advisory_unlock(734021, 3);
+
+\connect exchange
+BEGIN;
+SET LOCAL lock_timeout = '60s';
+SET LOCAL statement_timeout = '5min';
+SELECT pg_advisory_xact_lock(734021, 3);
+
+-- На томах зі старої схеми об’єкти належать попередній ролі застосунку.
+SELECT format('ALTER TABLE %I.%I OWNER TO engine', n.nspname, c.relname)
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relowner = 'exchange'::regrole AND c.relkind IN ('r', 'p')
+ORDER BY c.relname
+\gexec
+SELECT format('ALTER SEQUENCE %I.%I OWNER TO engine', n.nspname, c.relname)
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relowner = 'exchange'::regrole AND c.relkind = 'S'
+ORDER BY c.relname
+\gexec
+COMMIT;
 SQL

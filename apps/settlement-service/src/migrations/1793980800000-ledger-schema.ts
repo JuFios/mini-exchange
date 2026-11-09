@@ -13,7 +13,7 @@ export class LedgerSchema1793980800000 implements MigrationInterface {
         user_id uuid,
         asset text NOT NULL REFERENCES assets(code),
         kind text NOT NULL CHECK (kind IN ('available', 'reserved', 'genesis')),
-        balance numeric(38,0) NOT NULL DEFAULT 0,
+        balance numeric(57,0) NOT NULL DEFAULT 0,
         version bigint NOT NULL DEFAULT 0 CHECK (version >= 0),
         UNIQUE NULLS NOT DISTINCT (user_id, asset, kind),
         CHECK ((kind = 'genesis') = (user_id IS NULL)),
@@ -28,6 +28,14 @@ export class LedgerSchema1793980800000 implements MigrationInterface {
         status text NOT NULL CHECK (status IN ('active', 'closed', 'rejected', 'released_tombstone')),
         request_hash varchar(64),
         result jsonb,
+        instrument text REFERENCES assets(code),
+        limit_price_ticks bigint,
+        CHECK (
+          (status='released_tombstone' AND instrument IS NULL AND limit_price_ticks IS NULL)
+          OR (status<>'released_tombstone' AND instrument IS NOT NULL AND instrument <> 'USD'
+            AND (asset='USD' OR asset=instrument) AND limit_price_ticks IS NOT NULL
+            AND limit_price_ticks BETWEEN 1 AND 100000000)
+        ),
         CHECK (
           (status = 'released_tombstone' AND user_id IS NULL AND asset IS NULL AND
             amount IS NULL AND remaining IS NULL AND request_hash IS NULL AND result IS NULL)

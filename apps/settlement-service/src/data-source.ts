@@ -1,5 +1,4 @@
 import { DataSourceOptions } from 'typeorm';
-import { ReservationTermsAndBalancePrecision1793980800001 } from './migrations/1793980800001-reservation-terms-and-balance-precision';
 import type { LedgerDatabaseEnv } from './config/env.validation';
 import { LedgerSchema1793980800000 } from './migrations/1793980800000-ledger-schema';
 
@@ -13,7 +12,7 @@ export function ledgerDataSourceOptions(
     username: env.LEDGER_DATABASE_USER,
     password: env.LEDGER_DATABASE_PASSWORD,
     database: env.LEDGER_DATABASE_NAME,
-    migrations: [LedgerSchema1793980800000, ReservationTermsAndBalancePrecision1793980800001],
+    migrations: [LedgerSchema1793980800000],
     synchronize: false,
     migrationsRun: false,
     installExtensions: false,

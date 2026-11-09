@@ -112,9 +112,9 @@ it.each([
   'а'.repeat(32),
   'a'.repeat(1025),
 ])('rejects an internal token that cannot be sent as a bounded HTTP header', (value) => {
-  expect(() => validateEnv({ ...example, INTERNAL_API_TOKEN: value })).toThrow(
-    'INTERNAL_API_TOKEN',
-  );
+  expect(() =>
+    validateEnv({ ...example, RESERVATIONS_ENABLED: 'true', INTERNAL_API_TOKEN: value }),
+  ).toThrow('INTERNAL_API_TOKEN');
 });
 
 it('accepts the previous environment when reservation support is disabled', () => {

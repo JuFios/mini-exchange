@@ -1,3 +1,4 @@
+import { ReservationsService } from '../../src/reservations/reservations.service';
 import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
@@ -19,11 +20,6 @@ const reserve = (
     .send({ reservationId, userId, asset, amount, instrument, limitPrice });
 const release = (id: string) =>
   api().post(`/internal/reservations/${id}/release`).set('x-internal-token', internalToken);
-const releaseClosed = (id: string, amount: unknown) =>
-  api()
-    .post(`/internal/reservations/${id}/release-closed`)
-    .set('x-internal-token', internalToken)
-    .send({ amount });
 const settle = (trade: object) =>
   api().post('/trades/settle').set('x-internal-token', internalToken).send(trade);
 
@@ -32,7 +28,6 @@ it('requires the internal token on all settlement mutation routes', async () => 
     '/trades/settle',
     '/internal/reservations',
     `/internal/reservations/${randomUUID()}/release`,
-    `/internal/reservations/${randomUUID()}/release-closed`,
   ];
   for (const path of paths) {
     await api().post(path).expect(401);
@@ -153,63 +148,19 @@ it('rejects mismatched instruments and trade prices below the seller limit', asy
   await settle({ ...trade, buyOrderId, price: '101.00' }).expect(200);
 });
 
-it('validates closure amount and releases the balance left by a legacy partial release', async () => {
-  const userId = randomUUID();
+it('checks the partial release amount after the reserve is closed', async () => {
   const orderId = randomUUID();
-  await reserve(orderId, userId, 'ABC', '100').expect(201);
-  for (const amount of [null, undefined, 30, '0', '-1', '30.5', '30\n']) {
-    await releaseClosed(orderId, amount).expect(400);
-  }
-  await releaseClosed(orderId, '30').expect(200);
-  await releaseClosed(orderId, '30').expect(200);
-  await releaseClosed(orderId, '31').expect(409);
-  // Старий ключ міг належати частковому release. Повтор має звірити його проводку.
-  await ledger
-    .source()
-    .query('UPDATE journal_entries SET operation_id=$1 WHERE operation_id=$2', [
-      `release:${orderId}`,
-      `release:close:${orderId}`,
-    ]);
-  await releaseClosed(orderId, '30').expect(200);
+  await reserve(orderId, randomUUID(), 'ABC', '100').expect(201);
+  const reservations = ledger.app().get(ReservationsService);
+  await reservations.release(orderId, 30n);
   await release(orderId).expect(200);
-  await releaseClosed(orderId, '30').expect(200);
+  await expect(reservations.release(orderId, 30n)).resolves.toEqual({ status: 'released' });
+  await expect(reservations.release(orderId, 31n)).rejects.toMatchObject({
+    response: { code: 'RESERVATION_MISMATCH' },
+  });
   expect(
     await ledger
       .source()
       .query('SELECT remaining,status FROM reservations WHERE reservation_id=$1', [orderId]),
   ).toEqual([{ remaining: '0', status: 'closed' }]);
-  expect(
-    await ledger
-      .source()
-      .query("SELECT balance FROM accounts WHERE user_id=$1 AND asset='ABC' AND kind='reserved'", [
-        userId,
-      ]),
-  ).toEqual([{ balance: '0' }]);
-});
-
-it('keeps previous unbound reserves releasable and rejects new trades against them', async () => {
-  const trade = tradeFixture();
-  await reserve(trade.buyOrderId, trade.buyerUserId, 'USD', '505000000000', '101.00').expect(201);
-  await reserve(trade.sellOrderId, trade.sellerUserId, 'ABC', '50000000').expect(201);
-  await ledger
-    .source()
-    .query(
-      'UPDATE reservations SET instrument=NULL,limit_price_ticks=NULL WHERE reservation_id=$1',
-      [trade.buyOrderId],
-    );
-  await settle(trade).expect(409);
-  await release(trade.buyOrderId).expect(200);
-  expect(
-    await ledger
-      .source()
-      .query('SELECT remaining FROM reservations WHERE reservation_id=$1', [trade.buyOrderId]),
-  ).toEqual([{ remaining: '0' }]);
-});
-
-it('rejects a changed close amount even after the original release drained the reserve', async () => {
-  const orderId = randomUUID();
-  await reserve(orderId, randomUUID(), 'ABC', '100').expect(201);
-  await releaseClosed(orderId, '100').expect(200);
-  await releaseClosed(orderId, '100').expect(200);
-  await releaseClosed(orderId, '99').expect(409);
 });
