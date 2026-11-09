@@ -105,9 +105,15 @@ services:
   settlement-migrate:
     build: &settlement-build ./apps/settlement-service
     env_file: ./apps/settlement-service/.env.example
+    environment:
+      DATABASE_HOST: exchange-db
+      DATABASE_PORT: '5432'
+      DATABASE_USER: engine
+      DATABASE_PASSWORD: engine-local-only
+      DATABASE_NAME: exchange
     command: ['node', 'dist/migrate', 'run']
     depends_on:
-      postgres-bootstrap:
+      engine-migrate:
         condition: service_completed_successfully
 
   settlement-service:

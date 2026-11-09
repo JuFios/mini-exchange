@@ -20,12 +20,8 @@ export class ReservationsService {
     const wallet = { userId: dto.userId.toLowerCase(), asset: dto.asset };
     const amount = BigInt(dto.amount);
     const limit = reservationLimit(dto, amount).toString();
-    const hash = requestHash({
-      ...wallet,
-      amount: amount.toString(),
-      instrument: dto.instrument,
-      limit,
-    });
+    const previousRequest = { ...wallet, amount: amount.toString() };
+    const hash = requestHash({ ...previousRequest, instrument: dto.instrument, limit });
     const result = await this.source.transaction(async (db) => {
       const [claimed] = await db.query(
         `INSERT INTO reservations (reservation_id,user_id,asset,amount,remaining,status,request_hash,result,instrument,limit_price_ticks)
@@ -49,7 +45,17 @@ export class ReservationsService {
             message: 'Резерв уже звільнено',
           });
         }
-        if (existing.request_hash !== hash) {
+        if (
+          existing.instrument === null &&
+          (existing.request_hash === hash || existing.request_hash === requestHash(previousRequest))
+        ) {
+          // Міграція зв’язує прийняті заявки. Повтор прийому завершує reserve, який випередив TX2.
+          await db.query(
+            `UPDATE reservations SET instrument=$2,limit_price_ticks=$3,request_hash=$4
+             WHERE reservation_id=$1`,
+            [reservationId, dto.instrument, limit, hash],
+          );
+        } else if (existing.request_hash !== hash) {
           throw new ConflictException({
             code: 'RESERVATION_CONFLICT',
             message: 'Дані резерву відрізняються',

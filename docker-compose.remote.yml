@@ -24,6 +24,7 @@ services:
       DATABASE_PASSWORD: ${ENGINE_DB_PASSWORD:?Set a unique ENGINE_DB_PASSWORD}
   settlement-migrate:
     environment:
+      DATABASE_PASSWORD: ${ENGINE_DB_PASSWORD:?Set a unique ENGINE_DB_PASSWORD}
       LEDGER_DATABASE_PASSWORD: ${LEDGER_DB_PASSWORD:?Set a unique LEDGER_DB_PASSWORD}
   settlement-service:
     environment:

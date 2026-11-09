@@ -66,7 +66,8 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     ($s["postgres-bootstrap"].environment |
       .POSTGRES_PASSWORD == $postgres and .ENGINE_DB_PASSWORD == $engine and .LEDGER_DB_PASSWORD == $ledger) and
     ($s["engine-migrate"].environment.DATABASE_PASSWORD == $engine) and
-    ($s["settlement-migrate"].environment.LEDGER_DATABASE_PASSWORD == $ledger) and
+    ($s["settlement-migrate"].environment | .LEDGER_DATABASE_PASSWORD == $ledger and .DATABASE_PASSWORD == $engine) and
+    ($s["settlement-service"].environment.DATABASE_PASSWORD == null) and
     (["postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     ($s["settlement-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
     ($s["engine-lb"].ports | length == 1 and .[0].host_ip == null) and
