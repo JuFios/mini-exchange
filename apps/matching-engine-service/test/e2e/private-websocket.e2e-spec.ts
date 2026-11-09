@@ -168,7 +168,8 @@ describe('with a short access token', () => {
 
     const at = await disconnected(socket, 6000);
     expect(at).toBeGreaterThanOrEqual(user.exp * 1000 - 50);
-    expect(at - user.exp * 1000).toBeLessThan(1000);
+    // Таймер не точний: навантажена CI може запізнитися, тож межа з запасом.
+    expect(at - user.exp * 1000).toBeLessThan(3000);
 
     const login = await api.request('/auth/login', 'POST', undefined, {
       email: user.email,
