@@ -454,6 +454,33 @@ describe('a reader that meets unreadable entries', () => {
   }, 30000);
 });
 
+describe('a replica that starts while the tail of a stream is unreadable', () => {
+  it.each([
+    ['an envelope that is JSON null', ['envelope', 'null']],
+    ['a non-numeric seq field', ['seq', 'abc', 'envelope', '{']],
+    ['no seq field at all', ['eventId', 'x']],
+  ])(
+    'becomes ready when the tail has %s',
+    async (_name, fields) => {
+      const admin = new Redis({
+        host: process.env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT),
+      });
+      try {
+        await admin.xadd('exchange:market:{ABC}', '*', ...fields);
+      } finally {
+        admin.disconnect();
+      }
+
+      peer = await api.build({ INSTANCE_ID: 'peer-poison-tail', ENGINE_WORKER_ENABLED: false });
+      const peerUrl = await peer.getUrl();
+
+      await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 10000, 100);
+    },
+    30000,
+  );
+});
+
 describe('snapshots taken while commands are being applied', () => {
   const units = (text: string, scale: number) => {
     const [whole, fraction = ''] = text.split('.');
