@@ -198,6 +198,38 @@ describe('a client that subscribes while commands are being applied', () => {
   }, 30000);
 });
 
+describe('a subscription queued behind a slow one', () => {
+  it('is dropped without a snapshot read once its socket has disconnected', async () => {
+    const gateway = api.app().get(MarketGateway);
+    const book = api.app().get(CommittedBook);
+    const original = book.read.bind(book);
+    const ids: string[] = [];
+    const remember = (server: { id: string }) => ids.push(server.id);
+    gateway.server.on('connection', remember);
+    const read = jest.spyOn(book, 'read').mockImplementation(async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return original(...args);
+    });
+    let reads = 0;
+    try {
+      const socket = await connect(api.url(), '/market');
+      socket.emit('book.subscribe', { instrument: 'ABC' });
+      socket.emit('book.subscribe', { instrument: 'ABC' });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      socket.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      reads = read.mock.calls.length;
+    } finally {
+      read.mockRestore();
+      gateway.server.off('connection', remember);
+    }
+
+    // Другий запит стояв у черзі за повільним першим; для відключеного клієнта читання зайве.
+    expect(reads).toBe(1);
+    expect(gateway.server.adapter.rooms.get('book:ABC')?.has(ids[0]) ?? false).toBe(false);
+  }, 30000);
+});
+
 describe('a reader that loses its Redis connection', () => {
   it('resumes from its last entry without losing or repeating a delta', async () => {
     const owner = await api.register();
