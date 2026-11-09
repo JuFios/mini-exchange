@@ -1,6 +1,7 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ConcurrencyLimit } from '../database/concurrency-limit';
+import { BOOK_DEPTH } from '../matching/book';
 
 // Публічні читання ділять пул PG із worker. Ліміт залишає worker вільні з’єднання.
 const MAX_CONCURRENT_READS = 3;
@@ -20,7 +21,7 @@ export class CommittedBook extends ConcurrencyLimit {
     super(MAX_CONCURRENT_READS, MAX_WAITING_READS, MAX_QUEUE_WAIT_MS, 'BOOK_BUSY');
   }
 
-  read(instrument: string, limit = 50) {
+  read(instrument: string, limit = BOOK_DEPTH) {
     return this.run(() =>
       this.source.transaction('REPEATABLE READ', async (db) => {
         await db.query('SET TRANSACTION READ ONLY');

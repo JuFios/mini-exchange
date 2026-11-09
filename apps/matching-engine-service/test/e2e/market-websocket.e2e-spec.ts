@@ -65,6 +65,33 @@ it('sends one delta per command with the command number, the trade and nothing p
   );
 });
 
+it('sends the level that enters the top 50 when the best level of a deeper book is cancelled', async () => {
+  const owner = await api.register();
+  const ids: string[] = [];
+  for (let price = 100; price <= 150; price++) {
+    const response = await api.submit(owner, { price });
+    expect(response.status).toBe(201);
+    ids.push((await response.json()).order.id);
+  }
+  const { received, ack } = await subscribe();
+  const { snapshot } = ack as { snapshot: { asks: { price: string }[] } };
+  expect(snapshot.asks).toHaveLength(50);
+  expect(snapshot.asks.at(-1)?.price).toBe('149.00');
+
+  expect((await api.request(`/orders/${ids[0]}`, 'DELETE', owner)).status).toBe(200);
+
+  // Delta submit-команд (seq 1…51) можуть дійти після snapshot; клієнт їх відкидає за seq.
+  const cancelled = async () =>
+    (events(received, 'book.delta') as { seq: string; changes: unknown[] }[]).find(
+      ({ seq }) => seq === '52',
+    );
+  await waitFor(async () => (await cancelled()) !== undefined, 5000);
+  expect((await cancelled())?.changes).toEqual([
+    { side: 'ask', price: '100.00', quantity: '0', orders: 0 },
+    { side: 'ask', price: '150.00', quantity: '1.00000000', orders: 1 },
+  ]);
+}, 30000);
+
 it('sends the PG sequence in a heartbeat to subscribed clients only', async () => {
   const owner = await api.register();
   const { received } = await subscribe();

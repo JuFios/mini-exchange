@@ -32,16 +32,45 @@ export interface LevelChange {
   orders: number;
 }
 
-export function changedLevels(book: Book, touched: readonly BookOrder[]): LevelChange[] {
-  const levels = { buy: new Map<bigint, LevelChange>(), sell: new Map<bigint, LevelChange>() };
-  for (const { side, price } of touched) {
-    levels[side].set(price, { side, price, quantity: 0n, orders: 0 });
-  }
+// Клієнт `/market` тримає стільки найкращих рівнів на сторону, скільки віддає snapshot.
+export const BOOK_DEPTH = 50;
 
-  for (const [side, orders] of [
-    ['buy', book.bids],
-    ['sell', book.asks],
+function windowPrices(orders: readonly BookOrder[], side: Side, depth: number): Set<bigint> {
+  const prices = [...new Set(orders.map(({ price }) => price))];
+  prices.sort((a, b) => {
+    if (a === b) return 0;
+    return a < b === (side === 'sell') ? -1 : 1;
+  });
+  return new Set(prices.slice(0, depth));
+}
+
+/**
+ * Рівні, які змінила команда, плюс рівні, що ввійшли у вікно `depth` найкращих: коли найкращий
+ * рівень зникає, наступний за вікном стає видимим, а клієнт, який тримає лише вікно, його не має.
+ */
+export function changedLevels(
+  before: Book,
+  after: Book,
+  touched: readonly BookOrder[],
+  depth = BOOK_DEPTH,
+): LevelChange[] {
+  const levels = { buy: new Map<bigint, LevelChange>(), sell: new Map<bigint, LevelChange>() };
+  const zero = (side: Side, price: bigint): LevelChange => ({
+    side,
+    price,
+    quantity: 0n,
+    orders: 0,
+  });
+  for (const { side, price } of touched) levels[side].set(price, zero(side, price));
+
+  for (const [side, orders, previous] of [
+    ['buy', after.bids, before.bids],
+    ['sell', after.asks, before.asks],
   ] as const) {
+    const visible = windowPrices(previous, side, depth);
+    for (const price of windowPrices(orders, side, depth))
+      if (!visible.has(price) && !levels[side].has(price))
+        levels[side].set(price, zero(side, price));
     if (levels[side].size === 0) continue;
     for (const order of orders) {
       const level = levels[side].get(order.price);

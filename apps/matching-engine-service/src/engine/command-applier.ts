@@ -32,7 +32,7 @@ export function toRejectedInternal(book: Book, order: BookOrder, terminal = fals
     book: next,
     outcome: 'rejected_internal',
     trades: [],
-    levelChanges: changedLevels(next, removed),
+    levelChanges: changedLevels(book, next, removed),
     orderChanges: terminal ? [] : [{ ...order, status: 'cancelled', cancelReason: 'rejected' }],
     closed: terminal
       ? []
