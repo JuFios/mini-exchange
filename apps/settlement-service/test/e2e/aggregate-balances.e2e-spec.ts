@@ -17,6 +17,7 @@ it('creates wallets for multiple owners when cumulative genesis exceeds one post
       asset: 'USD',
       available: '6000000000000000000000000000.0000000000',
       reserved: '0.0000000000',
+      version: '1',
     });
   }
   expect(
