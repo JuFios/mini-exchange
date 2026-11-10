@@ -18,6 +18,11 @@ import { refuseWhileStale } from './replica-guard';
 
 export const bookRoom = (instrument: string) => `book:${instrument}`;
 
+// Скільки підписок і відписок одного сокета на один інструмент може стояти в черзі. Решта
+// відхиляється одразу: інакше неавтентифікований сокет ставив би в чергу тисячі читань snapshot.
+export const MAX_QUEUED_PER_SOCKET = 4;
+const TOO_MANY = { ok: false, error: 'TOO_MANY_REQUESTS' } as const;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
@@ -30,6 +35,7 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   private readonly instance: string;
   private readonly detach: (() => void)[] = [];
   private readonly queues = new Map<string, Promise<void>>();
+  private readonly depths = new Map<string, number>();
 
   constructor(
     config: ConfigService,
@@ -66,7 +72,8 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   subscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
-    return this.inOrder(client, instrument, async () => {
+    if (!client.connected) return { ok: false, error: 'DISCONNECTED' };
+    return this.inOrder(client, instrument, TOO_MANY, async () => {
       // Запит, що простояв у черзі, міг дочекатися розриву: читати snapshot для нього зайве.
       if (!client.connected) return { ok: false, error: 'DISCONNECTED' };
       const room = bookRoom(instrument);
@@ -87,7 +94,7 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   unsubscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
-    return this.inOrder(client, instrument, async () => {
+    return this.inOrder(client, instrument, TOO_MANY, async () => {
       await client.leave(bookRoom(instrument));
       return { ok: true };
     });
@@ -97,8 +104,16 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
    * Підписки одного сокета на один інструмент виконуються по черзі: невдала повільна підписка
    * інакше виселила б сокет з кімнати, у яку вже приєднала успішна пізніша.
    */
-  private inOrder<T>(client: Socket, instrument: string, task: () => Promise<T>): Promise<T> {
+  private inOrder<T, R>(
+    client: Socket,
+    instrument: string,
+    refused: R,
+    task: () => Promise<T>,
+  ): Promise<T | R> {
     const key = `${client.id}:${instrument}`;
+    const depth = this.depths.get(key) ?? 0;
+    if (depth >= MAX_QUEUED_PER_SOCKET) return Promise.resolve(refused);
+    this.depths.set(key, depth + 1);
     const result = (this.queues.get(key) ?? Promise.resolve()).then(task);
     const tail = result.then(
       () => undefined,
@@ -106,6 +121,9 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
     );
     this.queues.set(key, tail);
     void tail.then(() => {
+      const left = (this.depths.get(key) ?? 1) - 1;
+      if (left > 0) this.depths.set(key, left);
+      else this.depths.delete(key);
       if (this.queues.get(key) === tail) this.queues.delete(key);
     });
     return result;

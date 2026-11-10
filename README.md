@@ -671,7 +671,7 @@ Redrive вибирає події за ID, а не за датою, тож уг�
 
 | Подія | Напрям | Зміст |
 |---|---|---|
-| `book.subscribe {instrument}` | клієнт → сервер | ack `{ok, instance, snapshot}`, де `snapshot` = `{instrument, seq, bids, asks}`; помилка `{ok:false, error}` з кодом `UNKNOWN_INSTRUMENT`, `INSTRUMENT_HALTED`, `BOOK_BUSY` (ліміт одночасних читань snapshot) або `BOOK_UNAVAILABLE` |
+| `book.subscribe {instrument}` | клієнт → сервер | ack `{ok, instance, snapshot}`, де `snapshot` = `{instrument, seq, bids, asks}`; помилка `{ok:false, error}` з кодом `UNKNOWN_INSTRUMENT`, `INSTRUMENT_HALTED`, `BOOK_BUSY` (ліміт одночасних читань snapshot), `TOO_MANY_REQUESTS` (більше чотирьох підписок чи відписок одного сокета на інструмент у черзі) або `BOOK_UNAVAILABLE` |
 | `book.unsubscribe {instrument}` | клієнт → сервер | ack `{ok}` |
 | `book.delta` | сервер → клієнт | `{instrument, seq, changes}`; рівно одна на команду (може бути порожньою), `seq` дорівнює номеру команди |
 | `trade` | сервер → клієнт | `{instrument, tradeId, seq, price, quantity, takerSide, executedAt}` |
@@ -736,6 +736,9 @@ stream зсунулося за щойно прочитану пачку; це р
 `subscribe` повертає `book` з агрегованими `bids` і `asks` без `seq`. Раніше після цього сервер нічого не
 надсилав, тож клієнт лишався з першою книгою й не міг відрізнити її від актуальної. Тепер після змін книги
 сервер надсилає нову `book`, не частіше ніж раз на 100 мс на інструмент і лише за наявності підписників.
+Підписки, що чекають на книгу, ділять одне читання PostgreSQL на інструмент: тисяча викликів `subscribe` з одного
+сокета, як і одночасна підписка багатьох сокетів, дає кілька читань, а не тисячу. Сокет, що вже розірвано, до кімнати
+не потрапляє й читання не викликає. Успішна підписка не має ack: підтвердженням є подія `book`.
 Відсутність `seq` лишається обмеженням: виявити пропуск тут неможливо. Namespace deprecated, нові клієнти
 використовують `/market`.
 
