@@ -1,4 +1,4 @@
-import { OnModuleDestroy } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { OnGatewayConnection, OnGatewayInit, WebSocketGateway } from '@nestjs/websockets';
@@ -23,6 +23,7 @@ export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
 export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnModuleDestroy {
   private server: Namespace;
   private readonly secret: string;
+  private readonly logger = new Logger(PrivateGateway.name);
   private readonly detach: (() => void)[] = [];
 
   constructor(
@@ -81,8 +82,19 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
   }
 
   private publish(event: UserEvent): void {
-    const room = this.server.to(userRoom(event.payload.userId));
-    if (event.type === 'order.updated') room.emit('order.updated', privateOrder(event.payload));
-    else room.emit('wallet.updated', privateWallet(event.payload));
+    const room = userRoom(event.payload.userId);
+    try {
+      const target = this.server.to(room);
+      if (event.type === 'order.updated') target.emit('order.updated', privateOrder(event.payload));
+      else target.emit('wallet.updated', privateWallet(event.payload));
+    } catch (error) {
+      // Приватні події не мають `seq`: втрату клієнт не помітить. Він перечитає REST після
+      // перепідключення, а сервер не повинен лишати його з вірою в застарілий стан.
+      this.logger.error({
+        alert: 'private_event_failed',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      this.server.in(room).disconnectSockets(false);
+    }
   }
 }

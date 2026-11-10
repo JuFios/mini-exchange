@@ -16,6 +16,10 @@ import { InstrumentCatalog } from '../instrument-catalog';
 // Після серії команд клієнт отримує одну свіжу книгу, а не по події на кожну.
 export const LEGACY_BOOK_THROTTLE_MS = 100;
 
+// Невдале читання повторюється через ці паузи; після вичерпання кімнату розривають, і клієнт
+// сам перепідключається та підписується заново. Без seq застарілу книгу інакше не помітити.
+export const LEGACY_PUSH_RETRY_MS = [100, 400, 1600];
+
 interface Waiting {
   sockets: Set<Socket>;
   done: Promise<void>;
@@ -35,6 +39,8 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
   private readonly pending = new Map<string, NodeJS.Timeout>();
   private readonly reads = new Map<string, Promise<void>>();
   private readonly waiting = new Map<string, Waiting>();
+  // Скільки розсилок інструмента поспіль не вдалося; скидається першою вдалою.
+  private readonly failures = new Map<string, number>();
   private readonly detach: (() => void)[] = [];
 
   constructor(
@@ -131,21 +137,46 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
   private schedule(instrument: string): void {
     // Без підписників книгу не читаємо; серія команд збирається в одне читання. Запис лишається
     // до початку читання, тож за повільного читання черга не росте більше ніж на одне.
-    if (this.pending.has(instrument) || !this.server.sockets.adapter.rooms.get(instrument)?.size)
+    if (!this.server.sockets.adapter.rooms.get(instrument)?.size) {
+      this.failures.delete(instrument);
       return;
-    const timer = setTimeout(() => {
-      this.exclusive(instrument, () => {
-        this.pending.delete(instrument);
-        return this.push(instrument);
-      }).catch((error: unknown) =>
-        // Наступна зміна книги повторить спробу; для застарілого каналу цього достатньо.
-        this.logger.warn({
-          alert: 'legacy_book_push_failed',
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    }, LEGACY_BOOK_THROTTLE_MS);
+    }
+    if (this.pending.has(instrument)) return;
+    const failed = this.failures.get(instrument) ?? 0;
+    const timer = setTimeout(
+      () => {
+        this.exclusive(instrument, () => {
+          this.pending.delete(instrument);
+          return this.push(instrument);
+        }).then(
+          () => this.failures.delete(instrument),
+          (error: unknown) => this.pushFailed(instrument, error),
+        );
+      },
+      failed === 0 ? LEGACY_BOOK_THROTTLE_MS : LEGACY_PUSH_RETRY_MS[failed - 1],
+    );
     timer.unref();
     this.pending.set(instrument, timer);
+  }
+
+  /**
+   * Книга без `seq`: пропущену розсилку клієнт не помітить, а нової команди може не бути. Тому
+   * повторюємо з паузами, а коли спроби вичерпано, розриваємо кімнату: клієнт підключається
+   * знову й бере свіжу книгу.
+   */
+  private pushFailed(instrument: string, error: unknown): void {
+    const failed = (this.failures.get(instrument) ?? 0) + 1;
+    this.logger.warn({
+      alert: 'legacy_book_push_failed',
+      attempt: failed,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    if (failed > LEGACY_PUSH_RETRY_MS.length) {
+      this.failures.delete(instrument);
+      this.server.in(instrument).disconnectSockets(true);
+      return;
+    }
+    this.failures.set(instrument, failed);
+    this.schedule(instrument);
   }
 }

@@ -45,6 +45,26 @@ describe('legacy book push after a failed read', () => {
     expect(env.state.reads).toBe(4);
   });
 
+  it('counts failures within one episode, not over the life of the process', async () => {
+    let plan: boolean[] = [];
+    const env = buildLegacyGateway(() => plan.shift() ?? false);
+    const socket = env.socket();
+    const call = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(200);
+    await call;
+
+    // Три епізоди по дві невдачі, кожен завершується вдалою розсилкою.
+    for (let episode = 0; episode < 3; episode++) {
+      plan = [true, true];
+      env.change();
+      await jest.advanceTimersByTimeAsync(5000);
+    }
+
+    expect(socket.connected).toBe(true);
+    expect(env.state.closedRooms).toBe(0);
+    expect(socket.received.at(-1)).toBe(env.state.version);
+  });
+
   it('never leaves a connected subscriber on a stale book, whatever fails', async () => {
     const op = fc.oneof(
       fc.record({ kind: fc.constant('subscribe' as const), n: fc.integer({ min: 0, max: 2 }) }),
