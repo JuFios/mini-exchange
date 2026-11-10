@@ -16,7 +16,6 @@ export class LagTracker {
   private behind = false;
   private progressAt = 0;
   private lastStale = false;
-  private lastStalled = false;
   private checkedAt: number;
 
   /**
@@ -35,19 +34,11 @@ export class LagTracker {
     const lag = published > emitted ? published - emitted : 0n;
     // Відлік починається, коли відставання з'явилося, і скидається при просуванні чи наздоганянні.
     if (lag === 0n || emitted !== this.seen || !this.behind) this.progressAt = now;
-    // Курсор позаду хвоста й не зрушив від попередньої перевірки: така проба не зараховується до
-    // відновлення. Наздогнаний курсор або рух вперед зараховуються.
-    this.lastStalled = lag > 0n && emitted === this.seen;
     this.seen = emitted;
     this.behind = lag > 0n;
     this.lastStale = lag > 0n && now - this.progressAt > this.maxLagMs;
     this.checkedAt = now;
     return { lag, stale: this.lastStale };
-  }
-
-  /** Остання перевірка показала відставання без руху курсора: до відновлення це не зараховується. */
-  get stalled(): boolean {
-    return this.lastStalled;
   }
 
   /**

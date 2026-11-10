@@ -6,9 +6,6 @@ import { RealtimeStreamReader } from './realtime-stream-reader.service';
 import { LagTracker } from './replica-lag';
 
 export const HEARTBEAT_INTERVAL_MS = 2000;
-// Після `stale` репліка повертається в пул, лише коли три проби поспіль вдалися на всіх stream:
-// інакше репліка на межі вікна мигала б, і nginx то виводив би її з ротації, то повертав.
-const RECOVER_PROBES = 3;
 
 /**
  * Раз на HEARTBEAT_INTERVAL_MS робить дві незалежні справи. Heartbeat: читає `last_applied_seq`
@@ -29,10 +26,7 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   private timer?: NodeJS.Timeout;
   private beating = false;
   private probing = false;
-  // Репліка оголошена завислою й ще не відновилася. Кешований вердикт не доказ відновлення:
-  // його лічильник рахує лише успішні проби всіх stream, а невдала проба його скидає.
-  private latched = false;
-  private cleanProbes = 0;
+  private wasStale = false;
 
   constructor(
     config: ConfigService,
@@ -58,12 +52,11 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   }
 
   /**
-   * Репліка читає stream і просувається, а свіжа проба це підтверджує. Завислість рахується в
-   * момент виклику, а не береться з кешу: `/ready` і upgrade не повинні чекати наступного тіку.
-   * Після завислості репліка лишається поза пулом, доки не вдасться `RECOVER_PROBES` проб поспіль.
+   * Репліка читає stream і просувається, а свіжа проба це підтверджує. Рахується в момент
+   * виклику, а не береться з кешу: `/ready` і upgrade не повинні чекати наступного тіку.
    */
   healthy(): boolean {
-    return this.reader.ready && !this.isStale() && !this.latched;
+    return this.reader.ready && !this.isStale();
   }
 
   onHeartbeat(handler: (instrument: string, seq: string) => void): () => void {
@@ -131,10 +124,8 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     if (this.probing || !this.reader.ready) return;
     this.probing = true;
     try {
-      // Завислість, що настала до цієї проби, фіксується до того, як свіжа проба її перекриє.
-      this.update();
       const now = performance.now();
-      const results = await Promise.all(
+      await Promise.all(
         this.reader.streams.map(async (stream) => {
           const cursor = this.reader.cursor(stream);
           let tracker = this.trackers.get(stream);
@@ -144,39 +135,24 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
           }
           // Збій проби не оновлює вердикт: він спливе за `validForMs`, а не лишиться назавжди.
           const head = await this.reader.head(stream).catch(() => undefined);
-          if (head === undefined) return false;
-          tracker.check(head, cursor, now);
-          return !tracker.stalled;
+          if (head !== undefined) tracker.check(head, cursor, now);
         }),
       );
       this.update();
-      this.recover(results.every(Boolean));
     } finally {
       this.probing = false;
     }
   }
 
-  /** Фіксує завислість: репліка виходить з пулу й лишається поза ним, доки не відновиться. */
   private update(): void {
-    if (!this.isStale() || this.latched) return;
-    this.latched = true;
-    this.cleanProbes = 0;
-    this.logger.error({
-      alert: 'ws_replica_stale',
-      message: `Replica lags behind the stream or cannot verify it for more than ${this.validForMs} ms`,
-    });
-    for (const handler of this.staleHandlers) handler();
-  }
-
-  /** Раунд, у якому проби вдалися, жоден stream не стоїть із відставанням і вердикт не завислий, наближає повернення. */
-  private recover(allProbed: boolean): void {
-    if (!this.latched) return;
-    if (!allProbed || this.isStale()) {
-      this.cleanProbes = 0;
-      return;
+    const stale = this.isStale();
+    if (stale && !this.wasStale) {
+      this.logger.error({
+        alert: 'ws_replica_stale',
+        message: `Replica lags behind the stream or cannot verify it for more than ${this.validForMs} ms`,
+      });
+      for (const handler of this.staleHandlers) handler();
     }
-    if (++this.cleanProbes < RECOVER_PROBES) return;
-    this.latched = false;
-    this.cleanProbes = 0;
+    this.wasStale = stale;
   }
 }
