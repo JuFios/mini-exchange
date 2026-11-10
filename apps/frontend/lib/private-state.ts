@@ -62,6 +62,9 @@ export function orderFeedback(submitted: Order, orders: readonly Order[]) {
     return { message: 'Заявку прийнято. Очікуємо виконання команди.', failed: false };
   }
   if (order.status === 'filled') return { message: 'Заявку виконано.', failed: false };
+  if (order.status === 'partially_filled') {
+    return { message: 'Заявку частково виконано. Залишок у книзі.', failed: false };
+  }
   if (order.status !== 'cancelled') return { message: 'Заявку додано до книги.', failed: false };
 
   if (order.cancelReason === 'self_trade_prevented') {

@@ -142,7 +142,7 @@ export function OrdersPanel({
                 <th scope="col">Час · UTC</th>
                 <th scope="col">Сторона</th>
                 <th scope="col">Ціна</th>
-                <th scope="col">Залишок</th>
+                <th scope="col">{tab === 'cancelled' ? 'Скасовано' : 'Залишок'}</th>
                 <th scope="col">Виконано</th>
                 <th scope="col">Статус</th>
                 {tab === 'active' && <th scope="col">Дія</th>}

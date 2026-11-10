@@ -37,6 +37,26 @@ it('reports a self-trade cancellation when the submitted order reaches its final
   });
 });
 
+it('tells a partially filled order apart from one that only joined the book', () => {
+  const order = (status: Order['status']): Order => ({
+    id: 'sell',
+    instrument: 'ABC',
+    side: 'sell',
+    price: '100.00',
+    quantity: '3.00000000',
+    createdAt: '2026-11-10T00:00:00.000Z',
+    status,
+    version: 1,
+    remainingQuantity: '2.00000000',
+    filledQuantity: '1.00000000',
+  });
+  assert.deepEqual(orderFeedback(order('partially_filled'), []), {
+    message: 'Заявку частково виконано. Залишок у книзі.',
+    failed: false,
+  });
+  assert.equal(orderFeedback(order('open'), []).message, 'Заявку додано до книги.');
+});
+
 it('accepts wallet versions five and six while ignoring four', () => {
   const { mergeWallet } = require('../lib/private-state');
   const wallet = (version: string) => ({
