@@ -304,6 +304,18 @@ async function main() {
     });
     assert.equal(onlyOrder.status, 200, await onlyOrder.clone().text());
     assert.deepEqual(await onlyOrder.json(), { requeued: 1 });
+    // Relay публікує повтор не одразу: порожня черга до цього нічого не доводить.
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT count(*)::int AS n FROM outbox WHERE published_at IS NULL AND payload->>'orderId'=$1",
+            [partialId],
+          )
+        ).rows[0].n,
+      (n) => n === 0,
+      30000,
+    );
     await until(drained, ({ streams }) =>
       streams.every(({ lag, pending }) => lag === 0 && pending === 0),
     );
