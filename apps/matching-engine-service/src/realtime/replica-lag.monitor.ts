@@ -95,6 +95,8 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
         for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
       }
     } catch (error) {
+      // Без свіжого seq з PG різниці немає: метрика зникає, а не показує останнє значення.
+      this.lags.clear();
       // Недоступна БД не доводить зависання репліки: це вирішує проба stream, а не PG.
       this.logger.warn({
         alert: 'realtime_heartbeat_failed',

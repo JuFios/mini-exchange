@@ -56,6 +56,11 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
       this.reader.onMarket((event) => {
         if (event.type === 'book.delta') this.schedule(event.payload.instrument);
       }),
+      // Пропущені delta не скличуть розсилку, а без `seq` клієнт прогалини не помітить.
+      this.reader.onGap((stream) => {
+        const instrument = /^exchange:market:\{(.+)\}$/.exec(stream)?.[1];
+        if (instrument) this.schedule(instrument);
+      }),
       this.monitor.onStale(() => server.disconnectSockets(true)),
     );
   }

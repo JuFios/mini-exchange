@@ -75,6 +75,9 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
       });
       const { userId } = accessPrincipal(payload);
       socket.data = { userId, exp: payload.exp };
+      // Перевірка токена асинхронна: репліка могла стати завислою після охорони, а розрив за
+      // `onStale` відбувається лише раз, на переході, тож сокет, що прослизнув, лишився б.
+      if (!this.monitor.healthy()) return next(new Error('REPLICA_UNAVAILABLE'));
       next();
     } catch {
       next(new Error('UNAUTHORIZED'));
