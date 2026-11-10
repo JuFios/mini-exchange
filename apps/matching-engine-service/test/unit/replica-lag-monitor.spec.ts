@@ -142,6 +142,23 @@ describe('a replica that loses its stream probes', () => {
     monitor.onModuleDestroy();
   });
 
+  it('does not count the first probe that finds the tail ahead of a motionless cursor', async () => {
+    const { reader, monitor } = build(5000);
+    reader.probeFails = true;
+    await run(10_000);
+    expect(monitor.healthy()).toBe(false);
+
+    reader.probeFails = false;
+    await run(2 * HEARTBEAT_INTERVAL_MS);
+    // Хвіст зріс, а читач стоїть на місці: ця проба не доводить відновлення.
+    reader.heads.set(STREAMS[0], 11n);
+    for (let tick = 0; tick < 5; tick++) {
+      await run(HEARTBEAT_INTERVAL_MS);
+      expect(monitor.healthy()).toBe(false);
+    }
+    monitor.onModuleDestroy();
+  });
+
   it('never trusts a probe that has not succeeded since the replica started', async () => {
     const { reader, monitor } = build(5000);
     reader.probeFails = true;
