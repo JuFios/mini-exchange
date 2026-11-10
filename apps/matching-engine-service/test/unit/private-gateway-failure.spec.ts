@@ -1,3 +1,4 @@
+import { AuthService } from '../../src/auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { PrivateGateway, userRoom } from '../../src/realtime/private.gateway';
@@ -5,6 +6,7 @@ import { RealtimeStreamReader } from '../../src/realtime/realtime-stream-reader.
 import { ReplicaLagMonitor } from '../../src/realtime/replica-lag.monitor';
 import type { UserEvent } from '../../src/realtime/realtime-events';
 
+const sessions = { isSessionActive: async () => true } as unknown as AuthService;
 const USER = 'c703e0f9-758a-45e8-a7a8-cdd4483dc4eb';
 const event: UserEvent = {
   type: 'wallet.updated',
@@ -43,6 +45,7 @@ function build(emit: () => void) {
       onGap: () => () => undefined,
     } as unknown as RealtimeStreamReader,
     { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+    sessions,
   );
   gateway.afterInit(server as never);
   return { deliver: () => onUser(event), disconnect, rooms };
@@ -75,7 +78,13 @@ describe('a private handshake that is still verifying when the replica turns sta
         // Токен перевіряється асинхронно: за цей час репліка встигає стати завислою.
         verifyAsync: async () => {
           healthy = false;
-          return { typ: 'access', sub: USER, email: 'a@example.test', exp: 4_102_444_800 };
+          return {
+            typ: 'access',
+            sub: USER,
+            sid: USER,
+            email: 'a@example.test',
+            exp: 4_102_444_800,
+          };
         },
       } as unknown as JwtService,
       {
@@ -83,6 +92,7 @@ describe('a private handshake that is still verifying when the replica turns sta
         onGap: () => () => undefined,
       } as unknown as RealtimeStreamReader,
       { healthy: () => healthy, onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+      sessions,
     );
     gateway.afterInit({ use: (middleware: never) => middlewares.push(middleware) } as never);
 

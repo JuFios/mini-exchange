@@ -17,7 +17,7 @@ const routes: Record<Service, Partial<Record<string, RegExp>>> = {
     POST: /^orders$/,
     DELETE: /^orders\/[\w-]+$/,
   },
-  settlement: { GET: /^(?:wallets|admin\/(?:queue|reconciliation))$/ },
+  settlement: { GET: /^(?:wallets|admin\/queue)$/, POST: /^admin\/reconciliation$/ },
 };
 
 export async function proxy(request: NextRequest, service: Service, path: string[]) {

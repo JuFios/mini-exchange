@@ -1,7 +1,9 @@
+import { ConfigService } from '@nestjs/config';
+import { wsClients } from '../observability/metrics';
 import type { IncomingMessage } from 'node:http';
 import { INestApplicationContext } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import type { ServerOptions } from 'socket.io';
+import type { Server, ServerOptions } from 'socket.io';
 import { ReplicaLagMonitor } from './replica-lag.monitor';
 
 const UNAVAILABLE =
@@ -18,16 +20,27 @@ export class ReplicaIoAdapter extends IoAdapter {
   }
 
   override createIOServer(port: number, options?: ServerOptions) {
-    return super.createIOServer(port, {
+    const origins = this.context.get(ConfigService).getOrThrow<string[]>('CORS_ORIGINS');
+    const server: Server = super.createIOServer(port, {
       ...options,
+      cors: { origin: origins },
+      maxHttpBufferSize: 16_384,
       allowRequest: (
         request: IncomingMessage,
         callback: (error: string | null | undefined, success: boolean) => void,
       ) => {
+        if (request.headers.origin && !origins.includes(request.headers.origin)) {
+          return callback('Origin not allowed', false);
+        }
         if (this.context.get(ReplicaLagMonitor).healthy()) return callback(null, true);
         // Колбек не викликається: відповідь уже надіслано, а engine.io надіслав би власну.
         request.socket.end(UNAVAILABLE);
       },
     });
+    server.engine.on('connection', (socket) => {
+      wsClients.inc();
+      socket.once('close', () => wsClients.dec());
+    });
+    return server;
   }
 }

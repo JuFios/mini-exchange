@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { traced } from '../observability/trace-context';
+import { Injectable, Logger } from '@nestjs/common';
 import { ReservationsService } from '../reservations/reservations.service';
 import { WalletReader } from '../ledger/wallet-reader';
 import { TradesService } from '../trades/trades.service';
@@ -9,6 +10,7 @@ import { SettlementStats } from './settlement-stats';
 
 @Injectable()
 export class SettlementEventHandler {
+  private readonly logger = new Logger(SettlementEventHandler.name);
   constructor(
     private readonly trades: TradesService,
     private readonly reservations: ReservationsService,
@@ -26,18 +28,22 @@ export class SettlementEventHandler {
       return;
     }
     const { trade } = event;
-    const result = await this.trades.settle(trade, streamId, event.traceId);
-    this.stats.trades[result.status]++;
-    if (result.status === 'conflict') throw new PayloadConflictError('Trade payload conflict');
+    const fields = { tradeId: trade.tradeId, instrument: trade.instrument };
+    await traced('settle trade', event.traceparent, fields, async () => {
+      const result = await this.trades.settle(trade, streamId, event.traceId);
+      this.stats.trades[result.status]++;
+      this.logger.log({ event: 'settlement.trade', ...fields, result: result.status });
+      if (result.status === 'conflict') throw new PayloadConflictError('Trade payload conflict');
 
-    // Повторна доставка теж публікує стан: попередній прогін міг впасти між COMMIT і XADD.
-    const balances = await this.wallets.read([
-      { userId: trade.buyerUserId.toLowerCase(), asset: trade.baseAsset },
-      { userId: trade.buyerUserId.toLowerCase(), asset: trade.quoteAsset },
-      { userId: trade.sellerUserId.toLowerCase(), asset: trade.baseAsset },
-      { userId: trade.sellerUserId.toLowerCase(), asset: trade.quoteAsset },
-    ]);
-    for (const balance of balances)
-      await this.publisher.publish({ ...balance, entryId: result.entryId });
+      // Повторна доставка теж публікує стан: попередній прогін міг впасти між COMMIT і XADD.
+      const balances = await this.wallets.read([
+        { userId: trade.buyerUserId.toLowerCase(), asset: trade.baseAsset },
+        { userId: trade.buyerUserId.toLowerCase(), asset: trade.quoteAsset },
+        { userId: trade.sellerUserId.toLowerCase(), asset: trade.baseAsset },
+        { userId: trade.sellerUserId.toLowerCase(), asset: trade.quoteAsset },
+      ]);
+      for (const balance of balances)
+        await this.publisher.publish({ ...balance, entryId: result.entryId });
+    });
   }
 }

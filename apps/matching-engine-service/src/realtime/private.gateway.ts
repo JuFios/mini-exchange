@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { OnGatewayConnection, OnGatewayInit, WebSocketGateway } from '@nestjs/websockets';
 import type { Namespace, Socket } from 'socket.io';
+import { AuthService } from '../auth/auth.service';
 import { accessPrincipal, JwtPayload } from '../auth/strategies/jwt.strategy';
 import { USER_EVENTS_STREAM } from '../outbox/streams';
 import { privateOrder, privateWallet, UserEvent } from './realtime-events';
@@ -19,7 +20,7 @@ export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
  * Приватний namespace: токен у handshake, кімната користувача визначається сервером за `sub`.
  * Події не мають `seq` і під час розриву губляться, тож клієнт перечитує REST після reconnect.
  */
-@WebSocketGateway({ namespace: 'private', transports: ['websocket'], cors: { origin: '*' } })
+@WebSocketGateway({ namespace: 'private', transports: ['websocket'] })
 export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnModuleDestroy {
   private server: Namespace;
   private readonly secret: string;
@@ -31,6 +32,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
     private readonly jwt: JwtService,
     private readonly reader: RealtimeStreamReader,
     private readonly monitor: ReplicaLagMonitor,
+    private readonly auth: AuthService,
   ) {
     this.secret = config.getOrThrow<string>('JWT_ACCESS_SECRET');
   }
@@ -73,7 +75,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
         secret: this.secret,
         algorithms: ['HS256'],
       });
-      const { userId } = accessPrincipal(payload);
+      const { userId } = await accessPrincipal(payload, this.auth);
       socket.data = { userId, exp: payload.exp };
       // Перевірка токена асинхронна: репліка могла стати завислою після охорони, а розрив за
       // `onStale` відбувається лише раз, на переході, тож сокет, що прослизнув, лишився б.

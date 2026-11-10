@@ -28,7 +28,12 @@ it('stops waiting for a Redis that stays in LOADING', async () => {
   await once(loading, 'listening');
   const port = (loading.address() as { port: number }).port;
   const locks = new RedisLockService(
-    configuration({ REDIS_HOST: '127.0.0.1', REDIS_PORT: port, LEASE_TTL_MS: 300 }),
+    configuration({
+      REDIS_HOST: '127.0.0.1',
+      REDIS_PORT: port,
+      REDIS_PASSWORD: 'test-redis-password',
+      LEASE_TTL_MS: 300,
+    }),
   );
   try {
     await waitFor(async () => locks.client.status === 'connect', 3000);

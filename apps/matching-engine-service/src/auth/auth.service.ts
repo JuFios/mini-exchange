@@ -81,13 +81,13 @@ export class AuthService {
         },
       );
       if (update.affected === 1)
-        return { accessToken: this.issueAccessToken(session.user), refreshToken };
+        return { accessToken: this.issueAccessToken(session.user, claims.sid), refreshToken };
 
       // Після невдалого CAS читаємо стан, який записав паралельний запит.
       session = await this.readSession(claims);
     }
     if (session.withinGrace && matchesRefreshHash(session.user.refreshPrevHash, presentedHash)) {
-      return { accessToken: this.issueAccessToken(session.user) };
+      return { accessToken: this.issueAccessToken(session.user, claims.sid) };
     }
 
     await this.revokeSession(claims);
@@ -99,6 +99,10 @@ export class AuthService {
     await this.revokeSession(claims);
   }
 
+  isSessionActive(userId: string, sid: string): Promise<boolean> {
+    return this.users.existsBy({ id: userId, refreshSessionId: sid });
+  }
+
   private async startSession(user: User): Promise<TokenPair> {
     const sid = randomUUID();
     const refreshToken = this.issueRefreshToken(user.id, sid);
@@ -108,13 +112,13 @@ export class AuthService {
       refreshPrevHash: null,
       refreshRotatedAt: null,
     });
-    return { accessToken: this.issueAccessToken(user), refreshToken };
+    return { accessToken: this.issueAccessToken(user, sid), refreshToken };
   }
 
-  private issueAccessToken(user: User): string {
+  private issueAccessToken(user: User, sid: string): string {
     const roles = user.adminSeeded && this.isAdminEmail(user.email) ? ['admin'] : undefined;
     return this.jwt.sign(
-      { sub: user.id, email: user.email, typ: 'access', roles },
+      { sub: user.id, sid, email: user.email, typ: 'access', roles },
       {
         algorithm: 'HS256',
         secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),

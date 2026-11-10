@@ -15,6 +15,10 @@ const routes = () => ({
     'GET' | 'POST' | 'DELETE',
     ProxyHandler
   >,
+  settlement: require('../app/api/settlement/[...path]/route') as Record<
+    'GET' | 'POST',
+    ProxyHandler
+  >,
   login: require('../app/api/auth/login/route') as { POST: Handler },
   token: require('../app/api/auth/ws-token/route') as { POST: Handler },
 });
@@ -91,5 +95,45 @@ describe('frontend route handlers', () => {
       authorization: 'Bearer access',
       'x-forwarded-for': '127.0.0.1',
     });
+  });
+
+  it('starts reconciliation only from a same-origin POST bound to the current user', async () => {
+    const { settlement } = routes();
+    const fetch = mock.method(globalThis, 'fetch', async (_url: string, _options: RequestInit) =>
+      Response.json({ ok: true }),
+    );
+    const path = '/api/settlement/admin/reconciliation';
+    const context = { params: { path: ['admin', 'reconciliation'] } };
+    const access = Buffer.from(JSON.stringify({ sub: 'admin-a', exp: 2_000_000_000 })).toString(
+      'base64url',
+    );
+    const auth = { cookie: 'exchange_access=h.' + access + '.s', 'x-session-user': 'admin-a' };
+    assert.equal((await settlement.GET(request(path, 'GET', auth), context)).status, 404);
+    assert.equal((await settlement.POST(request(path, 'POST', auth), context)).status, 403);
+    assert.equal(
+      (
+        await settlement.POST(
+          request(path, 'POST', { ...auth, origin: 'https://foreign.test' }),
+          context,
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await settlement.POST(
+          request(path, 'POST', { ...auth, origin, 'x-session-user': 'admin-b' }),
+          context,
+        )
+      ).status,
+      409,
+    );
+    assert.equal(fetch.mock.callCount(), 0);
+    assert.equal(
+      (await settlement.POST(request(path, 'POST', { ...auth, origin }), context)).status,
+      200,
+    );
+    assert.equal(fetch.mock.callCount(), 1);
+    assert.equal(fetch.mock.calls[0]?.arguments[1]?.method, 'POST');
   });
 });

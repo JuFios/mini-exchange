@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { fork } from 'node:child_process';
 import { join } from 'node:path';
@@ -92,7 +93,10 @@ it('returns in GET /wallets the same version that the pushed wallet.updated carr
 
   const jwt = new JwtService({ secret: ledger.jwtSecret });
   for (const { userId, asset, version } of pushed) {
-    const access = jwt.sign({ sub: userId, typ: 'access' }, { expiresIn: '15m' });
+    const access = jwt.sign(
+      { sub: userId, sid: randomUUID(), typ: 'access' },
+      { expiresIn: '15m' },
+    );
     const response = await request(ledger.app().getHttpServer())
       .get('/wallets')
       .auth(access, { type: 'bearer' })

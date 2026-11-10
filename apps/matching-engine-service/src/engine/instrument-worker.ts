@@ -1,3 +1,5 @@
+import { activeTraceparent, traced } from '../observability/trace-context';
+import { commandsApplied, commandSeconds, ordersRejected, seqGaps } from '../observability/metrics';
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager } from 'typeorm';
@@ -109,7 +111,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       else this.books.commit(instrument, owned.book, owned.seq);
       return owned;
     } catch (error) {
-      this.ownership.leases.drop(lease);
+      // Після збою автоматичного recovery даємо резерву час узяти lease.
+      // Ручний resume з непевним COMMIT одразу повертається до читання стану з PG.
+      this.ownership.leases.drop(lease, resume ? 0 : STALL_BACK_OFF_MS);
       throw error;
     }
   }
@@ -273,6 +277,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
             await haltInstrument(db, instrument);
           });
           owned.halted = true;
+          seqGaps.inc({ instrument });
           this.logger.error({
             alert: 'engine_seq_gap',
             instrument,
@@ -282,7 +287,21 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         return;
       }
       this.gaps.delete(instrument);
-      const result = await this.source.transaction((db) => this.applyOne(db, owned, row));
+      const fields = { instrument, orderId: row.order_id, seq: row.seq, epoch: owned.epoch };
+      const result = await traced('engine.apply', row.traceparent, fields, async () => {
+        row.traceparent = activeTraceparent(row.traceparent ?? undefined) ?? null;
+        const stop = commandSeconds.startTimer({ instrument });
+        const applied = await this.source.transaction((db) => this.applyOne(db, owned, row));
+        stop();
+        if (!applied) return;
+        commandsApplied.inc({ instrument });
+        if (applied.outcome === 'rejected_internal') ordersRejected.inc({ reason: 'internal' });
+        this.logger.log({ event: 'engine.command_applied', ...fields });
+        for (const { tradeId } of applied.trades) {
+          this.logger.log({ event: 'engine.trade_executed', ...fields, tradeId });
+        }
+        return applied;
+      });
       if (!result) {
         owned.halted = true;
         return;

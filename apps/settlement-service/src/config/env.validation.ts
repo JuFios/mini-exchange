@@ -86,10 +86,33 @@ function consumerName(value: unknown, key: string): string {
 }
 
 const schema = {
+  CORS_ORIGINS: (value: unknown, key: string) =>
+    required(value, key)
+      .split(',')
+      .map((item) => origin(item.trim(), key)),
+  LOG_LEVEL: (value: unknown, key: string) => {
+    const level = required(value ?? 'info', key);
+    if (!/^(fatal|error|warn|info|debug|trace|silent)$/.test(level))
+      throw new Error(`Invalid ${key}`);
+    return level;
+  },
+  OTEL_SERVICE_NAME: (value: unknown, key: string) => required(value ?? 'settlement-service', key),
+  OTEL_TRACES_EXPORTER: (value: unknown, key: string) => {
+    const exporter = required(value ?? 'none', key);
+    if (exporter !== 'none' && exporter !== 'otlp') throw new Error(`Invalid ${key}`);
+    return exporter;
+  },
+  OTEL_EXPORTER_OTLP_ENDPOINT: (value: unknown, key: string) =>
+    origin(value ?? 'http://jaeger:4318', key),
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,
   REDIS_PORT: port,
+  REDIS_PASSWORD: (value: unknown, key: string) => {
+    const password = required(value, key);
+    if (password.trim().length < 16) throw new Error(`${key} must contain at least 16 characters`);
+    return password;
+  },
   STREAM_MAXLEN: integer(1, Number.MAX_SAFE_INTEGER),
   CONSUMER_NAME: consumerName,
   CONSUMER_CLAIM_IDLE_MS: integer(1000, 3_600_000),

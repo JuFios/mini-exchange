@@ -48,6 +48,7 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
     this.redis = new Redis({
       host: config.getOrThrow('REDIS_HOST'),
       port: config.getOrThrow('REDIS_PORT'),
+      password: config.getOrThrow<string>('REDIS_PASSWORD'),
       maxRetriesPerRequest: 1,
       commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
     });
@@ -65,6 +66,15 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
     this.reader.disconnect();
     await this.running;
     this.redis.disconnect();
+  }
+
+  /** Redis готовий лише з політикою, що зберігає pending-записи. */
+  async redisReady(): Promise<boolean> {
+    const [ping, policy] = await Promise.all([
+      this.redis.ping(),
+      this.redis.config('GET', 'maxmemory-policy'),
+    ]);
+    return ping === 'PONG' && Array.isArray(policy) && policy[1] === 'noeviction';
   }
 
   /** Стан черги для адміністратора й метрик. */

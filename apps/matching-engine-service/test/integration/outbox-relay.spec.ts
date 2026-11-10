@@ -42,6 +42,7 @@ beforeAll(async () => {
   redis = new Redis({
     host: process.env.REDIS_HOST,
     port: Number(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
     commandTimeout: 3000,
     maxRetriesPerRequest: 0,
   });
@@ -326,6 +327,7 @@ it('serializes two competing relays and delivers all events for 1000 applied com
     DATABASE_NAME: process.env.DATABASE_NAME,
     REDIS_HOST: process.env.REDIS_HOST,
     REDIS_PORT: Number(process.env.REDIS_PORT),
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
     OUTBOX_POLL_INTERVAL_MS: 5,
     STREAM_MAXLEN: 1000000,
   });

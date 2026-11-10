@@ -15,8 +15,8 @@ export async function middleware(request: NextRequest) {
   let update: Awaited<ReturnType<typeof refreshSession>> | undefined;
 
   const now = Date.now();
-  const expired = !token || token.exp * 1000 <= now;
-  const nearExpiry = !token || token.exp * 1000 - EXPIRY_MARGIN_MS <= now;
+  const expired = !token?.sid || token.exp * 1000 <= now;
+  const nearExpiry = !token?.sid || token.exp * 1000 - EXPIRY_MARGIN_MS <= now;
 
   if (refresh && nearExpiry) {
     // Для мутацій Origin перевіряється також до можливого refresh.

@@ -13,7 +13,11 @@ const sockets: Socket[] = [];
 let redis: Redis;
 
 beforeAll(() => {
-  redis = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+  redis = new Redis({
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+  });
 });
 afterAll(async () => {
   await redis.del(USER_EVENTS);
@@ -94,6 +98,20 @@ it('refuses a handshake without a valid access token', async () => {
   for (const token of [undefined, '', 'garbage', user.refreshToken, expired, forged])
     await expect(connect(api.url(), '/private', token)).rejects.toThrow('UNAUTHORIZED');
   await expect(connect(api.url(), '/private', user.accessToken)).resolves.toBeDefined();
+});
+
+it('refuses a new private handshake after logout, including an access token from refresh grace', async () => {
+  const { accessToken, refreshToken } = await account();
+  const rotate = () => api.request('/auth/refresh', 'POST', undefined, { refreshToken });
+  expect((await rotate()).status).toBe(200);
+  const grace = await rotate();
+  expect(grace.status).toBe(200);
+  const late = (await grace.json()) as { accessToken: string };
+  await listen(late.accessToken);
+  expect((await api.request('/auth/logout', 'POST', undefined, { refreshToken })).status).toBe(204);
+  for (const token of [accessToken, late.accessToken]) {
+    await expect(connect(api.url(), '/private', token)).rejects.toThrow('UNAUTHORIZED');
+  }
 });
 
 it('delivers order and wallet updates only to their owner and without identities', async () => {

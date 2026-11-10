@@ -1,5 +1,5 @@
+import { RateLimits } from '../../src/security/rate-limits';
 import { InstrumentWorker } from '../../src/engine/instrument-worker';
-import { IntakeService } from '../../src/intake/intake.service';
 import { engineApp } from './engine-app';
 import { waitFor } from '../helpers/wait-for';
 
@@ -31,8 +31,12 @@ it('replays an accepted request without Redis and still rejects new intake or a 
   const initial = await request('/orders', 'POST', owner, body, headers);
   expect(initial.status).toBe(201);
   const accepted = await initial.json();
-  const intake = app().get(IntakeService) as unknown as { redis: { ping: () => Promise<string> } };
-  const failure = jest.spyOn(intake.redis, 'ping').mockRejectedValue(new Error('Redis offline'));
+  const limiter = app().get(RateLimits) as unknown as {
+    storage: { increment(): Promise<unknown> };
+  };
+  const failure = jest
+    .spyOn(limiter.storage, 'increment')
+    .mockRejectedValue(new Error('Redis offline'));
   try {
     const repeated = await request('/orders', 'POST', owner, body, headers);
     expect(repeated.status).toBe(200);

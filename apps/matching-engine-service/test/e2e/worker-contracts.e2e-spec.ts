@@ -1,5 +1,5 @@
+import { RateLimits } from '../../src/security/rate-limits';
 import { ReservationClient } from '../../src/intake/reservation.client';
-import { IntakeService } from '../../src/intake/intake.service';
 import { waitFor } from '../helpers/wait-for';
 import { Logger } from '@nestjs/common';
 import { CommandApplier } from '../../src/engine/command-applier';
@@ -289,8 +289,12 @@ it('rejects a failed reservation without issuing a sequence number', async () =>
 it('returns service unavailable for Redis failure while allowing cancellation', async () => {
   const owner = await register();
   const { order } = await (await submit(owner)).json();
-  const intake = app().get(IntakeService) as unknown as { redis: { ping: () => Promise<string> } };
-  const failure = jest.spyOn(intake.redis, 'ping').mockRejectedValue(new Error('Redis offline'));
+  const limiter = app().get(RateLimits) as unknown as {
+    storage: { increment(): Promise<unknown> };
+  };
+  const failure = jest
+    .spyOn(limiter.storage, 'increment')
+    .mockRejectedValue(new Error('Redis offline'));
   try {
     expect((await submit(owner)).status).toBe(503);
     expect((await request(`/orders/${order.id}`, 'DELETE', owner)).status).toBe(200);

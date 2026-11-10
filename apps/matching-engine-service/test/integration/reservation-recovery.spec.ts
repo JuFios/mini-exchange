@@ -48,7 +48,7 @@ async function withIntakeChild(
   );
   const child = spawn(
     process.execPath,
-    ['-r', 'ts-node/register', 'test/helpers/intake-process.ts'],
+    ['-r', 'ts-node/register/transpile-only', 'test/helpers/intake-process.ts'],
     {
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -8,7 +8,7 @@ import { SettleTradeDto } from '../trades/dto/settle-trade.dto';
 export class InvalidEventError extends Error {}
 
 export type SettlementEvent =
-  | { type: 'trade.executed'; trade: SettleTradeDto; traceId?: string }
+  | { type: 'trade.executed'; trade: SettleTradeDto; traceId?: string; traceparent?: string }
   | { type: 'order.closed'; closed: OrderClosedV1 };
 
 const TRACEPARENT = /^00-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/;
@@ -47,6 +47,7 @@ export function parseSettlementEvent(raw: string | undefined): SettlementEvent {
       type: 'trade.executed',
       trade,
       traceId: TRACEPARENT.exec(envelope.traceparent ?? '')?.[1],
+      traceparent: envelope.traceparent,
     };
   }
   if (envelope.type === 'order.closed') {

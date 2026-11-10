@@ -1,5 +1,7 @@
+import { configureHttp } from './observability/http';
 import { DatabaseExceptionFilter } from './database/database-exception.filter';
 import { ReplicaIoAdapter } from './realtime/replica-io.adapter';
+import { RateLimitFilter } from './security/rate-limits';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -34,6 +36,8 @@ class RequestValidationPipe extends ValidationPipe {
 }
 
 export function configureApp(app: INestApplication): void {
+  configureHttp(app, 'Matching Engine');
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   app.useGlobalPipes(
     new RequestValidationPipe({
       whitelist: true,
@@ -41,7 +45,6 @@ export function configureApp(app: INestApplication): void {
       transform: true,
     }),
   );
-  app.useGlobalFilters(new DatabaseExceptionFilter(app.getHttpAdapter()));
-  app.enableCors();
+  app.useGlobalFilters(new DatabaseExceptionFilter(app.getHttpAdapter()), new RateLimitFilter());
   app.useWebSocketAdapter(new ReplicaIoAdapter(app));
 }

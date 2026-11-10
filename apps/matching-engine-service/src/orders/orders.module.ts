@@ -1,3 +1,4 @@
+import { RateLimitModule } from '../security/rate-limit.module';
 import { CommittedBook } from '../engine/committed-book';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CommandApplier } from '../engine/command-applier';
@@ -33,9 +34,17 @@ import { Order } from './entities/order.entity';
 import { Instrument } from './entities/instrument.entity';
 import { MarketController } from './market.controller';
 import { InstrumentCatalog } from './instrument-catalog';
+import { AuthModule } from '../auth/auth.module';
+import { TerminusModule } from '@nestjs/terminus';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, Instrument]), JwtModule.register({})],
+  imports: [
+    TypeOrmModule.forFeature([Order, Instrument]),
+    JwtModule.register({}),
+    AuthModule,
+    RateLimitModule,
+    TerminusModule,
+  ],
   controllers: [
     MarketController,
     OrdersController,

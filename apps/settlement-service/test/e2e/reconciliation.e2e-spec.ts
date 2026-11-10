@@ -48,13 +48,13 @@ const ledger = ledgerApp(
 const source = () => ledger.source();
 const admin = () =>
   new JwtService({ secret: ledger.jwtSecret }).sign(
-    { sub: randomUUID(), typ: 'access', roles: ['admin'] },
+    { sub: randomUUID(), sid: randomUUID(), typ: 'access', roles: ['admin'] },
     { expiresIn: '15m' },
   );
 const report = async (query = '') =>
   (
     await request(ledger.app().getHttpServer())
-      .get(
+      .post(
         `/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z${query}`,
       )
       .auth(admin(), { type: 'bearer' })
@@ -97,11 +97,11 @@ it('is ok on a clean ledger, tolerates trades still within the grace period and 
   });
   expect((await report('&instrument=XYZ')).counts.engineTrades).toBe(0);
   await request(ledger.app().getHttpServer())
-    .get('/admin/reconciliation?instrument=USD')
+    .post('/admin/reconciliation?instrument=USD')
     .auth(admin(), { type: 'bearer' })
     .expect(400);
   await request(ledger.app().getHttpServer())
-    .get('/admin/reconciliation?from=2026-01-02T00:00:00.000Z&to=2026-01-01T00:00:00.000Z')
+    .post('/admin/reconciliation?from=2026-01-02T00:00:00.000Z&to=2026-01-01T00:00:00.000Z')
     .auth(admin(), { type: 'bearer' })
     .expect(400);
 });
@@ -184,7 +184,7 @@ it('refuses a second reconciliation while one holds the database connection', as
   try {
     const url = '/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z';
     const call = () =>
-      request(ledger.app().getHttpServer()).get(url).auth(admin(), { type: 'bearer' });
+      request(ledger.app().getHttpServer()).post(url).auth(admin(), { type: 'bearer' });
     const statuses = (await Promise.all([call(), call()])).map((response) => response.status);
     expect(statuses.sort()).toEqual([200, 409]);
     await call().expect(200);
@@ -242,7 +242,7 @@ it('reports an unavailable engine order lookup instead of a clean reservation ch
   const lookup = jest.spyOn(orders, 'terminal').mockRejectedValue(new BadGatewayException());
   try {
     await request(ledger.app().getHttpServer())
-      .get('/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z')
+      .post('/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z')
       .auth(admin(), { type: 'bearer' })
       .expect(502);
   } finally {

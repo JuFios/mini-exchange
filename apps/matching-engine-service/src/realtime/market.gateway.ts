@@ -1,3 +1,4 @@
+import { rateLimited } from '../observability/metrics';
 import { OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -27,12 +28,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
 /** Публічний namespace: snapshot, `book.delta` з номером команди, `trade` і `book.heartbeat`. */
-@WebSocketGateway({ namespace: 'market', transports: ['websocket'], cors: { origin: '*' } })
+@WebSocketGateway({ namespace: 'market', transports: ['websocket'] })
 export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   @WebSocketServer()
   server: Namespace;
 
   private readonly instance: string;
+  private readonly subscribeLimit: number;
+  private readonly subscribeWindows = new WeakMap<Socket, { until: number; count: number }>();
   private readonly detach: (() => void)[] = [];
   private readonly queues = new Map<string, Promise<void>>();
   private readonly depths = new Map<string, number>();
@@ -45,6 +48,7 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
     private readonly instruments: InstrumentCatalog,
   ) {
     this.instance = config.getOrThrow<string>('INSTANCE_ID');
+    this.subscribeLimit = config.getOrThrow<number>('WS_SUBSCRIBE_RATE_LIMIT');
   }
 
   afterInit(server: Namespace): void {
@@ -70,6 +74,17 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
    */
   @SubscribeMessage('book.subscribe')
   subscribe(@ConnectedSocket() client: Socket, @MessageBody() body: unknown) {
+    const now = performance.now();
+    let window = this.subscribeWindows.get(client);
+    if (!window || window.until <= now) {
+      window = { until: now + 10_000, count: 0 };
+      this.subscribeWindows.set(client, window);
+    }
+    if (window.count >= this.subscribeLimit) {
+      rateLimited.inc({ scope: 'ws_subscribe' });
+      return { ok: false, error: 'RATE_LIMITED' };
+    }
+    window.count++;
     const instrument = isRecord(body) ? body.instrument : undefined;
     if (!this.instruments.has(instrument)) return { ok: false, error: 'UNKNOWN_INSTRUMENT' };
     if (!client.connected) return { ok: false, error: 'DISCONNECTED' };

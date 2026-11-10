@@ -1,3 +1,4 @@
+import { recoverySeconds, takeovers } from '../observability/metrics';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -21,6 +22,7 @@ export class OwnershipCoordinator {
   async recover(instrument: string, lease: InstrumentLease, resume = false) {
     this.leases.assert(lease);
     const previous = this.epochs.get(lease);
+    const stop = recoverySeconds.startTimer({ instrument });
     const recovered = await this.source.transaction(async (db) => {
       await db.query("SET LOCAL lock_timeout='3s'");
       let epoch = previous;
@@ -38,6 +40,8 @@ export class OwnershipCoordinator {
     });
     this.leases.assert(lease);
     this.epochs.set(lease, recovered.epoch);
+    stop();
+    if (!previous && BigInt(recovered.epoch) > 1n) takeovers.inc({ instrument });
     this.logger.log(`lease acquired instrument=${instrument} epoch=${recovered.epoch}`);
     this.logger.log(`book recovered instrument=${instrument} lastAppliedSeq=${recovered.seq}`);
     return recovered;

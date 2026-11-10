@@ -11,7 +11,7 @@ import {
 export const ACCESS_COOKIE = 'exchange_access';
 const REFRESH_COOKIE = 'exchange_refresh';
 
-type Claims = { exp: number; sub?: string; roles?: string[] };
+type Claims = { exp: number; sub?: string; sid?: string; roles?: string[] };
 type Tokens = { accessToken: string; refreshToken?: string };
 
 // Термін дії підказує, коли оновити токен. Підпис і права завжди перевіряє API.

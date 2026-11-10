@@ -239,7 +239,11 @@ describe('a reader that loses its Redis connection', () => {
     await waitFor(async () => seqs(received).length === 10, 5000);
 
     const reader = api.app().get(RealtimeStreamReader);
-    const admin = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+    const admin = new Redis({
+      host: process.env.REDIS_HOST,
+      port: Number(process.env.REDIS_PORT),
+      password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+    });
     try {
       const id = await reader['redis'].client('ID');
       await admin.client('KILL', 'ID', String(id));
@@ -353,6 +357,7 @@ describe('with a reader that stops following entries that carry no new delta', (
       const admin = new Redis({
         host: process.env.REDIS_HOST,
         port: Number(process.env.REDIS_PORT),
+        password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
       });
       try {
         await admin.xadd(stream, '*', ...fields);
@@ -494,7 +499,11 @@ describe('a reader that meets unreadable entries', () => {
   it('skips them on every stream and keeps delivering the entries after them', async () => {
     const received = await join(api.url());
     const owner = await api.register();
-    const admin = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+    const admin = new Redis({
+      host: process.env.REDIS_HOST,
+      port: Number(process.env.REDIS_PORT),
+      password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+    });
     try {
       for (const stream of ['exchange:market:{ABC}', 'exchange:user-events'])
         for (const envelope of ['null', '5', '[]', '{', '"text"'])
@@ -544,6 +553,7 @@ describe('a replica that starts while the tail of a stream is unreadable', () =>
       const admin = new Redis({
         host: process.env.REDIS_HOST,
         port: Number(process.env.REDIS_PORT),
+        password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
       });
       try {
         await admin.xadd('exchange:market:{ABC}', '*', ...fields);

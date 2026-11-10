@@ -66,6 +66,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     const connection = {
       host: config.getOrThrow<string>('REDIS_HOST'),
       port: config.getOrThrow<number>('REDIS_PORT'),
+      password: config.getOrThrow<string>('REDIS_PASSWORD'),
       connectTimeout: REDIS_TIMEOUT_MS,
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,

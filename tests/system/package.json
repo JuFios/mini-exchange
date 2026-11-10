@@ -18,7 +18,10 @@
     "realtime:transport": "ts-node realtime-transport.ts",
     "settlement:redrive": "ts-node redrive.ts",
     "wallet:push": "ts-node wallet-push.ts",
-    "orders:sync": "ts-node private-sync.ts"
+    "orders:sync": "ts-node private-sync.ts",
+    "trace": "ts-node trace.ts",
+    "rate-limit": "ts-node rate-limit-frontend.ts",
+    "session:revocation": "ts-node session-revocation.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",

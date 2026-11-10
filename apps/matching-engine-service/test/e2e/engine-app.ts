@@ -19,10 +19,18 @@ export function engineApp() {
   const example = parseEnv(readFileSync(join(__dirname, '../../.env.example'), 'utf8'));
   const settings = {
     ...example,
+    LOG_LEVEL: 'silent',
     ...database.env,
     RESERVATIONS_ENABLED: 'false',
+    AUTH_RATE_LIMIT: '1000',
+    LOGIN_EMAIL_RATE_LIMIT: '1000',
+    PUBLIC_RATE_LIMIT: '10000',
+    ORDER_RATE_LIMIT: '1000',
+    ORDER_RATE_LIMIT_MIN: '1000',
+    WS_SUBSCRIBE_RATE_LIMIT: '10000',
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
   };
   let app: INestApplication | undefined;
   let baseUrl: string;
@@ -32,6 +40,7 @@ export function engineApp() {
     const redis = new Redis({
       host: settings.REDIS_HOST,
       port: Number(settings.REDIS_PORT),
+      password: settings.REDIS_PASSWORD,
       connectTimeout: 3000,
       maxRetriesPerRequest: 0,
       retryStrategy: () => null,
@@ -125,7 +134,11 @@ export function engineApp() {
     }
     // Номери команд починаються з одиниці після TRUNCATE, тож старі записи streams збивали б
     // читачів WebSocket наступного тесту, які беруть хвіст stream за точку відліку.
-    const redis = new Redis({ host: settings.REDIS_HOST, port: Number(settings.REDIS_PORT) });
+    const redis = new Redis({
+      host: settings.REDIS_HOST,
+      port: Number(settings.REDIS_PORT),
+      password: settings.REDIS_PASSWORD,
+    });
     try {
       await redis.del(...['ABC', 'XYZ'].map((symbol) => marketStream(symbol)), USER_EVENTS_STREAM);
     } finally {

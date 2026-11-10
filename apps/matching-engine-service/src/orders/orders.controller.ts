@@ -1,3 +1,5 @@
+import { activeTraceparent } from '../observability/trace-context';
+import { ordersRejected } from '../observability/metrics';
 import {
   BadRequestException,
   Body,
@@ -5,6 +7,7 @@ import {
   Delete,
   Get,
   Headers,
+  HttpException,
   Res,
   Param,
   ParseUUIDPipe,
@@ -66,15 +69,28 @@ export class OrdersController {
     @Headers('traceparent') traceparent: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    this.instruments.require(dto.instrument);
-    const result = await this.orders.submitOrder(
-      withExactAmounts(dto, req.rawBody),
-      req.user.userId,
-      key,
-      traceparent,
-    );
-    response.status(result.status);
-    return result.body;
+    try {
+      this.instruments.require(dto.instrument);
+      const result = await this.orders.submitOrder(
+        withExactAmounts(dto, req.rawBody),
+        req.user.userId,
+        key,
+        activeTraceparent(traceparent),
+      );
+      response.status(result.status);
+      return result.body;
+    } catch (error) {
+      const status = error instanceof HttpException ? error.getStatus() : 500;
+      const reasons: Record<number, string> = {
+        400: 'validation',
+        409: 'conflict',
+        422: 'insufficient_funds',
+        429: 'rate_limit',
+        503: 'unavailable',
+      };
+      ordersRejected.inc({ reason: reasons[status] ?? 'internal' });
+      throw error;
+    }
   }
 
   @Get()
@@ -114,7 +130,7 @@ export class OrdersController {
       id,
       req.user.userId,
       query.instrument,
-      traceparent,
+      activeTraceparent(traceparent),
     );
     response.status(result.status);
     return result.body;

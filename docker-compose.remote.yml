@@ -6,11 +6,15 @@ x-remote-engine: &remote-engine
     ADMIN_EMAILS: ${ADMIN_EMAILS:?Set ADMIN_EMAILS for the remote deployment}
     ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set a unique ADMIN_PASSWORD}
     INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set a unique INTERNAL_API_TOKEN}
+    CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS for the remote frontend}
     DATABASE_PASSWORD: ${ENGINE_DB_PASSWORD:?Set a unique ENGINE_DB_PASSWORD}
 
 services:
   matching-engine-1: *remote-engine
   matching-engine-2: *remote-engine
+  redis:
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set a unique REDIS_PASSWORD}
   exchange-db:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}
@@ -28,10 +32,16 @@ services:
   settlement-service:
     environment:
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS for the remote frontend}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set a unique INTERNAL_API_TOKEN}
       LEDGER_DATABASE_PASSWORD: ${LEDGER_DB_PASSWORD:?Set a unique LEDGER_DB_PASSWORD}
   engine-lb:
-    ports: !override ['3001:3001', '3000:3000']
+    environment:
+      TRUSTED_TLS_PROXY_IP: ${TRUSTED_TLS_PROXY_IP:?Set the TLS proxy address seen by nginx}
+      NGINX_ENVSUBST_FILTER: '^TRUSTED_TLS_PROXY_IP$'
+    volumes:
+      - './deploy/nginx/real-ip.conf.template:/etc/nginx/templates/real-ip.conf.template:ro'
+      - './deploy/nginx/check-proxy-ip.sh:/docker-entrypoint.d/15-check-proxy-ip.sh:ro'
   frontend:
     environment:
       COOKIE_SECURE: 'true'

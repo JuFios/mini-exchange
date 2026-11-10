@@ -100,8 +100,24 @@ it('keeps one refresh session per account: a new login replaces the previous one
 
 it('logs out the current session when its signed refresh token is presented', async () => {
   const { tokens } = await registerAccount();
+  const rotated = await rotate(tokens.refreshToken);
+  const grace = await post('refresh', { refreshToken: tokens.refreshToken });
+  expect(grace.status).toBe(200);
+  const late = (await grace.json()) as Pick<Tokens, 'accessToken'>;
+  expect((await request('/orders', 'GET', late.accessToken)).status).toBe(200);
   expect((await post('logout', { refreshToken: tokens.refreshToken })).status).toBe(204);
   expect((await post('refresh', { refreshToken: tokens.refreshToken })).status).toBe(401);
+  expect((await post('refresh', { refreshToken: rotated.refreshToken })).status).toBe(401);
+  for (const { accessToken } of [tokens, rotated, late]) {
+    expect((await request('/orders', 'GET', accessToken)).status).toBe(401);
+    expect(
+      (
+        await request('/internal/auth/session', 'GET', accessToken, undefined, {
+          'x-internal-token': process.env.INTERNAL_API_TOKEN!,
+        })
+      ).status,
+    ).toBe(401);
+  }
 });
 
 it('seeds an admin, reserves the address and preserves its password on restart', async () => {

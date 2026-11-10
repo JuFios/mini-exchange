@@ -7,13 +7,16 @@ const ledger = ledgerApp();
 
 it('protects every registered admin route with authentication and an admin role', async () => {
   const jwt = new JwtService({ secret: ledger.jwtSecret });
-  const user = jwt.sign({ sub: randomUUID(), typ: 'access' }, { expiresIn: '15m' });
+  const user = jwt.sign(
+    { sub: randomUUID(), sid: randomUUID(), typ: 'access' },
+    { expiresIn: '15m' },
+  );
   const refresh = jwt.sign(
     { sub: randomUUID(), typ: 'refresh', roles: ['admin'] },
     { expiresIn: '15m' },
   );
   const admin = jwt.sign(
-    { sub: randomUUID(), typ: 'access', roles: ['admin'] },
+    { sub: randomUUID(), sid: randomUUID(), typ: 'access', roles: ['admin'] },
     { expiresIn: '15m' },
   );
   const server = ledger.app().getHttpServer();

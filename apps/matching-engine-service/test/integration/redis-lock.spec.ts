@@ -7,10 +7,15 @@ it('expires a crashed owner lock and lets another owner acquire it', async () =>
   const values = {
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: Number(process.env.REDIS_PORT ?? 6379),
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
     LEASE_TTL_MS: 120,
   };
   const lock = new RedisLockService(new ConfigService(values));
-  const redis = new Redis({ host: values.REDIS_HOST, port: values.REDIS_PORT });
+  const redis = new Redis({
+    host: values.REDIS_HOST,
+    port: values.REDIS_PORT,
+    password: values.REDIS_PASSWORD,
+  });
   const key = `lock-regression:${randomUUID()}`;
   try {
     expect(await lock.acquire(key, 'crashed-owner')).toBe(true);
