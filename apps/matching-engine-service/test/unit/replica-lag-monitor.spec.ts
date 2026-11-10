@@ -77,12 +77,28 @@ describe('a replica that loses its stream probes', () => {
     expect(monitor.healthy()).toBe(false);
 
     reader.probeFails = false;
-    await run(HEARTBEAT_INTERVAL_MS);
-    expect(monitor.healthy()).toBe(false);
-    await run(RECOVER_AFTER_MS - HEARTBEAT_INTERVAL_MS);
+    await run(2 * HEARTBEAT_INTERVAL_MS);
     expect(monitor.healthy()).toBe(false);
     await run(2 * HEARTBEAT_INTERVAL_MS);
     expect(monitor.healthy()).toBe(true);
+    monitor.onModuleDestroy();
+  });
+
+  it('does not count failed probes towards the recovery while the old verdict is still valid', async () => {
+    const { reader, monitor } = build(5000);
+    await run(HEARTBEAT_INTERVAL_MS);
+    reader.probeFails = true;
+    await run(10_000);
+    expect(monitor.healthy()).toBe(false);
+
+    // Дві успішні проби, далі Redis знову мовчить: кешований вердикт ще чинний, але докази відновлення немає.
+    reader.probeFails = false;
+    await run(2 * HEARTBEAT_INTERVAL_MS);
+    reader.probeFails = true;
+    for (let tick = 0; tick < 4; tick++) {
+      await run(HEARTBEAT_INTERVAL_MS);
+      expect(monitor.healthy()).toBe(false);
+    }
     monitor.onModuleDestroy();
   });
 
@@ -229,6 +245,8 @@ describe('health verdict invariant', () => {
               if (isTick) {
                 firstTick ??= now;
                 if (probeOk) lastOk = now;
+                // Невдала проба теж не доводить відновлення, навіть поки вердикт чинний.
+                else lastStale = now;
               }
               await run(part);
               const reference = lastOk ?? firstTick;
