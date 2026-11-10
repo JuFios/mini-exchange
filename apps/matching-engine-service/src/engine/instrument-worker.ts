@@ -111,8 +111,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       else this.books.commit(instrument, owned.book, owned.seq);
       return owned;
     } catch (error) {
-      // Репліка без доступу до PG має дати резерву час узяти lease між спробами recovery.
-      this.ownership.leases.drop(lease, STALL_BACK_OFF_MS);
+      // Після збою автоматичного recovery даємо резерву час узяти lease.
+      // Ручний resume з непевним COMMIT одразу повертається до читання стану з PG.
+      this.ownership.leases.drop(lease, resume ? 0 : STALL_BACK_OFF_MS);
       throw error;
     }
   }
