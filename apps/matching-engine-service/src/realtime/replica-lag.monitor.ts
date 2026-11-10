@@ -146,7 +146,7 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
           const head = await this.reader.head(stream).catch(() => undefined);
           if (head === undefined) return false;
           tracker.check(head, cursor, now);
-          return true;
+          return !tracker.stalled;
         }),
       );
       this.update();
@@ -168,7 +168,7 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     for (const handler of this.staleHandlers) handler();
   }
 
-  /** Раунд проб, у якому вдалися всі stream і вердикт не завислий, наближає повернення в пул. */
+  /** Раунд, у якому проби вдалися, жоден stream не стоїть із відставанням і вердикт не завислий, наближає повернення. */
   private recover(allProbed: boolean): void {
     if (!this.latched) return;
     if (!allProbed || this.isStale()) {
