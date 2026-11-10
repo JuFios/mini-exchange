@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { createConnection } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
+import type { Duplex } from 'node:stream';
 import { promisify } from 'node:util';
-import { docker, request, until } from './helpers';
+import { docker, engine, request, until } from './helpers';
 
 const frontend = 'http://frontend:3000';
 const login = (base = frontend, headers: Record<string, string> = {}) =>
@@ -46,7 +48,10 @@ async function checkIngressCapacity() {
       3000,
     );
     assert.equal((await request('/instruments/XYZ/book')).status, 200);
+    assert.equal((await request('/orders/book?instrument=XYZ')).status, 200);
+    assert.equal((await request('/orders')).status, 401);
     assert.equal((await request('/health')).status, 200);
+    assert.equal((await request('/ready')).status, 200);
   } finally {
     for (const socket of clients) socket.destroy();
   }
@@ -55,6 +60,47 @@ async function checkIngressCapacity() {
     (status) => status === 200,
     3000,
   );
+}
+
+async function checkWebSocketCapacity() {
+  const sockets: Duplex[] = [];
+  const upgrade = () =>
+    new Promise<number>((resolve, reject) => {
+      const pending = httpRequest(
+        engine + '/socket.io/?EIO=4&transport=websocket',
+        {
+          headers: {
+            Connection: 'Upgrade',
+            Upgrade: 'websocket',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+          },
+          signal: AbortSignal.timeout(5000),
+        },
+        (response) => {
+          response.resume();
+          resolve(response.statusCode!);
+        },
+      );
+      pending.once('error', reject);
+      pending.once('upgrade', (response, socket) => {
+        socket.on('error', () => socket.destroy());
+        sockets.push(socket);
+        resolve(response.statusCode!);
+      });
+      pending.end();
+    });
+  const close = () => sockets.splice(0).forEach((socket) => socket.destroy());
+  try {
+    // Чекаємо всіх upgrade перед cleanup, навіть якщо одна спроба відхилена.
+    const opened = await Promise.allSettled(Array.from({ length: 64 }, upgrade));
+    assert(opened.every((result) => result.status === 'fulfilled' && result.value === 101));
+    assert.equal(await upgrade(), 429);
+    close();
+    await until(upgrade, (status) => status === 101, 3000);
+  } finally {
+    close();
+  }
 }
 
 async function main() {
@@ -119,8 +165,9 @@ async function main() {
     429,
   );
   await checkIngressCapacity();
+  await checkWebSocketCapacity();
   console.log(
-    `clientA=10+429 clientB=${result.status} forgedEngine=429 forgedFrontend=429 ingressSlots=64 book=200`,
+    `clientA=10+429 clientB=${result.status} forgedEngine=429 forgedFrontend=429 ingressSlots=64 book=200 ws=64+429 released=101`,
   );
 }
 
