@@ -16,8 +16,19 @@ export class LagTracker {
   private behind = false;
   private progressAt = 0;
   private lastStale = false;
+  private checkedAt: number;
 
-  constructor(private readonly maxLagMs: number) {}
+  /**
+   * @param validForMs скільки вердикт лишається чинним після останньої успішної перевірки;
+   * @param startedAt момент створення: перевірка, що жодного разу не вдалася, теж спливає.
+   */
+  constructor(
+    private readonly maxLagMs: number,
+    private readonly validForMs: number,
+    startedAt: number,
+  ) {
+    this.checkedAt = startedAt;
+  }
 
   check(published: bigint, emitted: bigint, now: number): { lag: bigint; stale: boolean } {
     const lag = published > emitted ? published - emitted : 0n;
@@ -26,12 +37,17 @@ export class LagTracker {
     this.seen = emitted;
     this.behind = lag > 0n;
     this.lastStale = lag > 0n && now - this.progressAt > this.maxLagMs;
+    this.checkedAt = now;
     return { lag, stale: this.lastStale };
   }
 
-  /** Стан останньої успішної перевірки: потрібен, коли head stream не вдалося прочитати. */
-  get stale(): boolean {
-    return this.lastStale;
+  /**
+   * Вердикт у момент `now`. Збій перевірки не доводить ні зависання, ні наздоганяння, тож
+   * останній вердикт лишається, але не довше за `validForMs`: без свіжого доказу репліка
+   * вважається завислою, інакше ізольована від Redis репліка трималася б у ротації безстроково.
+   */
+  isStale(now: number): boolean {
+    return this.lastStale || now - this.checkedAt > this.validForMs;
   }
 }
 

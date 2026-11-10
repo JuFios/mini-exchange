@@ -8,9 +8,10 @@ import { LagTracker } from './replica-lag';
 export const HEARTBEAT_INTERVAL_MS = 2000;
 
 /**
- * Раз на HEARTBEAT_INTERVAL_MS читає `last_applied_seq` з PG і роздає його як heartbeat:
- * клієнт порівнює його з тим, що отримав, тож завислий XREAD-цикл репліки не лишає клієнтів
- * `live` на застарілій книзі. Окремо стежить, чи репліка просувається за кожним stream, який опублікував relay.
+ * Раз на HEARTBEAT_INTERVAL_MS робить дві незалежні справи. Heartbeat: читає `last_applied_seq`
+ * з PG і роздає його, щоб клієнт порівняв із отриманим і завислий XREAD-цикл не лишав його `live`
+ * на застарілій книзі. Проба: перевіряє, чи просувається репліка за кожним stream, який
+ * опублікував relay. Збій або зависання PG не зупиняє пробу, а збій Redis не зупиняє heartbeat.
  */
 @Injectable()
 export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestroy {
@@ -20,9 +21,12 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   private readonly staleHandlers = new Set<() => void>();
   private readonly lags = new Map<string, bigint>();
   private readonly maxLagMs: number;
+  // Одна пропущена проба (тік 2 с плюс проба до 1 с) не повинна знімати репліку з ротації.
+  private readonly validForMs: number;
   private timer?: NodeJS.Timeout;
-  private running = false;
-  private stale = false;
+  private beating = false;
+  private probing = false;
+  private wasStale = false;
 
   constructor(
     config: ConfigService,
@@ -31,19 +35,28 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     private readonly instruments: InstrumentCatalog,
   ) {
     this.maxLagMs = config.getOrThrow<number>('WS_REPLICA_MAX_LAG_MS');
+    this.validForMs = Math.max(this.maxLagMs, 2 * HEARTBEAT_INTERVAL_MS);
   }
 
   onApplicationBootstrap(): void {
-    this.timer = setInterval(() => void this.tick(), HEARTBEAT_INTERVAL_MS).unref();
+    this.timer = setInterval(() => {
+      // Перехід у `stale` не залежить від завершення проби: зависла проба не лишає сокети відкритими.
+      this.update();
+      void this.heartbeat();
+      void this.probe();
+    }, HEARTBEAT_INTERVAL_MS).unref();
   }
 
   onModuleDestroy(): void {
     clearInterval(this.timer);
   }
 
-  /** Репліка читає stream і просувається; інакше LB має її зняти (`/ready`). */
+  /**
+   * Репліка читає stream і просувається, а свіжа проба це підтверджує. Рахується в момент
+   * виклику, а не береться з кешу: `/ready` і upgrade не повинні чекати наступного тіку.
+   */
   healthy(): boolean {
-    return this.reader.ready && !this.stale;
+    return this.reader.ready && !this.isStale();
   }
 
   onHeartbeat(handler: (instrument: string, seq: string) => void): () => void {
@@ -62,15 +75,18 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     return this.lags;
   }
 
-  private async tick(): Promise<void> {
-    if (this.running || !this.reader.ready) return;
-    this.running = true;
+  private isStale(): boolean {
+    const now = performance.now();
+    return [...this.trackers.values()].some((tracker) => tracker.isStale(now));
+  }
+
+  private async heartbeat(): Promise<void> {
+    if (this.beating || !this.reader.ready) return;
+    this.beating = true;
     try {
       const rows: { instrument: string; last_applied_seq: string }[] = await this.source.query(
         'SELECT instrument, last_applied_seq FROM instrument_state',
       );
-      const now = performance.now();
-      // Heartbeat іде з PG до будь-яких звернень до Redis: його мета — пережити поганий stream.
       for (const { instrument, last_applied_seq } of rows) {
         if (!this.instruments.has(instrument)) continue;
         const applied = BigInt(last_applied_seq);
@@ -78,38 +94,50 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
         this.lags.set(instrument, applied > emitted ? applied - emitted : 0n);
         for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
       }
-      const stalled = await Promise.all(
-        this.reader.streams.map(async (stream) => {
-          const cursor = this.reader.cursor(stream);
-          const tracker = this.trackers.get(stream) ?? new LagTracker(this.maxLagMs);
-          this.trackers.set(stream, tracker);
-          // Збій перевірки не доводить ні зависання, ні наздоганяння: лишається останній відомий стан.
-          // Недоступний Redis ловить `/ready` через lease.
-          const head = await this.reader.head(stream).catch(() => undefined);
-          return head === undefined ? tracker.stale : tracker.check(head, cursor, now).stale;
-        }),
-      );
-      const anyStale = stalled.some(Boolean);
-      this.update(anyStale);
     } catch (error) {
-      // Недоступна БД не доводить зависання репліки; прийом у цей час відхиляється й так.
+      // Недоступна БД не доводить зависання репліки: це вирішує проба stream, а не PG.
       this.logger.warn({
         alert: 'realtime_heartbeat_failed',
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      this.running = false;
+      this.beating = false;
     }
   }
 
-  private update(stale: boolean): void {
-    if (stale && !this.stale) {
+  private async probe(): Promise<void> {
+    if (this.probing || !this.reader.ready) return;
+    this.probing = true;
+    try {
+      const now = performance.now();
+      await Promise.all(
+        this.reader.streams.map(async (stream) => {
+          const cursor = this.reader.cursor(stream);
+          let tracker = this.trackers.get(stream);
+          if (!tracker) {
+            tracker = new LagTracker(this.maxLagMs, this.validForMs, now);
+            this.trackers.set(stream, tracker);
+          }
+          // Збій проби не оновлює вердикт: він спливе за `validForMs`, а не лишиться назавжди.
+          const head = await this.reader.head(stream).catch(() => undefined);
+          if (head !== undefined) tracker.check(head, cursor, now);
+        }),
+      );
+      this.update();
+    } finally {
+      this.probing = false;
+    }
+  }
+
+  private update(): void {
+    const stale = this.isStale();
+    if (stale && !this.wasStale) {
       this.logger.error({
         alert: 'ws_replica_stale',
-        message: `Replica made no progress for more than ${this.maxLagMs} ms`,
+        message: `Replica lags behind the stream or cannot verify it for more than ${this.validForMs} ms`,
       });
       for (const handler of this.staleHandlers) handler();
     }
-    this.stale = stale;
+    this.wasStale = stale;
   }
 }
