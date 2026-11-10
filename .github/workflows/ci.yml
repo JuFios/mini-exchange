@@ -229,6 +229,8 @@ jobs:
         run: docker compose run --rm system-tests npm run settlement:redrive
       - name: Check wallet push to the private WebSocket
         run: docker compose run --rm system-tests npm run wallet:push
+      - name: Check the order sync recipe for the private WebSocket
+        run: docker compose run --rm system-tests npm run orders:sync
       - name: Diagnose failure before cleanup
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200
