@@ -67,6 +67,15 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
     this.redis.disconnect();
   }
 
+  /** Redis готовий лише з політикою, що зберігає pending-записи. */
+  async redisReady(): Promise<boolean> {
+    const [ping, policy] = await Promise.all([
+      this.redis.ping(),
+      this.redis.config('GET', 'maxmemory-policy'),
+    ]);
+    return ping === 'PONG' && Array.isArray(policy) && policy[1] === 'noeviction';
+  }
+
   /** Стан черги для адміністратора й метрик. */
   async queue() {
     const streams = await Promise.all(

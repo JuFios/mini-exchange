@@ -1,3 +1,5 @@
+import { LoggingModule } from './observability/logging';
+import { TerminusModule } from '@nestjs/terminus';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -13,6 +15,8 @@ import { HealthController } from './health.controller';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    LoggingModule,
+    TerminusModule,
     TypeOrmModule.forRootAsync({
       useFactory: () => ledgerDataSourceOptions(validateDatabaseEnv(process.env)),
     }),

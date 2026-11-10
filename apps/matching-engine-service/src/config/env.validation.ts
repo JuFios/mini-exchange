@@ -175,6 +175,21 @@ const schema = {
   SEQ_GAP_ALERT_MS: milliseconds,
   // Змінної немає в `.env`, написаних до PR з WebSocket, тож без неї сервіс має стартувати.
   WS_REPLICA_MAX_LAG_MS: (value: unknown, key: string) => milliseconds(value ?? '5000', key),
+  LOG_LEVEL: (value: unknown, key: string) => {
+    const level = required(value ?? 'info', key);
+    if (!/^(fatal|error|warn|info|debug|trace|silent)$/.test(level))
+      throw new Error(`Invalid ${key}`);
+    return level;
+  },
+  OTEL_SERVICE_NAME: (value: unknown, key: string) =>
+    required(value ?? 'matching-engine-service', key),
+  OTEL_TRACES_EXPORTER: (value: unknown, key: string) => {
+    const exporter = required(value ?? 'none', key);
+    if (exporter !== 'none' && exporter !== 'otlp') throw new Error(`Invalid ${key}`);
+    return exporter;
+  },
+  OTEL_EXPORTER_OTLP_ENDPOINT: (value: unknown, key: string) =>
+    settlementUrl(value ?? 'http://jaeger:4318', key),
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,

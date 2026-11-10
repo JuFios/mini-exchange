@@ -86,6 +86,20 @@ function consumerName(value: unknown, key: string): string {
 }
 
 const schema = {
+  LOG_LEVEL: (value: unknown, key: string) => {
+    const level = required(value ?? 'info', key);
+    if (!/^(fatal|error|warn|info|debug|trace|silent)$/.test(level))
+      throw new Error(`Invalid ${key}`);
+    return level;
+  },
+  OTEL_SERVICE_NAME: (value: unknown, key: string) => required(value ?? 'settlement-service', key),
+  OTEL_TRACES_EXPORTER: (value: unknown, key: string) => {
+    const exporter = required(value ?? 'none', key);
+    if (exporter !== 'none' && exporter !== 'otlp') throw new Error(`Invalid ${key}`);
+    return exporter;
+  },
+  OTEL_EXPORTER_OTLP_ENDPOINT: (value: unknown, key: string) =>
+    origin(value ?? 'http://jaeger:4318', key),
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,

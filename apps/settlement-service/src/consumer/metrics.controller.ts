@@ -1,9 +1,22 @@
 import { Controller, Get, Header } from '@nestjs/common';
+import { Gauge, Registry } from 'prom-client';
 import { SettlementConsumer } from './settlement-consumer.service';
 import { SettlementStats } from './settlement-stats';
 
 @Controller('metrics')
 export class MetricsController {
+  private readonly registry = new Registry();
+  private readonly pending = new Gauge({
+    name: 'settlement_pending',
+    help: 'Settlement stream entries pending acknowledgement',
+    registers: [this.registry],
+  });
+  private readonly lag = new Gauge({
+    name: 'settlement_stream_lag',
+    help: 'Settlement stream entries not yet delivered',
+    registers: [this.registry],
+  });
+
   constructor(
     private readonly stats: SettlementStats,
     private readonly consumer: SettlementConsumer,
@@ -24,11 +37,9 @@ export class MetricsController {
     // Недоступний Redis не повинен ховати лічильники процесу.
     const queue = await this.consumer.queue().catch(() => undefined);
     if (queue) {
-      lines.push(
-        `settlement_pending ${queue.streams.reduce((sum, { pending }) => sum + pending, 0)}`,
-        `settlement_stream_lag ${queue.streams.reduce((sum, { lag }) => sum + (lag ?? 0), 0)}`,
-      );
+      this.pending.set(queue.streams.reduce((sum, { pending }) => sum + pending, 0));
+      this.lag.set(queue.streams.reduce((sum, { lag }) => sum + (lag ?? 0), 0));
     }
-    return lines.join('\n') + '\n';
+    return lines.join('\n') + '\n' + (queue ? await this.registry.metrics() : '');
   }
 }

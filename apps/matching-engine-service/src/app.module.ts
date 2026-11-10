@@ -1,3 +1,5 @@
+import { LoggingModule } from './observability/logging';
+import { TerminusModule } from '@nestjs/terminus';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -11,6 +13,8 @@ import { OutboxRelay } from './outbox/outbox-relay.service';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
+    LoggingModule,
+    TerminusModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<EngineEnv, true>) =>

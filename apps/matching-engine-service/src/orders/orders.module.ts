@@ -1,3 +1,4 @@
+import { TerminusModule } from '@nestjs/terminus';
 import { CommittedBook } from '../engine/committed-book';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CommandApplier } from '../engine/command-applier';
@@ -35,7 +36,7 @@ import { MarketController } from './market.controller';
 import { InstrumentCatalog } from './instrument-catalog';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, Instrument]), JwtModule.register({})],
+  imports: [TypeOrmModule.forFeature([Order, Instrument]), JwtModule.register({}), TerminusModule],
   controllers: [
     MarketController,
     OrdersController,

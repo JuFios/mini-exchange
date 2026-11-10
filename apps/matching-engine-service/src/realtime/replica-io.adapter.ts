@@ -1,7 +1,8 @@
+import { wsClients } from '../observability/metrics';
 import type { IncomingMessage } from 'node:http';
 import { INestApplicationContext } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import type { ServerOptions } from 'socket.io';
+import type { Server, ServerOptions } from 'socket.io';
 import { ReplicaLagMonitor } from './replica-lag.monitor';
 
 const UNAVAILABLE =
@@ -18,7 +19,7 @@ export class ReplicaIoAdapter extends IoAdapter {
   }
 
   override createIOServer(port: number, options?: ServerOptions) {
-    return super.createIOServer(port, {
+    const server: Server = super.createIOServer(port, {
       ...options,
       allowRequest: (
         request: IncomingMessage,
@@ -29,5 +30,10 @@ export class ReplicaIoAdapter extends IoAdapter {
         request.socket.end(UNAVAILABLE);
       },
     });
+    server.engine.on('connection', (socket) => {
+      wsClients.inc();
+      socket.once('close', () => wsClients.dec());
+    });
+    return server;
   }
 }

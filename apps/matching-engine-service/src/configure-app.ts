@@ -1,3 +1,4 @@
+import { configureHttp } from './observability/http';
 import { DatabaseExceptionFilter } from './database/database-exception.filter';
 import { ReplicaIoAdapter } from './realtime/replica-io.adapter';
 import {
@@ -34,6 +35,7 @@ class RequestValidationPipe extends ValidationPipe {
 }
 
 export function configureApp(app: INestApplication): void {
+  configureHttp(app, 'Matching Engine');
   app.useGlobalPipes(
     new RequestValidationPipe({
       whitelist: true,
