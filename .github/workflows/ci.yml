@@ -69,7 +69,11 @@ jobs:
         env:
           DATABASE_PORT: ${{ job.services.postgres.ports[5432] }}
           REDIS_PORT: ${{ job.services.redis.ports[6379] }}
-        run: npm run test:e2e
+          REDIS_ID: ${{ job.services.redis.id }}
+          REDIS_PASSWORD: exchange-redis-local-only
+        run: |
+          docker exec "$REDIS_ID" redis-cli -e CONFIG SET requirepass "$REDIS_PASSWORD"
+          npm run test:e2e
       - name: Diagnose engine service failure
         if: failure()
         env:
@@ -127,7 +131,10 @@ jobs:
           LEDGER_DATABASE_NAME: ledger
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: ${{ job.services.redis.ports[6379] }}
+          REDIS_ID: ${{ job.services.redis.id }}
+          REDIS_PASSWORD: exchange-redis-local-only
         run: |
+          docker exec "$REDIS_ID" redis-cli -e CONFIG SET requirepass "$REDIS_PASSWORD"
           npm run migration:run
           for _ in src/migrations/*.ts; do
             npm run migration:revert
@@ -213,8 +220,21 @@ jobs:
         run: |
           docker compose build system-tests
           docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
-      - name: Start isolated system stack
+      - name: Start isolated system stack with production auth limits
+        env:
+          SYSTEM_AUTH_RATE_LIMIT: '10'
+          SYSTEM_LOGIN_EMAIL_RATE_LIMIT: '10'
         run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Check frontend auth limits and trusted ingress
+        run: docker compose run --rm --no-deps system-tests npm run rate-limit
+      - name: Restore system load limits
+        run: |
+          docker compose up -d --wait --wait-timeout 240 matching-engine-1 matching-engine-2
+          docker compose up -d --wait --force-recreate --no-deps engine-lb
+      - name: Check trace propagation, redaction and Redis authentication
+        run: docker compose run --rm --no-deps system-tests npm run trace
+      - name: Check session revocation across HTTP and WebSocket
+        run: docker compose run --rm --no-deps system-tests npm run session:revocation
       - name: Check WebSocket transport through both listeners
         run: docker compose run --rm system-tests npm run realtime:transport
       - name: Check graceful ownership transfer

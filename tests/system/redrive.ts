@@ -30,7 +30,7 @@ async function main() {
       const to = new Date(Date.now() + 60_000).toISOString();
       const response = await request(
         `/admin/reconciliation?from=${from}&to=${to}`,
-        'GET',
+        'POST',
         admin,
         undefined,
         settlement,

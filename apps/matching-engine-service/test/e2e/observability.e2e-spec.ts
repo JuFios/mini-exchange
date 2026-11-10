@@ -1,4 +1,5 @@
 import { engineApp } from './engine-app';
+import { LeaseManager } from '../../src/ownership/lease-manager';
 
 const api = engineApp();
 
@@ -49,4 +50,12 @@ it('exposes the engine metrics and documented HTTP routes', async () => {
       '/internal/trades',
     ]),
   );
+});
+
+it('reports Redis loss through readiness while liveness stays available', async () => {
+  const redis = api.app().get(LeaseManager).locks.client;
+  expect((await api.request('/ready')).status).toBe(200);
+  redis.disconnect();
+  expect((await api.request('/ready')).status).toBe(503);
+  expect((await api.request('/health')).status).toBe(200);
 });
