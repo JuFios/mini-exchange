@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createConnection } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
 import { promisify } from 'node:util';
-import { docker, request } from './helpers';
+import { docker, request, until } from './helpers';
 
 const frontend = 'http://frontend:3000';
 const login = (base = frontend, headers: Record<string, string> = {}) =>
@@ -18,6 +19,43 @@ const login = (base = frontend, headers: Record<string, string> = {}) =>
     base,
     { origin: base, ...headers },
   );
+
+async function checkIngressCapacity() {
+  // Повні заголовки й неповне тіло утримують слот nginx без навантаження на bcrypt або PG.
+  const clients = Array.from({ length: 64 }, () =>
+    createConnection({ host: 'engine-lb', port: 3001 }),
+  );
+  try {
+    await Promise.all(
+      clients.map(
+        (socket) =>
+          new Promise<void>((resolve, reject) => {
+            socket.on('error', reject);
+            socket.once('connect', () => {
+              socket.write(
+                'POST /auth/login HTTP/1.1\r\nHost: engine-lb\r\nContent-Length: 100\r\n\r\n{',
+              );
+              resolve();
+            });
+          }),
+      ),
+    );
+    await until(
+      async () => (await request('/instruments')).status,
+      (status) => status === 429,
+      3000,
+    );
+    assert.equal((await request('/instruments/XYZ/book')).status, 200);
+    assert.equal((await request('/health')).status, 200);
+  } finally {
+    for (const socket of clients) socket.destroy();
+  }
+  await until(
+    async () => (await request('/instruments')).status,
+    (status) => status === 200,
+    3000,
+  );
+}
 
 async function main() {
   if (process.argv.includes('--peer')) {
@@ -80,7 +118,10 @@ async function main() {
     (await login('http://engine-lb:3000', { 'x-forwarded-for': result.ip })).status,
     429,
   );
-  console.log(`clientA=10+429 clientB=${result.status} forgedEngine=429 forgedFrontend=429`);
+  await checkIngressCapacity();
+  console.log(
+    `clientA=10+429 clientB=${result.status} forgedEngine=429 forgedFrontend=429 ingressSlots=64 book=200`,
+  );
 }
 
 main().catch((error) => {

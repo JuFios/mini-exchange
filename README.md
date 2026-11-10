@@ -57,12 +57,13 @@ docker compose up --build
 `npm run migration:revert` відкочує одну міграцію. Перевіряйте відкат на окремій
 тестовій БД, бо відкат початкової міграції видаляє таблиці та їхні дані.
 
-Для settlement поза Compose задайте `LEDGER_DATABASE_*`, адресу Redis, власні
+Для settlement поза Compose задайте `LEDGER_DATABASE_*`, адресу Redis і `REDIS_PASSWORD`, власні
 `INTERNAL_API_TOKEN` і `JWT_ACCESS_SECRET` та початкові демобаланси за прикладом
 `apps/settlement-service/.env.example`. У каталозі settlement виконайте
 `npm ci` і `npm run migration:run` перед `npm run start:dev`. У конфігурації engine
 вкажіть доступний `SETTLEMENT_URL` і той самий внутрішній токен. Для доступу до
-`GET /wallets` settlement має використовувати секрет access-токена від engine.
+`GET /wallets` settlement має використовувати секрет access-токена від engine і звертатися
+до його внутрішнього listener через `ENGINE_INTERNAL_URL`.
 
 Стандартний стек вмикає резерви. Том, у якому є заявки з вимкненими резервами, engine
 відхиляє при старті; див. розділ «Резерви та гаманці». Для чистого запуску виконайте
@@ -76,7 +77,7 @@ Bootstrap використовує чинну адміністративну р�
 пароль адміністратора. Для віддаленого стеку передайте його як `POSTGRES_PASSWORD`.
 
 
-- engine-lb: http://localhost:3001; репліки для діагностики: `127.0.0.1:3101` і `127.0.0.1:3102`
+- engine-lb: http://localhost:3001. Для діагностики окремої репліки використовуйте `docker compose exec`.
 - settlement-service: http://localhost:3002
 - frontend: http://localhost:3000
 - PostgreSQL: `127.0.0.1:5433`
@@ -92,6 +93,28 @@ AOF, невдалі healthcheck не враховуються протягом `
 Для більшого набору даних збільште значення, наприклад `REDIS_HEALTH_START_PERIOD=10m`, і
 відповідно `--wait-timeout`.
 
+### Ліміти, стан сервісів і трасування
+
+- Engine обмежує нові заявки до 10 за секунду і 300 за хвилину на користувача. Завершений повтор
+  із тим самим `Idempotency-Key` читається з PostgreSQL до Redis. Скасування не витрачає ліміт.
+- Вхід, реєстрація й refresh мають спільний ліміт 10 за хвилину на IP. Вхід також має 10 спроб за
+  15 хвилин на нормалізований email. Публічні читання мають 120 запитів за хвилину на IP.
+  HTTP-ліміти спільні для реплік, а відповідь 429 від engine містить `Retry-After` у секундах.
+- `book.subscribe` має 20 спроб за 10 с на сокет. Engine.IO розриває з'єднання при кадрі понад
+  16 КіБ. nginx допускає 64 WebSocket-з'єднання на IP і 64 одночасні HTTP-запити для маршрутів
+  поза заявками, читанням книги й перевірками стану.
+- `/health` перевіряє доступність процесу. `/ready` перевіряє міграції PostgreSQL і Redis з
+  `maxmemory-policy=noeviction`; engine додатково перевіряє lag WebSocket. Обидва сервіси
+  публікують Swagger на `/docs` і `/docs-json`. `CORS_ORIGINS` задає дозволені HTTP origins.
+- Pino записує структуровані журнали з `trace_id` і `span_id`. Значення заголовків із токенами,
+  cookies і паролі приховані. Одна W3C-траса пов'язує заявку, matching, угоду, outbox,
+  Redis Stream і проводку в ledger. За замовчуванням спани лишаються локальними. Щоб надсилати
+  їх колектору, задайте `OTEL_TRACES_EXPORTER=otlp` і `OTEL_EXPORTER_OTLP_ENDPOINT` у середовищі backend.
+
+Redis вимагає той самий `REDIS_PASSWORD` (щонайменше 16 символів) на сервері й усіх клієнтах.
+Compose зберігає дані в наявному AOF-томі. Після зміни пароля перестворіть Redis і обидва
+backend-сервіси однією командою `docker compose up -d --build --wait`, з тим самим іменем проєкту.
+
 ### Віддалене розгортання
 
 Локальний Compose публікує порти `3000` і `3001` лише на `127.0.0.1`.
@@ -99,11 +122,11 @@ AOF, невдалі healthcheck не враховуються протягом `
 хостів використовуйте `docker-compose.remote.yml`. Він публікує ці порти на всіх
 інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
 `ADMIN_PASSWORD`, `INTERNAL_API_TOKEN`, `POSTGRES_PASSWORD`, `ENGINE_DB_PASSWORD`,
-`LEDGER_DB_PASSWORD` та адресу WebSocket, доступну браузеру. Використовуйте окремий
+`LEDGER_DB_PASSWORD`, `REDIS_PASSWORD`, `CORS_ORIGINS` та адресу WebSocket, доступну браузеру. Використовуйте окремий
 Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
 отримає окремі БД та власні облікові дані. Override передає секрети реплікам,
-settlement і службам запуску за їхніми ролями. Прямі порти реплік і settlement
-лишаються на loopback. Публічний nginx listener `:3001` блокує
+settlement і службам запуску за їхніми ролями. Settlement лишається на loopback. Репліки engine
+доступні через nginx, а їхні порти не публікуються. Публічний nginx listener `:3001` блокує
 `/internal/` і `/metrics` (також `/Metrics` і `/metrics/`) та перезаписує `X-Forwarded-For`. Внутрішній `:8080` не публікується;
 frontend звертається до нього через `MATCHING_ENGINE_URL=http://engine-lb:8080`.
 
@@ -117,6 +140,8 @@ export INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
 export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export ENGINE_DB_PASSWORD="$(openssl rand -hex 32)"
 export LEDGER_DB_PASSWORD="$(openssl rand -hex 32)"
+export REDIS_PASSWORD="$(openssl rand -hex 32)"
+export CORS_ORIGINS=https://exchange.example.com
 export ENGINE_PUBLIC_WS_URL=wss://exchange.example.com
 docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 ```
@@ -382,6 +407,7 @@ HTTP-тесті точності використано дійсний симв�
   export LEDGER_DATABASE_HOST=127.0.0.1 LEDGER_DATABASE_PORT=${pg_address##*:}
   export LEDGER_DATABASE_USER=exchange LEDGER_DATABASE_PASSWORD=exchange LEDGER_DATABASE_NAME=ledger
   export REDIS_HOST=127.0.0.1 REDIS_PORT=${redis_address##*:}
+  export REDIS_PASSWORD=${REDIS_PASSWORD:-exchange-redis-local-only}
   (cd apps/matching-engine-service && npm run test:e2e)
   (cd apps/settlement-service && npm run test:e2e)
 )
@@ -584,17 +610,18 @@ Redis 7 прибирає з PEL записи, обрізані `XTRIM`; їх pay
 `GET /admin/queue` (admin) показує довжину, `pending`, `lag` кожного stream, довжину DLQ і кількість
 `settlement_failures`. `GET /metrics` settlement віддає `settlement_trades_total{result}`,
 `settlement_dlq_total`, `settlement_trimmed_pending_total`, `settlement_pending`, `settlement_stream_lag`.
-Метрики поки текстові, без `prom-client`.
+Стан черги збирається через `prom-client`. Лічильники процесу лишаються доступними при збої Redis.
 
 ### Звірка
 
 ```bash
-curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   'http://localhost:3002/admin/reconciliation?from=2026-01-01T00:00:00.000Z&to=2026-12-31T00:00:00.000Z&instrument=ABC'
 docker compose exec -T settlement-service node dist/reconcile --from 2026-01-01T00:00:00.000Z
 ```
 
-Токен адміністратора видає `POST /auth/login` engine; settlement приймає його, бо секрет access-токена спільний.
+Токен адміністратора видає `POST /auth/login` engine. Settlement перевіряє підпис і через
+внутрішній API engine перевіряє, що сесія активна. HTTP-звірку запускає `POST`; `GET` повертає 404.
 Період `[from, to)` рахується за `executed_at` з точністю до мілісекунди. Без `from` і `to`
 береться вся історія до зараз. Команда `reconcile` не запускає consumer. Код виходу: 0 — розбіжностей немає,
 1 — є розбіжність, 2 — engine чи БД недоступні.
@@ -809,6 +836,10 @@ curl -fsS http://localhost:3000/api/config
 символу; сторінка при цьому показує лише «Інструмент не знайдено». Якщо сесія завершилась, будь-який запит із відповіддю `401`
 переспрямовує на `/login`. Middleware оновлює access-токен за 30 с до `exp`, тож запит не доходить до
 backend із токеном, що встиг прострочитись; збій такого раннього оновлення не відбирає ще чинний токен.
+Access-токен містить `sid`. Вихід відкликає його для нових HTTP-запитів і WebSocket-handshake,
+навіть якщо відповідь refresh прийшла із запізненням. Уже відкрита приватна namespace розривається на
+`exp`; під час виходу frontend закриває свій сокет. Access-токени старого формату оновлюються через
+чинний refresh-токен або повторний вхід.
 
 Вкладки одного браузера ділять cookie. Тому кожна вкладка запам'ятовує користувача з відповіді
 `POST /api/auth/ws-token` і додає його як `x-session-user` до запитів `/api/engine` та
@@ -822,7 +853,8 @@ backend із токеном, що встиг прострочитись; збі�
 кінцевий стан ще невідомий. Поля ціни й кількості без `maxLength` відхиляють задовге вставлення
 замість того, щоб мовчки обрізати його, а нова чернетка під час запиту не очищується.
 
-Звірка через `/api/settlement/admin/reconciliation` може тривати хвилини: nginx на `:3000` чекає на неї
+Сторінка «Стан системи» запускає звірку через `POST /api/settlement/admin/reconciliation` із перевіркою
+`Origin` та користувача вкладки. Звірка може тривати хвилини: nginx на `:3000` чекає на неї
 310 с (типові 60 с обривали її відповіддю `504`), а Node-клієнт frontend сам обмежує очікування 300 с.
 
 `/orders` та `/orderbook` переспрямовують на `/exchange/ABC`. Якщо сесії немає,
@@ -1021,8 +1053,9 @@ drain і recovery мають сторожовий таймер: без прог�
 `GET /admin/instruments` повертає власника, епоху, TTL, `lastAppliedSeq`, `maxSeq`, backlog,
 best bid/ask, кількість рівнів і resting-заявок та `outboxBacklog`. `/metrics` містить
 лічильники mismatch, fenced writes, помилок renew і стан halted. Лічильники належать одній
-репліці, тому `/metrics` недоступний через публічний `:3001` (404): збирайте його з
-`127.0.0.1:3101` і `:3102`. Збій Redis не ховає решту полів: `leaseTtlMs` тоді `null`. Для розбору halted:
+репліці. Через публічний `:3001` шлях `/metrics` повертає 404. Виконайте
+`docker compose exec -T matching-engine-1 wget -qO- http://127.0.0.1:3001/metrics`
+і повторіть для `matching-engine-2`. Збій Redis не ховає решту полів: `leaseTtlMs` тоді `null`. Для розбору halted:
 
 ```sql
 SELECT instrument,status,owner_instance,owner_epoch,last_applied_seq,
@@ -1062,7 +1095,13 @@ Runner має Docker CLI і socket для керування контейнер�
   printf 'Compose project: %s\n' "$COMPOSE_PROJECT_NAME"
   docker compose build system-tests
   docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
-  docker compose up -d --build --wait --wait-timeout 240
+  SYSTEM_AUTH_RATE_LIMIT=10 SYSTEM_LOGIN_EMAIL_RATE_LIMIT=10 \
+    docker compose up -d --build --wait --wait-timeout 240
+  docker compose run --rm --no-deps system-tests npm run rate-limit
+  docker compose up -d --wait --wait-timeout 240 matching-engine-1 matching-engine-2
+  docker compose up -d --wait --force-recreate --no-deps engine-lb
+  docker compose run --rm --no-deps system-tests npm run trace
+  docker compose run --rm --no-deps system-tests npm run session:revocation
   docker compose run --rm system-tests npm run realtime:transport
   docker compose run --rm system-tests npm run chaos:sigterm
   docker compose run --rm system-tests npm run ownership:kill
@@ -1113,3 +1152,7 @@ Socket.IO працює лише через WebSocket. Клієнтам потр�
 Обсяг цінового рівня — точна сума залишків із 8 десятковими знаками у рядку.
 Він може перевищувати максимальний обсяг однієї заявки: перевірка 10 000 заявок
 по 1 000 000 і ще одного lot перевіряє REST та WebSocket без переповнення агрегату.
+
+Тести auth і звірки використовують актуальний формат JWT із `sid`. Тести звірки надсилають
+`POST` із тими самими параметрами й перевірками результату. Сценарії відмови Redis підміняють
+операцію лічильника, яку викликає intake; вони зберігають перевірки завершеного повтору і скасування.
