@@ -106,7 +106,11 @@ export function Exchange({ symbol, admin }: { symbol: string; admin: boolean }) 
                 error={market.tradeError}
               />
               <aside className="account-rail" aria-label="Торгівля та баланси">
-                <OrderForm instrument={instrument} onOrder={account.updateOrder} />
+                <OrderForm
+                  instrument={instrument}
+                  orders={account.orders}
+                  onOrder={account.updateOrder}
+                />
                 <WalletPanel wallets={account.wallets} loading={account.status === 'loading'} />
               </aside>
               <OrdersPanel

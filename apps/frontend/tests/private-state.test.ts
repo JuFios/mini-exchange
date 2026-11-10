@@ -1,8 +1,41 @@
 import assert from 'node:assert/strict';
 import { afterEach, it, mock } from 'node:test';
 import { EventEmitter, once } from 'node:events';
+import { type Order, orderFeedback } from '../lib/private-state';
 
 afterEach(() => mock.restoreAll());
+
+it('reports a self-trade cancellation when the submitted order reaches its final version', () => {
+  const pending: Order = {
+    id: 'buy',
+    instrument: 'ABC',
+    side: 'buy',
+    price: '22222.00',
+    quantity: '2.00000000',
+    createdAt: '2026-11-10T00:00:00.000Z',
+    status: 'pending',
+    version: 0,
+    remainingQuantity: '2.00000000',
+    filledQuantity: '0.00000000',
+  };
+  const cancelled: Order = {
+    ...pending,
+    status: 'cancelled',
+    version: 1,
+    cancelReason: 'self_trade_prevented',
+  };
+  const notice = {
+    message: 'Заявку скасовано, щоб уникнути угоди з власною заявкою.',
+    failed: true,
+  };
+  assert.equal(orderFeedback(pending, [{ ...cancelled, id: 'other' }]).failed, false);
+  assert.deepEqual(orderFeedback(cancelled, [pending]), notice);
+  assert.deepEqual(orderFeedback(pending, [cancelled]), notice);
+  assert.deepEqual(orderFeedback(pending, [{ ...cancelled, filledQuantity: '1.00000000' }]), {
+    message: 'Залишок заявки скасовано, щоб уникнути угоди з власною заявкою.',
+    failed: true,
+  });
+});
 
 it('accepts wallet versions five and six while ignoring four', () => {
   const { mergeWallet } = require('../lib/private-state');

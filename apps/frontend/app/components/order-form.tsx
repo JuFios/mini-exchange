@@ -8,7 +8,7 @@ import {
   type OrderInput,
   submitValidatedOrder,
 } from '../../lib/decimal';
-import { type Order, attemptKey, projectOrder } from '../../lib/private-state';
+import { type Order, attemptKey, orderFeedback, projectOrder } from '../../lib/private-state';
 
 export interface Instrument extends AmountLimits {
   symbol: string;
@@ -45,23 +45,28 @@ async function sendOrder(input: OrderInput) {
 
 export function OrderForm({
   instrument,
+  orders,
   onOrder,
 }: {
   instrument: Instrument;
+  orders: readonly Order[];
   onOrder: (order: Order) => void;
 }) {
   const [side, setSide] = useState<OrderInput['side']>('buy');
   const [errors, setErrors] = useState<AmountErrors>({});
-  const [message, setMessage] = useState('');
-  const [failed, setFailed] = useState(false);
+  const [submitted, setSubmitted] = useState<Order>();
+  const [failure, setFailure] = useState('');
   const [busy, setBusy] = useState(false);
+  const feedback = submitted ? orderFeedback(submitted, orders) : undefined;
+  const message = failure || feedback?.message;
+  const failed = Boolean(failure) || feedback?.failed;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    setMessage('');
-    setFailed(false);
+    setSubmitted(undefined);
+    setFailure('');
     setBusy(true);
     try {
       const { errors, result } = await submitValidatedOrder(
@@ -77,15 +82,10 @@ export function OrderForm({
       setErrors(errors);
       if (!result) return;
       onOrder(result);
-      setMessage(
-        result.status === 'pending'
-          ? 'Заявку прийнято. Очікуємо виконання команди.'
-          : 'Заявку оброблено.',
-      );
+      setSubmitted(result);
       form.reset();
     } catch (error) {
-      setFailed(true);
-      setMessage(errorMessage(error));
+      setFailure(errorMessage(error));
     } finally {
       setBusy(false);
     }

@@ -53,6 +53,30 @@ export function mergeWallet(current: Wallet | undefined, update: Wallet): Wallet
 export const activeOrder = (order: Order) =>
   order.status === 'pending' || order.status === 'open' || order.status === 'partially_filled';
 
+export function orderFeedback(submitted: Order, orders: readonly Order[]) {
+  const order =
+    orders.find(({ id, version }) => id === submitted.id && version > submitted.version) ??
+    submitted;
+
+  if (order.status === 'pending') {
+    return { message: 'Заявку прийнято. Очікуємо виконання команди.', failed: false };
+  }
+  if (order.status === 'filled') return { message: 'Заявку виконано.', failed: false };
+  if (order.status !== 'cancelled') return { message: 'Заявку додано до книги.', failed: false };
+
+  if (order.cancelReason === 'self_trade_prevented') {
+    return {
+      message:
+        Number(order.filledQuantity) > 0
+          ? 'Залишок заявки скасовано, щоб уникнути угоди з власною заявкою.'
+          : 'Заявку скасовано, щоб уникнути угоди з власною заявкою.',
+      failed: true,
+    };
+  }
+  if (order.cancelReason === 'rejected') return { message: 'Заявку відхилено.', failed: true };
+  return { message: 'Заявку скасовано.', failed: false };
+}
+
 export function validOrderUpdate(update: OrderUpdate) {
   return (
     update &&
