@@ -127,6 +127,21 @@ describe('a replica that loses its stream probes', () => {
     monitor.onModuleDestroy();
   });
 
+  it('keeps a lagging replica out of the pool after a single step of its cursor', async () => {
+    const { reader, monitor } = build(5000);
+    reader.heads.set(STREAMS[0], 20n);
+    await run(10_000);
+    expect(monitor.healthy()).toBe(false);
+
+    // Читач зрушив на одну позицію й знову завмер: Redis відповідає, але репліка не наздоганяє.
+    reader.cursors.set(STREAMS[0], 11n);
+    for (let tick = 0; tick < 6; tick++) {
+      await run(HEARTBEAT_INTERVAL_MS);
+      expect(monitor.healthy()).toBe(false);
+    }
+    monitor.onModuleDestroy();
+  });
+
   it('never trusts a probe that has not succeeded since the replica started', async () => {
     const { reader, monitor } = build(5000);
     reader.probeFails = true;
