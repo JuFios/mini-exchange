@@ -1,0 +1,88 @@
+import fc from 'fast-check';
+import { buildLegacyGateway, FakeSocket } from '../helpers/fake-legacy-gateway';
+
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
+
+describe('legacy book push after a failed read', () => {
+  it('retries and delivers the book without another command', async () => {
+    let failNext = false;
+    const env = buildLegacyGateway(() => {
+      const failed = failNext;
+      failNext = false;
+      return failed;
+    });
+    const socket = env.socket();
+    const call = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(200);
+    await call;
+    env.state.reads = 0;
+
+    failNext = true;
+    env.change();
+    await jest.advanceTimersByTimeAsync(5000);
+
+    expect(socket.connected).toBe(true);
+    expect(socket.received.at(-1)).toBe(1);
+  });
+
+  it('closes the room once the retries are used up, with a bounded number of reads', async () => {
+    let broken = false;
+    const env = buildLegacyGateway(() => broken);
+    const socket = env.socket();
+    const call = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(200);
+    await call;
+    env.state.reads = 0;
+
+    broken = true;
+    env.change();
+    await jest.advanceTimersByTimeAsync(10_000);
+
+    expect(socket.connected).toBe(false);
+    expect(env.state.closedRooms).toBe(1);
+    // Перша спроба і три повтори.
+    expect(env.state.reads).toBe(4);
+  });
+
+  it('never leaves a connected subscriber on a stale book, whatever fails', async () => {
+    const op = fc.oneof(
+      fc.record({ kind: fc.constant('subscribe' as const), n: fc.integer({ min: 0, max: 2 }) }),
+      fc.record({ kind: fc.constant('change' as const), n: fc.constant(0) }),
+      fc.record({ kind: fc.constant('wait' as const), n: fc.integer({ min: 1, max: 700 }) }),
+    );
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(op, { minLength: 1, maxLength: 30 }),
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 12 }),
+        async (ops, pattern) => {
+          jest.useFakeTimers();
+          let reads = 0;
+          const env = buildLegacyGateway(() => pattern[reads++ % pattern.length]);
+          const sockets = Array.from({ length: 3 }, () => env.socket());
+          const confirmed = new Set<FakeSocket>();
+          for (const { kind, n } of ops) {
+            if (kind === 'subscribe') {
+              const socket = sockets[n];
+              if (socket.connected)
+                void env.gateway.subscribe(socket as never, 'ABC').then((ack) => {
+                  if (ack === undefined) confirmed.add(socket);
+                });
+            } else if (kind === 'change') env.change();
+            else await jest.advanceTimersByTimeAsync(n);
+          }
+          await jest.advanceTimersByTimeAsync(20_000);
+
+          for (const socket of sockets) {
+            // Клієнт, якому підписку підтверджено, або бачить свіжу книгу, або вже розірваний
+            // і перепідключиться. Застарілою назавжди вона лишатися не може.
+            if (socket.connected && confirmed.has(socket))
+              expect(socket.received.at(-1)).toBe(env.state.version);
+          }
+          jest.useRealTimers();
+        },
+      ),
+      { numRuns: 150 },
+    );
+  });
+});
