@@ -24,7 +24,8 @@ export default function OrderBookPage() {
     <main style={{ maxWidth: 480, margin: '60px auto' }}>
       <h1>Order Book — {INSTRUMENT}</h1>
       <p>Статус з&apos;єднання: {status}</p>
-      <div style={{ display: 'flex', gap: 32 }}>
+      {/* Книга без підтвердження актуальності не повинна виглядати чинною. */}
+      <div style={{ display: 'flex', gap: 32, opacity: status === 'live' ? 1 : 0.5 }}>
         <div>
           <h3>Bids</h3>
           <ul>

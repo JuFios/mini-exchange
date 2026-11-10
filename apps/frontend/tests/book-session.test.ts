@@ -127,6 +127,30 @@ describe('the book page connection', () => {
     assert.equal(socket.subscribes, 2);
   });
 
+  it('starts the resubscribe delay over once a book has arrived', () => {
+    const { socket, clock } = start();
+    const refuse = () => {
+      const call = socket.emitted.filter(({ event }) => event === 'subscribe').at(-1)!;
+      (call.args.find((arg) => typeof arg === 'function') as (reply: unknown) => void)({
+        ok: false,
+      });
+    };
+    socket.fire('connect');
+    refuse();
+    clock.tick(RETRY_MIN_MS);
+    refuse();
+    clock.tick(RETRY_MIN_MS * 2);
+    assert.equal(socket.subscribes, 3);
+
+    socket.fire('book', BOOK);
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    const before = socket.subscribes;
+    refuse();
+    clock.tick(RETRY_MIN_MS);
+    assert.equal(socket.subscribes, before + 1);
+  });
+
   it('stops retrying the subscription once the book arrives', () => {
     const { socket, clock } = start();
     socket.fire('connect');
