@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   matching-engine-service:
-    name: Matching engine
+    name: 'Engine: unit + e2e'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -83,7 +83,7 @@ jobs:
           done
 
   settlement-service:
-    name: Settlement
+    name: 'Settlement: unit + e2e'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -147,7 +147,7 @@ jobs:
           done
 
   frontend:
-    name: Frontend
+    name: 'Frontend: lint, unit, build'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -200,7 +200,7 @@ jobs:
 
 
   system:
-    name: Ownership system checks
+    name: System tests
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/solution'
     runs-on: ubuntu-latest
     timeout-minutes: 15
