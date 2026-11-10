@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   matching-engine-service:
-    name: Matching engine
+    name: 'Engine: unit + e2e'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -83,7 +83,7 @@ jobs:
           done
 
   settlement-service:
-    name: Settlement
+    name: 'Settlement: unit + e2e'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -147,7 +147,7 @@ jobs:
           done
 
   frontend:
-    name: Frontend
+    name: 'Frontend: lint, unit, build'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -172,7 +172,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      NEXT_PUBLIC_WS_URL: wss://exchange.example.test
+      ENGINE_PUBLIC_WS_URL: wss://exchange.example.test
     steps:
       - uses: actions/checkout@v4
       - name: Verify the local and remote port bindings
@@ -186,7 +186,7 @@ jobs:
           for service in postgres-bootstrap engine-migrate settlement-migrate; do
             test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q "$service")")" = 0
           done
-          docker compose exec -T frontend sh -ec 'grep -rqF "$1" .next/static/chunks/app/orderbook' sh "$NEXT_PUBLIC_WS_URL"
+          curl -fsS http://127.0.0.1:3000/api/config | jq -e --arg url "$ENGINE_PUBLIC_WS_URL" '.wsUrl == $url'
           docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
             jq -e '(. // {}) == {}'
       - name: Verify Redis volume migration
@@ -200,7 +200,7 @@ jobs:
 
 
   system:
-    name: Ownership system checks
+    name: System tests
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/solution'
     runs-on: ubuntu-latest
     timeout-minutes: 15

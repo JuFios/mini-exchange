@@ -13,8 +13,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"{app,lib,tests}/**/*.{ts,tsx}\" next.config.js",
-    "format:check": "prettier --check \"{app,lib,tests}/**/*.{ts,tsx}\" next.config.js",
+    "format": "prettier --write \"{app,lib,tests}/**/*.{ts,tsx}\" middleware.ts next.config.js app/globals.css",
+    "format:check": "prettier --check \"{app,lib,tests}/**/*.{ts,tsx}\" middleware.ts next.config.js app/globals.css",
     "test": "tsc -p tsconfig.test.json && node --test node_modules/.cache/book-session-test/tests/*.test.js"
   },
   "dependencies": {
