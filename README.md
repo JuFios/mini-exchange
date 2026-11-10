@@ -641,14 +641,22 @@ relay публікує їх знову, а settlement ідемпотентно �
 спершу виправте причину з `settlement_failures`, потім повторіть redrive. `stuck_reservation` називає
 `reservationId`, він дорівнює `orderId`. Що передати, залежить від стану заявки в engine:
 
-- `cancelled`: резерв закриває `order.closed`, тож передайте `reservationId` в `orderIds`;
+- `cancelled` без виконання (`filledQuantity` = 0): резерв закриває `order.closed`, тож передайте `reservationId` в `orderIds`;
+- `cancelled` із частковим виконанням (`filledQuantity` > 0): `order.closed` звільняє лише невиконаний залишок, а виконану
+  частину закриває `trade.executed`. Якщо подію угоди втрачено, а `order.closed` вже оброблено, повтор лише за `orderIds`
+  відповість `requeued: 1`, але нічого не змінить: проводка `release:<id>` уже існує, і резерв лишиться активним. Передайте
+  `orderIds` разом із `tradeIds` усіх угод заявки (запит нижче);
 - `filled` (залишок нуль): `order.closed` для неї не пишеться, резерв закриває `trade.executed`. Redrive за
-  `orderIds` поверне `requeued: 0`. Знайдіть угоди заявки в базі engine й передайте їхні ID в `tradeIds`:
+  `orderIds` поверне `requeued: 0`. Передайте в `tradeIds` угоди заявки.
+
+Угоди заявки знайдіть у базі engine:
 
 ```bash
 docker compose exec -T exchange-db psql -U engine -d exchange -Atc \
   "SELECT trade_id FROM trades WHERE buyer_order_id = '<orderId>' OR seller_order_id = '<orderId>'"
 ```
+
+Після redrive запустіть звірку ще раз: `stuck_reservation` має зникнути. Якщо ні, перевірте стан заявки й повторіть з усіма її угодами.
 
 Redrive вибирає події за ID, а не за датою, тож угода поза періодом звірки теж знаходиться. Якщо
 `requeued` усе ще нуль, події немає в outbox: перевірте, що заявка справді термінальна, і не змінюйте ledger вручну.
@@ -717,11 +725,22 @@ namespace (`REPLICA_UNAVAILABLE`) бачить лише клієнт, чия р�
 | `order.updated` | `{orderId, instrument, version, status, remainingQuantity, filledQuantity, cancelReason?}` |
 | `wallet.updated` | `{asset, available, reserved, version}`; settlement пише її після кожного руху коштів (резерв, угода, release) |
 
-Приватні події не мають `seq` і під час розриву губляться. Після кожного (пере)підключення клієнт спершу
-підписується на `/private` і буферизує події, потім читає `GET /orders?status=active` і `GET /wallets`.
+Приватні події не мають `seq` і під час розриву губляться. Після кожного (пере)підключення клієнт:
+
+1. підписується на `/private` і буферизує події;
+2. читає **всі** активні заявки сторінками `GET /orders?status=active&limit=100`, а наступну сторінку бере за `cursor`
+   останньої отриманої заявки (див. «Читання заявок і угод»), поки сторінка не порожня. Одного запиту мало: типовий ліміт 50,
+   тож 51-ша заявка інакше загубилася б;
+3. для кожної заявки, яку клієнт знає (з буфера чи з попереднього стану), але якої немає серед активних, читає
+   `GET /orders/:id`: `active` не віддає `filled` і `cancelled`, тож лише цей запит покаже її кінцевий стан. Буферизована
+   подія `open` не повинна відновити заявку, яка вже `filled` у базі;
+4. читає `GET /wallets`.
+
 Події з буфера й нові застосовуються лише якщо їхня `version` більша за `version` відповідного запису з REST
 (заявка за `orderId`, гаманець за `asset`); гаманцеві `version` порівнюють як цілі числа, а не як рядки.
-Так запізніла подія не відкотить баланс, який REST уже показав новішим.
+Так запізніла подія не відкотить баланс, який REST уже показав новішим. Сценарій `orders:sync` виконує ці кроки
+з 60 активними заявками й заявкою, що стала `filled` між подією та читанням.
+
 Кожна репліка читає весь stream `exchange:user-events` і віддає кожному сокету події його власника.
 Якщо `STREAM_MAXLEN` обрізав записи раніше, ніж репліка їх прочитала, `XREAD` просто повертає перший наявний, і прогалину ID не показує.
 Тому репліка після кожної пачки звіряє прочитане з лічильниками `XINFO STREAM` (`entries-added`, `length`; потрібен Redis 7.0+, у Compose `redis:7`).
@@ -767,6 +786,13 @@ docker compose run --rm system-tests npm run wallet:push
 Сценарій `wallet:push` підключає покупця, продавця й стороннього користувача до `/private` через `engine-lb`.
 Після угоди перші двоє отримують `wallet.updated` для base і quote з зростаючою `version`, остання подія
 збігається з `GET /wallets`, а сторонній користувач не отримує нічого.
+
+```bash
+docker compose run --rm system-tests npm run orders:sync
+```
+
+Сценарій `orders:sync` виконує процедуру синхронізації `/private` з README: 60 активних заявок читаються сторінками за курсором,
+а заявка, що стала `filled` під час розриву, береться за `GET /orders/:id` і не воскресає з буфера.
 
 Не використовуються Socket.IO Redis adapter і connection state recovery: відновлення стану робить snapshot.
 
@@ -951,6 +977,7 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose run --rm system-tests npm run ownership:blackhole
   docker compose run --rm system-tests npm run settlement:redrive
   docker compose run --rm system-tests npm run wallet:push
+  docker compose run --rm system-tests npm run orders:sync
 )
 ```
 
