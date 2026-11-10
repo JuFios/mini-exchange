@@ -8,5 +8,5 @@
     "outDir": "node_modules/.cache/book-session-test",
     "plugins": []
   },
-  "include": ["lib/book-session.ts", "tests/**/*.ts"]
+  "include": ["app/api/**/*.ts", "lib/book-session.ts", "tests/**/*.ts"]
 }
