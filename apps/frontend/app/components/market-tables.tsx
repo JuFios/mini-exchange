@@ -27,11 +27,13 @@ function Levels({
   side,
   quote,
   base,
+  onPick,
 }: {
   levels: Level[];
   side: 'buy' | 'sell';
   quote: string;
   base: string;
+  onPick?: (price: string, side: 'buy' | 'sell') => void;
 }) {
   const highest = Math.max(0, ...levels.map(({ quantity }) => Number(quantity)));
   return (
@@ -49,8 +51,24 @@ function Levels({
         </thead>
         <tbody>
           {levels.map(({ price, quantity, orders }) => (
-            <tr key={price}>
-              <td className={side}>{price}</td>
+            <tr
+              key={price}
+              className={onPick ? 'pickable' : undefined}
+              onClick={() => onPick?.(price, side === 'buy' ? 'sell' : 'buy')}
+            >
+              <td className={side}>
+                {onPick ? (
+                  <button
+                    type="button"
+                    className="level-price"
+                    title={side === 'buy' ? 'Продати за цією ціною' : 'Купити за цією ціною'}
+                  >
+                    {price}
+                  </button>
+                ) : (
+                  price
+                )}
+              </td>
               <td className="level-quantity">
                 <span
                   className={`level-fill ${side}`}
@@ -75,22 +93,41 @@ function Levels({
   );
 }
 
+// Ціни мають два знаки, тож різницю точно рахують сотими частками.
+function spread(book: BookState) {
+  const bid = book.bids[0]?.price;
+  const ask = book.asks[0]?.price;
+  if (!bid || !ask) return;
+  const cents = Math.round(Number(ask) * 100) - Math.round(Number(bid) * 100);
+  return cents < 0 ? undefined : (cents / 100).toFixed(2);
+}
+
 export function BookPanel({
   book,
   status,
   base,
   quote,
+  onPick,
 }: {
   book?: BookState;
   status: BookStatus;
   base: string;
   quote: string;
+  onPick?: (price: string, side: 'buy' | 'sell') => void;
 }) {
+  const gap = book && spread(book);
   return (
     <section className="panel book">
       <div className="panel-title">
         <h2>Книга заявок</h2>
-        {book && <span className="tag numeric">SEQ {book.seq}</span>}
+        <div className="title-tags">
+          {gap !== undefined && (
+            <span className="tag numeric" title="Різниця між кращими цінами продажу й купівлі">
+              СПРЕД {gap}
+            </span>
+          )}
+          {book && <span className="tag numeric">SEQ {book.seq}</span>}
+        </div>
       </div>
       {status === 'error' && (
         <p className="message error" role="alert">
@@ -100,8 +137,8 @@ export function BookPanel({
       {!book && status !== 'error' && <p className="empty">Очікуємо знімок книги…</p>}
       {book && (
         <div className={`book-grid ${status === 'live' ? '' : 'dimmed'}`}>
-          <Levels levels={book.bids} side="buy" base={base} quote={quote} />
-          <Levels levels={book.asks} side="sell" base={base} quote={quote} />
+          <Levels levels={book.bids} side="buy" base={base} quote={quote} onPick={onPick} />
+          <Levels levels={book.asks} side="sell" base={base} quote={quote} onPick={onPick} />
         </div>
       )}
     </section>

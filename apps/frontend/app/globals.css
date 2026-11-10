@@ -277,6 +277,15 @@ p {
   letter-spacing: -0.018em;
   font-weight: 720;
 }
+.title-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.order-heading {
+  flex-wrap: wrap;
+}
 .account-rail {
   display: grid;
   gap: 13px;
@@ -346,6 +355,21 @@ tbody tr + tr {
 }
 tbody tr:hover {
   background: #162131;
+}
+tbody tr.pickable {
+  cursor: pointer;
+}
+.level-price {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+}
+.level-price:focus-visible {
+  outline-offset: 4px;
+  border-radius: 3px;
 }
 .level-quantity {
   position: relative;
@@ -534,6 +558,30 @@ input::placeholder {
 .ticket .action {
   margin-top: 5px;
 }
+.ticket-facts {
+  display: grid;
+  gap: 5px;
+  margin: 3px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+.ticket-facts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ticket-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.ticket-facts dd {
+  margin: 0;
+  font: 580 12px var(--mono);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 .ticket .message {
   margin-bottom: 0;
 }
@@ -591,7 +639,8 @@ input::placeholder {
   display: flex;
   flex-wrap: wrap;
   gap: 18px 30px;
-  padding: 0 15px;
+  margin: 0;
+  padding: 15px;
 }
 .report dt {
   color: var(--muted);
@@ -621,6 +670,11 @@ input::placeholder {
   }
 }
 @media (max-width: 650px) {
+  /* Менше 16px змушує iOS Safari збільшувати сторінку при фокусі в полі. */
+  input,
+  .unit-field input {
+    font-size: 16px;
+  }
   .header-inner {
     gap: 10px;
     flex-wrap: wrap;
@@ -659,6 +713,16 @@ input::placeholder {
   }
   .levels th {
     font-size: 9px;
+  }
+}
+@media (max-width: 420px) {
+  /* У вузькій колонці дві таблиці не вміщуються, тож купівля й продаж ідуть одна під одною. */
+  .book-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .levels + .levels {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 }
 @media (prefers-reduced-motion: reduce) {

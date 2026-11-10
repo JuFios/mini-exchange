@@ -37,6 +37,10 @@ export default function AdminStatusPage() {
   const [reportError, setReportError] = useState('');
 
   useEffect(() => {
+    document.title = 'Стан системи · Mini Exchange';
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
     let timer: ReturnType<typeof setTimeout>;

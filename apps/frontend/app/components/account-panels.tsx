@@ -13,6 +13,18 @@ const labels: Record<Order['status'], string> = {
   cancelled: 'Скасована',
 };
 
+const reasons: Record<string, string> = {
+  self_trade_prevented: 'Скасовано, щоб уникнути угоди з власною заявкою',
+  rejected: 'Заявку відхилено',
+};
+
+type Tab = 'active' | 'filled' | 'cancelled';
+const emptyText: Record<Tab, string> = {
+  active: 'Активних заявок немає',
+  filled: 'Виконаних заявок немає',
+  cancelled: 'Скасованих заявок немає',
+};
+
 export function WalletPanel({ wallets, loading }: { wallets: Wallet[]; loading: boolean }) {
   return (
     <section className="panel wallets">
@@ -57,13 +69,14 @@ export function OrdersPanel({
   loading: boolean;
   updateOrder: (order: Order) => void;
 }) {
-  const [tab, setTab] = useState<'active' | 'filled'>('active');
+  const [tab, setTab] = useState<Tab>('active');
   const [cancelling, setCancelling] = useState<string[]>([]);
   const [message, setMessage] = useState('');
   const [failed, setFailed] = useState(false);
   const active = orders.filter(activeOrder);
   const filled = orders.filter(({ status }) => status === 'filled');
-  const rows = [...(tab === 'active' ? active : filled)].sort((a, b) =>
+  const cancelled = orders.filter(({ status }) => status === 'cancelled');
+  const rows = [...{ active, filled, cancelled }[tab]].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
 
@@ -92,13 +105,26 @@ export function OrdersPanel({
     <section className="panel own-orders">
       <div className="panel-title order-heading">
         <h2>Мої заявки</h2>
-        <div className="order-tabs" aria-label="Статус заявок">
-          <button type="button" aria-pressed={tab === 'active'} onClick={() => setTab('active')}>
-            Активні <span>{active.length}</span>
-          </button>
-          <button type="button" aria-pressed={tab === 'filled'} onClick={() => setTab('filled')}>
-            Виконані <span>{filled.length}</span>
-          </button>
+        <div className="order-tabs" role="group" aria-label="Статус заявок">
+          {(
+            [
+              ['active', 'Активні', active.length],
+              ['filled', 'Виконані', filled.length],
+              ['cancelled', 'Скасовані', cancelled.length],
+            ] as const
+          ).map(([name, label, count]) => (
+            <button
+              key={name}
+              type="button"
+              aria-pressed={tab === name}
+              onClick={() => {
+                setTab(name);
+                setMessage('');
+              }}
+            >
+              {label} <span>{count}</span>
+            </button>
+          ))}
         </div>
       </div>
       {message && (
@@ -131,7 +157,12 @@ export function OrdersPanel({
                   <td>{quantityText(order.remainingQuantity)}</td>
                   <td>{quantityText(order.filledQuantity)}</td>
                   <td>
-                    <span className="status-label">{labels[order.status]}</span>
+                    <span
+                      className="status-label"
+                      title={order.cancelReason ? reasons[order.cancelReason] : undefined}
+                    >
+                      {labels[order.status]}
+                    </span>
                   </td>
                   {tab === 'active' && (
                     <td>
@@ -141,7 +172,7 @@ export function OrdersPanel({
                         disabled={cancelling.includes(order.id)}
                         onClick={() => void cancel(order)}
                       >
-                        Скасувати
+                        {cancelling.includes(order.id) ? 'Скасовуємо…' : 'Скасувати'}
                       </button>
                     </td>
                   )}
@@ -151,13 +182,7 @@ export function OrdersPanel({
           </table>
         </div>
       ) : (
-        <p className="empty">
-          {loading
-            ? 'Завантажуємо заявки…'
-            : tab === 'active'
-              ? 'Активних заявок немає'
-              : 'Виконаних заявок немає'}
-        </p>
+        <p className="empty">{loading ? 'Завантажуємо заявки…' : emptyText[tab]}</p>
       )}
     </section>
   );
