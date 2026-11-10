@@ -8,6 +8,11 @@
     "node": ">=20.12"
   },
   "scripts": {
+    "concurrency": "ts-node concurrency.ts",
+    "chaos:kill": "ts-node chaos-kill.ts",
+    "chaos:pause": "ts-node chaos-pause.ts",
+    "ws:resync": "ts-node ws-resync.ts",
+    "baseline": "ts-node chaos-starter-lock.ts",
     "chaos:sigterm": "ts-node chaos-sigterm.ts TERM",
     "ownership:kill": "ts-node chaos-sigterm.ts KILL",
     "typecheck": "tsc --noEmit",

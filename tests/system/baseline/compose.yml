@@ -1,0 +1,30 @@
+services:
+  exchange-db:
+    ports: !reset []
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U exchange -d exchange']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 120s
+  redis:
+    ports: !reset []
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 120s
+  matching-engine-service:
+    ports: !reset []
+    depends_on:
+      exchange-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3001/').catch(() => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 120s
