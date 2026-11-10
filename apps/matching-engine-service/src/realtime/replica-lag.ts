@@ -35,8 +35,9 @@ export class LagTracker {
     const lag = published > emitted ? published - emitted : 0n;
     // Відлік починається, коли відставання з'явилося, і скидається при просуванні чи наздоганянні.
     if (lag === 0n || emitted !== this.seen || !this.behind) this.progressAt = now;
-    // Відставала й не зрушила від попередньої перевірки: Redis відповідає, але репліка не наздоганяє.
-    this.lastStalled = lag > 0n && this.behind && emitted === this.seen;
+    // Курсор позаду хвоста й не зрушив від попередньої перевірки: така проба не зараховується до
+    // відновлення. Наздогнаний курсор або рух вперед зараховуються.
+    this.lastStalled = lag > 0n && emitted === this.seen;
     this.seen = emitted;
     this.behind = lag > 0n;
     this.lastStale = lag > 0n && now - this.progressAt > this.maxLagMs;
