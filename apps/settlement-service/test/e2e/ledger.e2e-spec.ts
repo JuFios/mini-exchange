@@ -49,15 +49,16 @@ it('returns only the access token owner balances and rejects userId query overri
     .get('/wallets')
     .auth(access, { type: 'bearer' })
     .expect(200, [
-      { asset: 'ABC', available: '1000.00000000', reserved: '0.00000000' },
-      { asset: 'USD', available: '100000.0000000000', reserved: '0.0000000000' },
-      { asset: 'XYZ', available: '1000.00000000', reserved: '0.00000000' },
+      { asset: 'ABC', available: '1000.00000000', reserved: '0.00000000', version: '1' },
+      { asset: 'USD', available: '100000.0000000000', reserved: '0.0000000000', version: '1' },
+      { asset: 'XYZ', available: '1000.00000000', reserved: '0.00000000', version: '1' },
     ]);
   const other = await api().get('/wallets').auth(secondAccess, { type: 'bearer' }).expect(200);
   expect(other.body[1]).toEqual({
     asset: 'USD',
     available: '99999.0000000000',
     reserved: '1.0000000000',
+    version: '3',
   });
   await api().get('/wallets').query({ userId: b }).auth(access, { type: 'bearer' }).expect(400);
   await api().get('/wallets').auth(refresh, { type: 'bearer' }).expect(401);

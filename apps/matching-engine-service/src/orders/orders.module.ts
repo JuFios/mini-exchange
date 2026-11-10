@@ -12,12 +12,18 @@ import { PgNotifications } from '../engine/pg-notifications';
 import { HttpReservationClient } from '../intake/http-reservation.client';
 import { ReservationFundingCheck } from '../intake/reservation-funding.check';
 import { ReservationSweeper } from '../intake/reservation-sweeper';
+import { InternalOrdersController } from '../outbox/internal-orders.controller';
 import { InternalTradesController } from '../outbox/internal-trades.controller';
 import { OutboxRedriveController } from '../outbox/outbox-redrive.controller';
 import { IntakeService } from '../intake/intake.service';
 import { NoopReservationClient, ReservationClient } from '../intake/reservation.client';
 import { BookLoader } from '../engine/book-loader';
+import { MarketGateway } from '../realtime/market.gateway';
+import { PrivateGateway } from '../realtime/private.gateway';
+import { RealtimeStreamReader } from '../realtime/realtime-stream-reader.service';
+import { ReplicaLagMonitor } from '../realtime/replica-lag.monitor';
 import { DynamicModule, Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
@@ -29,13 +35,14 @@ import { MarketController } from './market.controller';
 import { InstrumentCatalog } from './instrument-catalog';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, Instrument])],
+  imports: [TypeOrmModule.forFeature([Order, Instrument]), JwtModule.register({})],
   controllers: [
     MarketController,
     OrdersController,
     AdminInstrumentsController,
     ReadinessController,
     InternalTradesController,
+    InternalOrdersController,
     OutboxRedriveController,
   ],
   providers: [
@@ -62,6 +69,10 @@ import { InstrumentCatalog } from './instrument-catalog';
     OrdersService,
     OrderBookService,
     OrdersGateway,
+    RealtimeStreamReader,
+    ReplicaLagMonitor,
+    MarketGateway,
+    PrivateGateway,
     InstrumentCatalog,
   ],
   exports: [OrderBookService],

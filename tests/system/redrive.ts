@@ -9,7 +9,7 @@ const stream = 'exchange:settlement:{ABC}';
 type Report = {
   ok: boolean;
   counts: Record<string, number>;
-  discrepancies: { type: string; tradeId: string }[];
+  discrepancies: { type: string; tradeId: string; actual?: { reservationId?: string } }[];
 };
 
 async function main() {
@@ -74,7 +74,14 @@ async function main() {
     ).rows[0].owner_instance as string;
     ownerContainer = container(`matching-${owner}`);
     docker('pause', ownerContainer);
-    const accepted = await submit(buyer, { ...order, side: 'buy', quantity: '1' });
+    // Через балансувальник запит міг би потрапити на призупинену репліку й зависнути до тайм-ауту
+    // клієнта (він збігається з тайм-аутом nginx), тож заявку приймає жива репліка напряму.
+    const alive = owner === 'engine-1' ? 'matching-engine-2' : 'matching-engine-1';
+    const accepted = await submit(
+      buyer,
+      { ...order, side: 'buy', quantity: '1' },
+      `http://${alive}:3001`,
+    );
     assert([200, 201, 202].includes(accepted.status), await accepted.text());
     docker('pause', settlementContainer);
 
@@ -115,12 +122,227 @@ async function main() {
     const repaired = await until(reconcile, (report) => report.ok && report.counts.matched >= 1);
     assert.equal(repaired.counts.missing, 0);
     assert.equal(cli().code, 0, 'reconcile must exit 0 after the redrive');
+    // Втрачений order.closed: заявка скасована, а резерв у ledger лишається активним. Звірка
+    // має його назвати, а redrive за orderIds — зняти.
+    const maker = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
+    const makerOrder = await submit(maker, {
+      instrument: 'ABC',
+      price: '200',
+      side: 'sell',
+      quantity: '1',
+    });
+    assert([200, 201, 202].includes(makerOrder.status), await makerOrder.clone().text());
+    const orderId = ((await makerOrder.json()) as { order: { id: string } }).order.id;
+    await until(
+      async () => (await db.query('SELECT status FROM orders WHERE id=$1', [orderId])).rows[0],
+      (row) => row?.status === 'open',
+    );
+    docker('pause', settlementContainer);
+    // XREADGROUP BLOCK, відкритий до паузи, отримав би подію й залишив її у сокеті зупиненого
+    // процесу: DEL stream цього не скасує. Чекаємо, поки сервер закриє такі читання за тайм-аутом.
+    const blockedReaders = () =>
+      docker('exec', redis, 'redis-cli', 'CLIENT', 'LIST')
+        .split('\n')
+        .filter((client) => client.includes('cmd=xreadgroup') && /flags=[A-Za-z]*b/.test(client))
+        .length;
+    await until(
+      async () => blockedReaders(),
+      (blocked) => blocked === 0,
+    );
+    const cancel = await request(`/orders/${orderId}`, 'DELETE', maker);
+    assert([200, 202].includes(cancel.status), await cancel.text());
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT published_at FROM outbox WHERE type='order.closed' AND payload->>'orderId'=$1",
+            [orderId],
+          )
+        ).rows[0],
+      (row) => row?.published_at,
+      30000,
+    );
+    assert.equal(docker('exec', redis, 'redis-cli', 'DEL', stream), '1');
+    docker('unpause', settlementContainer);
+
+    const stuckOf = (report: Report) =>
+      report.discrepancies.filter(({ type }) => type === 'stuck_reservation');
+    const stuck = await until(reconcile, (report) => stuckOf(report).length > 0, 20000);
+    assert.equal(stuck.ok, false);
+    assert.equal(stuck.counts.stuck_reservation, 1);
+    assert.equal(stuckOf(stuck)[0].actual?.reservationId, orderId);
+    assert.equal(cli().code, 1, 'reconcile must exit 1 while a reservation is stuck');
+
+    const release = await request('/admin/outbox/redrive', 'POST', admin, { orderIds: [orderId] });
+    assert.equal(release.status, 200, await release.clone().text());
+    assert.deepEqual(await release.json(), { requeued: 1 });
+    const released = await until(reconcile, (report) => report.ok && stuckOf(report).length === 0);
+    assert.equal(released.counts.stuck_reservation, 0);
+    assert.equal(cli().code, 0, 'reconcile must exit 0 after the reservation is released');
+
+    // Часткове виконання: після скасування `order.closed` звільняє лише залишок, а виконану
+    // частину має закрити `trade.executed`. Подію угоди втрачено до скасування.
+    // Попередні сценарії можуть лишити заявки на ABC. Ціна між найкращою купівлею й продажем не
+    // зіставляється ні з чужою купівлею при виставленні, ні з чужим продажем при купівлі.
+    const [best] = (
+      await db.query(
+        "SELECT max(price) FILTER (WHERE side='buy') AS bid, min(price) FILTER (WHERE side='sell') AS ask FROM orders WHERE instrument='ABC' AND status IN ('open','partially_filled')",
+      )
+    ).rows as { bid: string | null; ask: string | null }[];
+    const bid = best.bid === null ? undefined : Number(best.bid);
+    const ask = best.ask === null ? undefined : Number(best.ask);
+    const partialPrice = (
+      bid !== undefined && ask !== undefined
+        ? (bid + ask) / 2
+        : ask !== undefined
+          ? ask - 1
+          : bid !== undefined
+            ? bid + 1
+            : 300
+    ).toFixed(2);
+    assert(
+      (bid === undefined || Number(partialPrice) > bid) &&
+        (ask === undefined || Number(partialPrice) < ask),
+      `No free price between bid ${bid} and ask ${ask}`,
+    );
+    const partialMaker = await token(
+      'register',
+      `${randomUUID()}@system.test`,
+      'system-user-password',
+    );
+    const partialTaker = await token(
+      'register',
+      `${randomUUID()}@system.test`,
+      'system-user-password',
+    );
+    const partialOrder = await submit(partialMaker, {
+      instrument: 'ABC',
+      price: partialPrice,
+      side: 'sell',
+      quantity: '2',
+    });
+    assert([200, 201, 202].includes(partialOrder.status), await partialOrder.clone().text());
+    const partialId = ((await partialOrder.json()) as { order: { id: string } }).order.id;
+    await until(
+      async () => (await db.query('SELECT status FROM orders WHERE id=$1', [partialId])).rows[0],
+      (row) => row?.status === 'open',
+    );
+    // Резерв покупця потребує живого settlement, тож заявку приймає жива репліка, поки власник
+    // стоїть. Settlement ставимо на паузу до появи угоди, щоб її подію можна було втратити.
+    const partialOwner = (
+      await db.query("SELECT owner_instance FROM instrument_state WHERE instrument='ABC'")
+    ).rows[0].owner_instance as string;
+    ownerContainer = container(`matching-${partialOwner}`);
+    docker('pause', ownerContainer);
+    const partialAlive = partialOwner === 'engine-1' ? 'matching-engine-2' : 'matching-engine-1';
+    const taking = await submit(
+      partialTaker,
+      {
+        instrument: 'ABC',
+        price: partialPrice,
+        side: 'buy',
+        quantity: '1',
+      },
+      `http://${partialAlive}:3001`,
+    );
+    assert([200, 201, 202].includes(taking.status), await taking.text());
+    docker('pause', settlementContainer);
+    await until(
+      async () => blockedReaders(),
+      (blocked) => blocked === 0,
+    );
+    docker('unpause', ownerContainer);
+    ownerContainer = undefined;
+    // Запит із README: угоди заявки в базі engine.
+    const tradesOf = async (id: string) =>
+      (
+        await db.query(
+          'SELECT trade_id FROM trades WHERE buyer_order_id = $1 OR seller_order_id = $1',
+          [id],
+        )
+      ).rows.map(({ trade_id }) => trade_id as string);
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT 1 FROM trades t JOIN outbox o ON o.type='trade.executed' AND o.payload->>'tradeId'=t.trade_id::text WHERE (t.seller_order_id=$1 OR t.buyer_order_id=$1) AND o.published_at IS NOT NULL",
+            [partialId],
+          )
+        ).rowCount,
+      Boolean,
+      30000,
+    );
+    assert.equal(docker('exec', redis, 'redis-cli', 'DEL', stream), '1');
+    docker('unpause', settlementContainer);
+    const partialCancel = await request(`/orders/${partialId}`, 'DELETE', partialMaker);
+    assert([200, 202].includes(partialCancel.status), await partialCancel.text());
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT published_at FROM outbox WHERE type='order.closed' AND payload->>'orderId'=$1",
+            [partialId],
+          )
+        ).rows[0],
+      (row) => row?.published_at,
+      30000,
+    );
+    const isStuck = (report: Report) =>
+      stuckOf(report).some(({ actual }) => actual?.reservationId === partialId);
+    await until(reconcile, isStuck, 20000);
+    const drained = async () =>
+      (await (await request('/admin/queue', 'GET', admin, undefined, settlement)).json()) as {
+        streams: { lag: number; pending: number }[];
+      };
+    await until(drained, ({ streams }) =>
+      streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+    );
+
+    // Повтор лише за orderIds: подія поставлена знову, але проводка release вже є.
+    const onlyOrder = await request('/admin/outbox/redrive', 'POST', admin, {
+      orderIds: [partialId],
+    });
+    assert.equal(onlyOrder.status, 200, await onlyOrder.clone().text());
+    assert.deepEqual(await onlyOrder.json(), { requeued: 1 });
+    // Relay публікує повтор не одразу: порожня черга до цього нічого не доводить.
+    await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT count(*)::int AS n FROM outbox WHERE published_at IS NULL AND payload->>'orderId'=$1",
+            [partialId],
+          )
+        ).rows[0].n,
+      (n) => n === 0,
+      30000,
+    );
+    await until(drained, ({ streams }) =>
+      streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+    );
+    assert(isStuck(await reconcile()), 'The order-only redrive must not clear the reservation');
+
+    // Рецепт README: orderIds разом з tradeIds усіх угод заявки.
+    const partialTrades = await tradesOf(partialId);
+    assert.equal(partialTrades.length, 1);
+    const both = await request('/admin/outbox/redrive', 'POST', admin, {
+      orderIds: [partialId],
+      tradeIds: partialTrades,
+    });
+    assert.equal(both.status, 200, await both.clone().text());
+    assert.deepEqual(await both.json(), { requeued: 2 });
+    const cleared = await until(reconcile, (report) => report.ok && !isStuck(report), 30000);
+    assert.equal(cleared.counts.stuck_reservation, 0);
+    assert.equal(cleared.counts.missing, 0);
+    assert.equal(cli().code, 0, 'reconcile must exit 0 after the combined redrive');
+
     const queue = await (await request('/admin/queue', 'GET', admin, undefined, settlement)).json();
     assert.equal(
       queue.streams.reduce((n: number, s: { pending: number }) => n + s.pending, 0),
       0,
     );
-    console.log(`redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched}`);
+    console.log(
+      `redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched} orderId=${orderId} stuck_reservation->ok partialOrderId=${partialId} orders-only=stuck orders+trades->ok`,
+    );
   } finally {
     // Контейнери не лишаються на паузі, якщо перевірка впала посередині.
     for (const id of [settlementContainer, ownerContainer]) {

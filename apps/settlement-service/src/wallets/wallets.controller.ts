@@ -20,8 +20,9 @@ export class WalletsController {
     return this.source.transaction(async (db) => {
       const accounts = await this.ledger.lockWallets(db, wallets);
       return wallets.map((wallet) => {
-        const { asset, available, reserved } = accounts.wallet(wallet);
-        return { asset, available, reserved };
+        // `version` та сама, що в `wallet.updated`: за нею клієнт відкидає запізнілі події.
+        const { asset, available, reserved, version } = accounts.wallet(wallet);
+        return { asset, available, reserved, version };
       });
     });
   }

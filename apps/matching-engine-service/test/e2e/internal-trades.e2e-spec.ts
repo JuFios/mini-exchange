@@ -135,7 +135,9 @@ describe('outbox redrive', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ requeued: 1 });
 
+    // Relay пише в Redis до COMMIT рядка outbox: подія в stream ще не означає published_at.
     await waitFor(async () => (await settlementEvents(tradeId)).length === 2);
+    await waitFor(async () => (await row(tradeId))?.published_at !== null);
     const after = await row(tradeId);
     expect(BigInt(after.id)).toBeGreaterThan(BigInt(before.id));
     expect(after.published_at).not.toBeNull();

@@ -3,7 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { IsBoolean, IsIn, IsInt, IsOptional, Min } from 'class-validator';
 
 export class ArmChaosDto {
-  @IsIn(['after_writes_before_commit', 'after_commit_before_memory', 'stall_before_commit'])
+  @IsIn([
+    'after_writes_before_commit',
+    'after_commit_before_memory',
+    'stall_before_commit',
+    'freeze_stream_reader',
+    'unfreeze_stream_reader',
+  ])
   point!: string;
   @IsOptional() @IsInt() @Min(1) fromSeq?: number;
   @IsOptional() @IsBoolean() requireTrades?: boolean;
@@ -12,9 +18,20 @@ export class ArmChaosDto {
 @Injectable()
 export class ChaosHooks {
   private armed?: ArmChaosDto;
+  private frozenReader = false;
   constructor(private readonly config: ConfigService) {}
+
+  /** Поки `true`, WebSocket-репліка не читає stream: так відтворюється завислий XREAD-цикл. */
+  get readerFrozen(): boolean {
+    return this.frozenReader;
+  }
+
   arm(input: ArmChaosDto) {
     if (!this.config.getOrThrow<boolean>('CHAOS_ENABLED')) throw new BadRequestException();
+    if (input.point === 'freeze_stream_reader' || input.point === 'unfreeze_stream_reader') {
+      this.frozenReader = input.point === 'freeze_stream_reader';
+      return { armed: input.point };
+    }
     this.armed = { ...input };
     return { armed: input.point };
   }

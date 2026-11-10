@@ -109,7 +109,7 @@ function cancel(book: Book, command: CancelCommand): ApplyResult {
     outcome: 'applied',
     orderChanges: [{ ...order, status: 'cancelled', cancelReason: 'user' }],
     trades: [],
-    levelChanges: changedLevels(nextBook, [order]),
+    levelChanges: changedLevels(book, nextBook, [order]),
     closed: [close(order, 'user')],
   };
 }
@@ -180,7 +180,7 @@ export function apply(
     outcome: 'applied',
     orderChanges,
     trades,
-    levelChanges: changedLevels(nextBook, touched),
+    levelChanges: changedLevels(book, nextBook, touched),
     closed,
   };
 }

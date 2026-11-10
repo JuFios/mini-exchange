@@ -1,17 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
-
-interface Level {
-  price: string;
-  quantity: string;
-}
-
-interface BookState {
-  bids: Level[];
-  asks: Level[];
-}
+import { io } from 'socket.io-client';
+import { BookState, BookStatus, startBookSession } from '../../lib/book-session';
 
 const INSTRUMENT = 'ABC';
 
@@ -21,29 +12,20 @@ const INSTRUMENT = 'ABC';
 // оновлення. Дивись ТЗ.
 export default function OrderBookPage() {
   const [book, setBook] = useState<BookState>({ bids: [], asks: [] });
-  const [status, setStatus] = useState<'connecting' | 'live' | 'disconnected'>('connecting');
+  const [status, setStatus] = useState<BookStatus>('connecting');
 
   useEffect(() => {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001';
-    const socket: Socket = io(wsUrl, { transports: ['websocket'] });
-
-    socket.on('connect', () => {
-      setStatus('live');
-      socket.emit('subscribe', INSTRUMENT);
-    });
-    socket.on('book', (data: BookState) => setBook(data));
-    socket.on('disconnect', () => setStatus('disconnected'));
-
-    return () => {
-      socket.disconnect();
-    };
+    const socket = io(wsUrl, { transports: ['websocket'] });
+    return startBookSession(socket, INSTRUMENT, { onStatus: setStatus, onBook: setBook });
   }, []);
 
   return (
     <main style={{ maxWidth: 480, margin: '60px auto' }}>
       <h1>Order Book — {INSTRUMENT}</h1>
       <p>Статус з&apos;єднання: {status}</p>
-      <div style={{ display: 'flex', gap: 32 }}>
+      {/* Книга без підтвердження актуальності не повинна виглядати чинною. */}
+      <div style={{ display: 'flex', gap: 32, opacity: status === 'live' ? 1 : 0.5 }}>
         <div>
           <h3>Bids</h3>
           <ul>

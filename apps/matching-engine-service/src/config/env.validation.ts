@@ -173,6 +173,8 @@ const schema = {
   STREAM_MAXLEN: streamMaxLen,
   ORDER_SYNC_WAIT_MS: milliseconds,
   SEQ_GAP_ALERT_MS: milliseconds,
+  // Змінної немає в `.env`, написаних до PR з WebSocket, тож без неї сервіс має стартувати.
+  WS_REPLICA_MAX_LAG_MS: (value: unknown, key: string) => milliseconds(value ?? '5000', key),
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,

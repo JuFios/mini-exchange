@@ -1,6 +1,64 @@
 import assert from 'node:assert/strict';
 import { io } from 'socket.io-client';
-import { database, request } from './helpers';
+import { randomUUID } from 'node:crypto';
+import { database, request, submit, token, until, waitReady } from './helpers';
+
+const balancer = 'http://engine-lb:3001';
+
+/** Підписка на `/market` через LB; `instance` в ack показує, яка репліка її прийняла. */
+function subscribeThroughBalancer(): Promise<string> {
+  // Без forceNew клієнт узяв би Manager попереднього сокета з тим самим origin (autoConnect: false).
+  const socket = io(`${balancer}/market`, {
+    forceNew: true,
+    transports: ['websocket'],
+    reconnection: false,
+    timeout: 5000,
+  });
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('No acknowledgement in 10 s')), 10000);
+    socket.once('connect_error', reject);
+    socket.once('connect', () =>
+      socket.emit('book.subscribe', { instrument: 'ABC' }, (ack: { instance?: string }) => {
+        clearTimeout(timer);
+        resolve(String(ack.instance));
+      }),
+    );
+  }).finally(() => socket.disconnect());
+}
+
+/** Завислу репліку LB обходить: жодне підключення не потрапляє на неї й не зазнає відмови. */
+async function routesAroundStaleReplica() {
+  const admin = await token('login', process.env.ADMIN_EMAIL!, process.env.ADMIN_PASSWORD!);
+  const seller = await token('register', `${randomUUID()}@system.test`, 'transport-user-password');
+  const stale = 'http://matching-engine-2:3001';
+  const chaos = (point: string) => request('/admin/chaos', 'POST', admin, { point }, stale);
+  let restingOrderId: string | undefined;
+  try {
+    assert.equal((await chaos('freeze_stream_reader')).status, 201);
+    const accepted = await submit(seller, {
+      instrument: 'ABC',
+      side: 'sell',
+      price: '100',
+      quantity: '1',
+    });
+    assert([200, 201, 202].includes(accepted.status));
+    restingOrderId = ((await accepted.json()) as { order: { id: string } }).order.id;
+    await until(
+      async () => (await request('/ready', 'GET', undefined, undefined, stale)).status,
+      (status) => status === 503,
+      40000,
+    );
+    const instances = new Set<string>();
+    for (let attempt = 0; attempt < 20; attempt++) instances.add(await subscribeThroughBalancer());
+    assert.deepEqual([...instances], ['engine-1'], 'Only the healthy replica may accept clients');
+    console.log('stale replica bypassed by the load balancer connects=20 instance=engine-1: PASS');
+  } finally {
+    await chaos('unfreeze_stream_reader');
+    await waitReady('matching-engine-2');
+    // Заявка не повинна лишатися на ABC для наступних сценаріїв.
+    if (restingOrderId) await request(`/orders/${restingOrderId}`, 'DELETE', seller);
+  }
+}
 
 async function main() {
   const db = database();
@@ -68,6 +126,7 @@ async function main() {
       }
       console.log(`transport listener=${base} connects=2 snapshots=2 pollingRejected=2: PASS`);
     }
+    await routesAroundStaleReplica();
   } finally {
     await db.end();
   }

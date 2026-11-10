@@ -1,3 +1,4 @@
+import { BOOK_DEPTH } from '../matching/book';
 import { Order } from './entities/order.entity';
 
 export interface Trade {
@@ -15,8 +16,8 @@ export interface BookSnapshot {
   asks: Order[]; // сортовані: ціна зростає, за рівної ціни — час зростає
 }
 
-export const DEFAULT_BOOK_DEPTH = 50;
-export const MAX_BOOK_DEPTH = 50;
+export const DEFAULT_BOOK_DEPTH = BOOK_DEPTH;
+export const MAX_BOOK_DEPTH = BOOK_DEPTH;
 
 export interface BookLevel {
   price: string;

@@ -2,7 +2,9 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 import { ASSET_SCALES, Asset, formatAmount } from '../ledger/amount';
+import { EngineOrdersClient } from './engine-orders.client';
 import { EngineTradesClient, Period } from './engine-trades.client';
+import { scanStuckReservations } from './stuck-reservations';
 import { ledgerTrades } from './ledger-trades.reader';
 import { compareStreams, Discrepancy, DiscrepancyType, Totals } from './trade-comparison';
 
@@ -56,6 +58,7 @@ export class ReconciliationService {
   constructor(
     private readonly source: DataSource,
     private readonly engine: EngineTradesClient,
+    private readonly orders: EngineOrdersClient,
     config: ConfigService,
   ) {
     this.graceMs = config.getOrThrow('SETTLEMENT_GRACE_MS');
@@ -86,6 +89,7 @@ export class ReconciliationService {
       // (15 с на запит, 10 с простою) тут замалі. Виняток діє лише в цій транзакції.
       await db.query("SET LOCAL statement_timeout = '600s'");
       await db.query("SET LOCAL idle_in_transaction_session_timeout = '120s'");
+      const now = Date.now();
       const comparison = await compareStreams(
         this.engine.trades(period),
         ledgerTrades(db, period),
@@ -97,7 +101,7 @@ export class ReconciliationService {
                 tradeId,
               ])
             ).length > 0,
-          now: Date.now(),
+          now,
           graceMs: this.graceMs,
           limit: MAX_DISCREPANCIES,
         },
@@ -141,6 +145,16 @@ export class ReconciliationService {
             actual: { userId: leak.user_id, asset: leak.asset, reserved: leak.reserved },
           });
       }
+
+      // Як і витік, перевіряється на момент звірки, а не за період; `instrument` звужує вибірку.
+      const stuck = await scanStuckReservations(db, this.orders, {
+        instrument: period.instrument,
+        now,
+        graceMs: this.graceMs,
+        limit: Math.max(0, MAX_DISCREPANCIES - discrepancies.length),
+      });
+      comparison.counts.stuck_reservation += stuck.count;
+      discrepancies.push(...stuck.found);
 
       const perAsset = assets.map((row) => ({
         asset: row.asset,
