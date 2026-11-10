@@ -244,6 +244,11 @@ export function OrderForm({
           {picked &&
             `Ціну ${picked.price} підставлено, сторона: ${picked.side === 'buy' ? 'купівля' : 'продаж'}.`}
         </p>
+        {!ready && (
+          <p className="field-hint" role="status">
+            Очікуємо підтвердження сесії…
+          </p>
+        )}
         {message && (
           <p
             role={failed ? 'alert' : 'status'}

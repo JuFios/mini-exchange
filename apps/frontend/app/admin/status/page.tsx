@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Header } from '../../components/header';
 import { apiJson, ApiError, errorMessage } from '../../../lib/client-api';
+import { watchSessionChange } from '../../../lib/session-binding';
 
 interface Instrument {
   instrument: string;
@@ -38,6 +39,8 @@ export default function AdminStatusPage() {
 
   useEffect(() => {
     document.title = 'Стан системи · Mini Exchange';
+    // Інший користувач у сусідній вкладці не має лишатись у цьому звіті.
+    return watchSessionChange(() => window.location.reload());
   }, []);
 
   useEffect(() => {

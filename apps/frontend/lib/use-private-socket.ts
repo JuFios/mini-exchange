@@ -42,6 +42,13 @@ type Connect = (
   },
 ) => Pick<SocketLike, 'active' | 'on' | 'connect' | 'disconnect'>;
 
+// Повторюємо лише збій мережі й відповіді, що минають самі. 401, 403, 404 чи хибний снапшот
+// від повтору не зміняться, тож їх лишає на банері помилки.
+export function transient(error: unknown) {
+  if (error instanceof ApiError) return [408, 429, 502, 503, 504].includes(error.status);
+  return error instanceof TypeError;
+}
+
 async function readActiveOrders(signal: AbortSignal) {
   const orders: Order[] = [];
   const query = '/api/engine/orders?status=active&limit=100';
@@ -136,7 +143,7 @@ export function startPrivateSocket(
         if (signal.aborted) return;
         view.onError(error);
         // Сокет лишається підключеним, тож подій не буде, доки читання не вдасться.
-        if (error instanceof ApiError && error.status === 401) return;
+        if (!transient(error)) return;
         clock.clearTimeout(loadRetry);
         loadRetry = clock.setTimeout(() => {
           if (!signal.aborted) load(signal);
@@ -324,6 +331,7 @@ export function usePrivateSocket(url: string | undefined) {
     return () => {
       stop();
       bindSession(undefined);
+      setUserId(undefined);
       receiveOrder.current = () => undefined;
     };
   }, [url]);

@@ -120,6 +120,11 @@ describe('token refresh margin', () => {
 });
 
 describe('forms', () => {
+  it('keeps amount fields free of maxLength so a paste is never cut silently', () => {
+    const form = readFileSync(join(process.cwd(), 'app', 'components', 'order-form.tsx'), 'utf8');
+    assert.doesNotMatch(form, /maxLength/);
+  });
+
   const files = (dir: string): string[] =>
     readdirSync(dir).flatMap((name) => {
       const path = join(dir, name);

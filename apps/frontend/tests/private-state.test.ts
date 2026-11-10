@@ -362,7 +362,7 @@ it('words the cancellation notice from the order state and rereads only open ord
   assert.deepEqual([...ids].sort(), ['event-only', 'open', 'part']);
 });
 
-it('rejects an overlong amount instead of relying on maxLength', async () => {
+it('rejects a pasted amount with extra digits instead of cutting it', async () => {
   const { submitValidatedOrder } = require('../lib/decimal');
   const limits = {
     tickSize: '0.01',
@@ -452,4 +452,15 @@ it('retries the initial read on the same connection after a transient failure', 
   await done;
   stop();
   assert.deepEqual(events, ['session:user-a', 'error', 'snapshot']);
+});
+
+it('retries only failures that can pass on their own', () => {
+  const { transient } = require('../lib/use-private-socket');
+  const { ApiError } = require('../lib/client-api');
+  for (const status of [408, 429, 502, 503, 504])
+    assert.equal(transient(new ApiError(status, '')), true);
+  for (const status of [400, 401, 403, 404, 409])
+    assert.equal(transient(new ApiError(status, '')), false);
+  assert.equal(transient(new TypeError('Failed to fetch')), true);
+  assert.equal(transient(new Error('Invalid wallet snapshot')), false);
 });

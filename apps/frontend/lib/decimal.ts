@@ -16,8 +16,6 @@ export interface OrderInput {
 export type AmountErrors = Partial<Record<'price' | 'quantity', string>>;
 
 function units(value: string, scale: number) {
-  // Поле без maxLength не обрізає вставлене значення мовчки, тож довге просто відхиляється.
-  if (value.length > 32) return;
   const match = /^(0|[1-9][0-9]{0,6})(?:\.([0-9]+))?$/.exec(value);
   if (!match || match[0] !== value || (match[2]?.length ?? 0) > scale) return;
   return BigInt(match[1] + (match[2] ?? '').padEnd(scale, '0'));
