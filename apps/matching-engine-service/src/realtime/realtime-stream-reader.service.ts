@@ -16,6 +16,8 @@ const MAX_BACKOFF_MS = 2000;
 const RECENT_EVENT_IDS = 4096;
 const ERROR_LOG_INTERVAL_MS = 5000;
 const FROZEN_POLL_MS = 50;
+// Stream без нових записів теж звіряється з лічильниками: зникнення непрочитаного нових записів не породжує.
+const QUIET_VERIFY_MS = 2000;
 
 type Handler<T> = (event: T) => void;
 type StreamReply = [key: string, entries: [id: string, fields: string[]][]][];
@@ -53,6 +55,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   private stopped = false;
   private readonly abort = new AbortController();
   private lastErrorLogAt = 0;
+  private quietVerifiedAt = 0;
 
   constructor(
     config: ConfigService,
@@ -176,13 +179,26 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   /** Роздає прочитане, просуває курсори, потім звіряє кожен stream із лічильниками. */
   private async apply(reply: StreamReply, ids: Map<string, string>) {
     for (const [key, entries] of reply) {
+      let skipped = false;
       for (const [id, fields] of entries) {
-        this.consume(fields);
+        skipped = !this.consume(fields) || skipped;
         ids.set(key, id);
       }
       this.unverified.set(key, (this.unverified.get(key) ?? 0) + entries.length);
+      // Пропущений запис курсор уже минув; клієнти мають прочитати стан заново.
+      if (skipped) this.signalGap(key);
     }
     for (const [key, entries] of reply) if (entries.length > 0) await this.verify(key);
+    await this.verifyQuiet(reply);
+  }
+
+  /** Stream, у яких нових записів не було, звіряються раз на `QUIET_VERIFY_MS`. */
+  private async verifyQuiet(reply: StreamReply): Promise<void> {
+    const now = Date.now();
+    if (now - this.quietVerifiedAt < QUIET_VERIFY_MS) return;
+    this.quietVerifiedAt = now;
+    const active = new Set(reply.filter(([, entries]) => entries.length > 0).map(([key]) => key));
+    for (const key of this.keys) if (!active.has(key)) await this.verify(key);
   }
 
   /**
@@ -284,39 +300,45 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
         alert: 'realtime_stream_gap',
         message: `Entries of ${key} were trimmed or lost before this replica read them`,
       });
-      for (const handler of this.gaps) {
-        try {
-          handler(key);
-        } catch (error) {
-          this.logFailure(error);
-        }
-      }
+      this.signalGap(key);
     } catch (error) {
       if (!this.stopped) this.logFailure(error);
     }
   }
 
+  private signalGap(key: string): void {
+    for (const handler of this.gaps) {
+      try {
+        handler(key);
+      } catch (error) {
+        this.logFailure(error);
+      }
+    }
+  }
+
   /** Запис, який не вдалося обробити, пропускається: курсор усе одно просувається за ним. */
-  private consume(fields: string[]): void {
+  private consume(fields: string[]): boolean {
     try {
-      this.dispatch(fields);
+      return this.dispatch(fields);
     } catch (error) {
       this.logger.warn({
         alert: 'realtime_event_skipped',
         message: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
   }
 
-  private dispatch(fields: string[]): void {
+  /** `false`, якщо запис не вдалося прочитати й він пропущений. */
+  private dispatch(fields: string[]): boolean {
     const event = parseEnvelope(fields);
     // Пошкоджений запис не зупиняє читача й не повторюється.
     if (!event) {
       this.logger.warn({ alert: 'realtime_event_skipped', message: 'Unreadable stream entry' });
-      return;
+      return false;
     }
     // Relay може повторити останній запис після збою між XADD і позначкою публікації.
-    if (!this.seen.add(event.eventId)) return;
+    if (!this.seen.add(event.eventId)) return true;
     if (event.type === 'book.delta') {
       const seq = BigInt(event.payload.seq);
       if (seq > this.emittedSeq(event.payload.instrument))
@@ -331,6 +353,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
         this.logFailure(error);
       }
     }
+    return true;
   }
 
   /** Пауза переривається зупинкою застосунку, тож shutdown не чекає завершення backoff. */
