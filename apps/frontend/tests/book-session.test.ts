@@ -63,13 +63,23 @@ class FakeSocket implements SocketLike {
   fire(event: string, ...args: unknown[]) {
     (this.handlers.get(event) as (...a: unknown[]) => void)(...args);
   }
+  accept(snapshot: BookState) {
+    const subscription = this.emitted.filter(({ event }) => event === 'book.subscribe').at(-1);
+    assert.ok(subscription);
+    (subscription.args[1] as (reply: unknown) => void)({ ok: true, snapshot });
+  }
   /** Скільки разів сесія надіслала `subscribe`. */
   get subscribes() {
-    return this.emitted.filter(({ event }) => event === 'subscribe').length;
+    return this.emitted.filter(({ event }) => event === 'book.subscribe').length;
   }
 }
 
-const BOOK: BookState = { bids: [{ price: '99', quantity: '1' }], asks: [] };
+const BOOK: BookState = {
+  instrument: 'ABC',
+  seq: '10',
+  bids: [{ price: '99', quantity: '1', orders: 1 }],
+  asks: [],
+};
 
 function start() {
   const socket = new FakeSocket();
@@ -90,20 +100,20 @@ describe('the book page connection', () => {
     const { socket, statuses } = start();
     socket.fire('connect');
     assert.equal(statuses.includes('live'), false);
-    socket.fire('book', BOOK);
+    socket.accept(BOOK);
     assert.equal(statuses.at(-1), 'live');
   });
 
   it('does not show a reconnected page as live until the new snapshot', () => {
     const { socket, statuses } = start();
     socket.fire('connect');
-    socket.fire('book', BOOK);
+    socket.accept(BOOK);
     socket.fire('disconnect', 'transport close');
-    assert.equal(statuses.at(-1), 'disconnected');
+    assert.equal(statuses.at(-1), 'reconnecting');
 
     socket.fire('connect');
     assert.notEqual(statuses.at(-1), 'live');
-    socket.fire('book', BOOK);
+    socket.accept(BOOK);
     assert.equal(statuses.at(-1), 'live');
   });
 
@@ -130,7 +140,7 @@ describe('the book page connection', () => {
   it('starts the resubscribe delay over once a book has arrived', () => {
     const { socket, clock } = start();
     const refuse = () => {
-      const call = socket.emitted.filter(({ event }) => event === 'subscribe').at(-1)!;
+      const call = socket.emitted.filter(({ event }) => event === 'book.subscribe').at(-1)!;
       (call.args.find((arg) => typeof arg === 'function') as (reply: unknown) => void)({
         ok: false,
       });
@@ -142,7 +152,7 @@ describe('the book page connection', () => {
     clock.tick(RETRY_MIN_MS * 2);
     assert.equal(socket.subscribes, 3);
 
-    socket.fire('book', BOOK);
+    socket.accept(BOOK);
     socket.fire('disconnect', 'transport close');
     socket.fire('connect');
     const before = socket.subscribes;
@@ -155,7 +165,7 @@ describe('the book page connection', () => {
     const { socket, clock } = start();
     socket.fire('connect');
     clock.tick(1000);
-    socket.fire('book', BOOK);
+    socket.accept(BOOK);
     const before = socket.subscribes;
     clock.tick(60_000);
     assert.equal(socket.subscribes, before);
@@ -186,7 +196,8 @@ describe('the book page connection', () => {
     }
     assert.deepEqual(delays, [250, 500, 1000, 2000, 2000, 2000]);
     assert.equal(RETRY_MAX_MS, 2000);
-    socket.fire('book', BOOK);
+    socket.fire('connect');
+    socket.accept(BOOK);
     const before = socket.connects;
     socket.fire('disconnect', 'io server disconnect');
     clock.tick(RETRY_MIN_MS);
