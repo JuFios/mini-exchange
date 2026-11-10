@@ -51,6 +51,43 @@ export class LagTracker {
   }
 }
 
+/** Лічильники stream з `XINFO STREAM` (Redis 7.0+). */
+export interface StreamCounters {
+  /** Скільки записів додано за весь час: `entries-added`. */
+  added: bigint;
+  /** Скільки записів зараз у stream. */
+  length: bigint;
+  /** Позиція найстаршого наявного запису (`recorded-first-entry-id`). */
+  firstId: bigint;
+}
+
+/**
+ * Чи пропустив читач записи, які обрізав `MAXLEN` або яких немає через перестворення stream.
+ * ID запису цього не показують: `XREAD` просто повертає перший наявний. Тому читач рахує
+ * ординали: `verified` записів прочитано до курсора `cursor`, у пачці `batch` ще `batch`.
+ * Найстаріший наявний запис має ординал `added − length + 1`; якщо він далі за наступний
+ * очікуваний, між ними були записи, яких уже немає. Помилкових пропусків немає; хибна тривога
+ * можлива лише коли вікно stream вже зсунулося за щойно прочитану пачку. Після втрати база
+ * переходить на хвіст: `verified` дорівнює `added` (читач ставить курсор на `last-generated-id`).
+ */
+export function checkBatch(
+  verified: bigint,
+  cursor: bigint,
+  batch: number,
+  counters: StreamCounters,
+): { lost: boolean; verified: bigint } {
+  const oldest = counters.added - counters.length + 1n;
+  const consumed = verified + BigInt(batch);
+  const lost =
+    // Прочитано більше, ніж будь-коли додано: stream перестворено з меншою історією.
+    counters.added < consumed ||
+    oldest > verified + 1n ||
+    // Найстаріший наявний запис мав би бути вже прочитаним, але він новіший за курсор:
+    // stream перестворено й він встиг вирости.
+    (oldest <= verified && counters.firstId > cursor);
+  return { lost, verified: lost ? counters.added : consumed };
+}
+
 /** Пам'ять про вже оброблені `eventId`: relay може повторити останній запис після збою. */
 export class RecentIds {
   private readonly ids = new Set<string>();

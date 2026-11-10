@@ -6,7 +6,7 @@ import { ChaosHooks } from '../chaos/chaos-hooks';
 import { marketStream, USER_EVENTS_STREAM } from '../outbox/streams';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { MarketEvent, parseEnvelope, seqOf, UserEvent } from './realtime-events';
-import { RecentIds, streamPosition } from './replica-lag';
+import { checkBatch, RecentIds, StreamCounters, streamPosition } from './replica-lag';
 
 const BLOCK_MS = 1000;
 const REDIS_TIMEOUT_MS = 3000;
@@ -18,6 +18,11 @@ const ERROR_LOG_INTERVAL_MS = 5000;
 const FROZEN_POLL_MS = 50;
 
 type Handler<T> = (event: T) => void;
+
+/** Лічильники stream і його хвіст, прочитані однією відповіддю `XINFO STREAM`. */
+interface StreamState extends StreamCounters {
+  lastId: string;
+}
 
 /**
  * Читає market-stream усіх інструментів і stream подій користувачів однією блокуючою командою
@@ -32,6 +37,12 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   private readonly probe: Redis;
   private readonly market = new Set<Handler<MarketEvent>>();
   private readonly user = new Set<Handler<UserEvent>>();
+  private readonly gaps = new Set<Handler<string>>();
+  // Скільки записів stream прочитано і підтверджено лічильниками, курсор на той момент і скільки
+  // прочитано відтоді. Збій `XINFO` лише відкладає перевірку: пачки не губляться.
+  private readonly verified = new Map<string, bigint>();
+  private readonly verifiedAt = new Map<string, bigint>();
+  private readonly unverified = new Map<string, number>();
   private readonly emitted = new Map<string, bigint>();
   private readonly seen = new RecentIds(RECENT_EVENT_IDS);
   private keys: string[] = [];
@@ -94,6 +105,15 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     return () => this.user.delete(handler);
   }
 
+  /**
+   * Викликається, коли репліка виявила, що записи stream обрізано до того, як вона їх прочитала.
+   * Читач вже стоїть на хвості stream; решта залежить від того, чи клієнт сам помічає пропуск.
+   */
+  onGap(handler: Handler<string>): () => void {
+    this.gaps.add(handler);
+    return () => this.gaps.delete(handler);
+  }
+
   /** Найбільший `seq` book.delta, який репліка вже роздала (або мав хвіст stream на старті). */
   emittedSeq(instrument: string): bigint {
     return this.emitted.get(instrument) ?? 0n;
@@ -142,7 +162,9 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
             this.consume(fields);
             this.ids.set(key, id);
           }
+          this.unverified.set(key, (this.unverified.get(key) ?? 0) + entries.length);
         }
+        for (const [key, entries] of reply ?? []) if (entries.length > 0) await this.verify(key);
       } catch (error) {
         if (this.stopped) return;
         this.logFailure(error);
@@ -160,14 +182,94 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   private async tails(): Promise<Map<string, string>> {
     const ids = new Map<string, string>();
     for (const key of this.keys) {
+      // Лічильники беруться до хвоста: запис, доданий між двома викликами, не завищить прочитане.
+      const state = await this.streamState(key);
       const [tail] = await this.probe.xrevrange(key, '+', '-', 'COUNT', 1);
       ids.set(key, tail?.[0] ?? '0-0');
+      if (state) {
+        this.verified.set(key, state.added);
+        this.verifiedAt.set(key, streamPosition(tail?.[0] ?? '0-0'));
+        this.unverified.set(key, 0);
+      }
       const instrument = /^exchange:market:\{(.+)\}$/.exec(key)?.[1];
       // Хвіст може бути пошкодженим записом: без числового `seq` лічильник лишається нульовим.
       const seq = tail ? seqOf(tail[1]) : undefined;
       if (instrument && seq !== undefined) this.emitted.set(instrument, seq);
     }
     return ids;
+  }
+
+  /**
+   * Лічильники й хвіст stream однією відповіддю. `undefined`, якщо Redis їх не віддає (до 7.0):
+   * тоді втрату виявити неможливо, і читач працює як раніше. Відсутній ключ — порожній stream.
+   */
+  private async streamState(stream: string): Promise<StreamState | undefined> {
+    let reply: unknown[];
+    try {
+      reply = (await this.probe.xinfo('STREAM', stream)) as unknown[];
+    } catch (error) {
+      if (/no such key/i.test(error instanceof Error ? error.message : '')) {
+        return { added: 0n, length: 0n, firstId: 0n, lastId: '0-0' };
+      }
+      throw error;
+    }
+    const fields = new Map<string, unknown>();
+    for (let i = 0; i + 1 < reply.length; i += 2) fields.set(String(reply[i]), reply[i + 1]);
+    const added = fields.get('entries-added');
+    const length = fields.get('length');
+    const first = fields.get('recorded-first-entry-id');
+    const last = fields.get('last-generated-id');
+    if (
+      typeof added !== 'number' ||
+      typeof length !== 'number' ||
+      typeof first !== 'string' ||
+      typeof last !== 'string'
+    )
+      return undefined;
+    return {
+      added: BigInt(added),
+      length: BigInt(length),
+      firstId: streamPosition(first),
+      lastId: last,
+    };
+  }
+
+  /**
+   * Звіряє прочитане з лічильниками stream. Якщо між курсором і найстаршим наявним записом
+   * були записи, яких уже немає, читач ставить курсор на хвіст і повідомляє про розрив:
+   * доставляти хвіст після прогалини без того, хто її помітить, не можна. Збій перевірки
+   * не зупиняє читання: прочитане лишається неперевіреним до наступного успіху.
+   */
+  private async verify(key: string): Promise<void> {
+    const verified = this.verified.get(key);
+    const verifiedAt = this.verifiedAt.get(key);
+    if (verified === undefined || verifiedAt === undefined) return;
+    try {
+      const state = await this.streamState(key);
+      if (!state) return;
+      const result = checkBatch(verified, verifiedAt, this.unverified.get(key) ?? 0, state);
+      this.verified.set(key, result.verified);
+      this.unverified.set(key, 0);
+      if (!result.lost) {
+        this.verifiedAt.set(key, this.cursor(key));
+        return;
+      }
+      this.ids!.set(key, state.lastId);
+      this.verifiedAt.set(key, streamPosition(state.lastId));
+      this.logger.error({
+        alert: 'realtime_stream_gap',
+        message: `Entries of ${key} were trimmed or lost before this replica read them`,
+      });
+      for (const handler of this.gaps) {
+        try {
+          handler(key);
+        } catch (error) {
+          this.logFailure(error);
+        }
+      }
+    } catch (error) {
+      if (!this.stopped) this.logFailure(error);
+    }
   }
 
   /** Запис, який не вдалося обробити, пропускається: курсор усе одно просувається за ним. */
