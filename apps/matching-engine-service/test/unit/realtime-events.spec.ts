@@ -141,6 +141,13 @@ describe('parseEnvelope payload shape', () => {
     expect(parseEnvelope(entry(type, payload, { eventId }))).toEqual({ type, eventId, payload });
   });
 
+  it.each(['toString', 'constructor', '__proto__', 'hasOwnProperty'])(
+    'skips an event whose type is the prototype key %s',
+    (type) => {
+      expect(parseEnvelope(entry(type, fixtures['order.updated'].payload))).toBeUndefined();
+    },
+  );
+
   it('accepts extra fields and an order update with a cancel reason', () => {
     const payload = { ...fixtures['order.updated'].payload, cancelReason: 'user', extra: 1 };
     expect(parseEnvelope(entry('order.updated', payload))?.payload).toEqual(payload);
