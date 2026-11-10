@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "noEmit": false,
+    "incremental": false,
+    "outDir": "node_modules/.cache/book-session-test",
+    "plugins": []
+  },
+  "include": ["lib/book-session.ts", "tests/**/*.ts"]
+}
