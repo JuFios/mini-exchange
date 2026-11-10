@@ -94,6 +94,8 @@ services:
         condition: service_healthy
       matching-engine-2:
         condition: service_healthy
+      frontend:
+        condition: service_healthy
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/nginx-health']
       interval: 5s
@@ -132,9 +134,6 @@ services:
     environment:
       MATCHING_ENGINE_URL: http://engine-lb:8080
       ENGINE_PUBLIC_WS_URL: ${ENGINE_PUBLIC_WS_URL:-${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}}
-    depends_on:
-      engine-lb:
-        condition: service_healthy
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/']
       interval: 5s
