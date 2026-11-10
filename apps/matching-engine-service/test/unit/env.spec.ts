@@ -142,3 +142,22 @@ it.each([
     key,
   );
 });
+
+// Файл зафіксовано з `solution`: конфігурація, яка працювала до цього PR, має запускатися й далі.
+const previous = parseEnv(readFileSync(join(__dirname, 'fixtures/env.solution.example'), 'utf8'));
+
+describe('environments written before WS_REPLICA_MAX_LAG_MS existed', () => {
+  it('start with a 5000 ms replica lag limit', () => {
+    expect(validateEnv(previous).WS_REPLICA_MAX_LAG_MS).toBe(5000);
+  });
+
+  it('still validate a limit that is set explicitly', () => {
+    expect(validateEnv({ ...previous, WS_REPLICA_MAX_LAG_MS: '1000' }).WS_REPLICA_MAX_LAG_MS).toBe(
+      1000,
+    );
+    for (const value of ['0', '-1', '60001', '1.5', '', ' ', 'abc'])
+      expect(() => validateEnv({ ...previous, WS_REPLICA_MAX_LAG_MS: value })).toThrow(
+        'WS_REPLICA_MAX_LAG_MS',
+      );
+  });
+});
