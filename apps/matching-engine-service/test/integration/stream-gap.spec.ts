@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 /** wallet.updated так, як його пише settlement; `maxLen` задає, скільки записів лишає XADD. */
-function walletEvent(userId: string, version: number, maxLen: number) {
+function walletEvent(userId: string, version: number, maxLen: number, withVersion = true) {
   const eventId = randomUUID();
   const envelope = {
     eventId,
@@ -42,7 +42,7 @@ function walletEvent(userId: string, version: number, maxLen: number) {
       asset: 'USD',
       available: '90',
       reserved: '10',
-      version: String(version),
+      version: withVersion ? String(version) : undefined,
       entryId: randomUUID(),
     },
   };
@@ -104,6 +104,29 @@ describe('a reader that finds the entries it has not read already trimmed', () =
     await walletEvent(sub, 11, 3);
     await waitFor(async () => payloads(received, 'wallet.updated').length === 1, 5000);
     expect(payloads<{ version: string }>(received, 'wallet.updated')[0].version).toBe('11');
+  }, 40000);
+
+  it('closes the private sockets when unread entries vanish and nothing new arrives', async () => {
+    const { sub, socket, received } = await replicaWithClient();
+    await walletEvent(sub, 1, 1000);
+    await waitFor(async () => payloads(received, 'wallet.updated').length === 1, 5000);
+
+    // Непрочитані записи зникають разом зі stream (DEL чи відновлення старішої копії Redis).
+    chaos().arm({ point: 'freeze_stream_reader' });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await walletEvent(sub, 2, 1000);
+    await walletEvent(sub, 3, 1000);
+    await redis.del(USER_EVENTS);
+    const closed = disconnected(socket, 8000);
+    chaos().arm({ point: 'unfreeze_stream_reader' });
+    await closed;
+  }, 40000);
+
+  it('closes the private sockets when an entry cannot be read and is skipped', async () => {
+    const { sub, socket } = await replicaWithClient();
+    const closed = disconnected(socket, 8000);
+    await walletEvent(sub, 1, 1000, false);
+    await closed;
   }, 40000);
 
   it('leaves the sockets alone when nothing was trimmed', async () => {
