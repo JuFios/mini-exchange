@@ -25,6 +25,7 @@ interface View {
   onDisconnected?(): void;
   onError(error: unknown): void;
   onSnapshot(snapshot: Snapshot, signal: AbortSignal): void;
+  knownOrderIds(): Iterable<string>;
   onOrder(order: OrderUpdate, signal: AbortSignal): void;
   onWallet(wallet: Wallet): void;
 }
@@ -37,6 +38,25 @@ type Connect = (
     auth: (done: (value: { token: string }) => void) => void;
   },
 ) => Pick<SocketLike, 'active' | 'on' | 'connect' | 'disconnect'>;
+
+async function readActiveOrders(signal: AbortSignal) {
+  const orders: Order[] = [];
+  const query = '/api/engine/orders?status=active&limit=100';
+  let cursor = '';
+
+  for (;;) {
+    const page = await apiJson<Order[]>(query + (cursor ? '&cursor=' + cursor : ''), { signal });
+    const last = page.at(-1);
+    if (!last) return orders;
+    orders.push(...page);
+    const next = btoa(JSON.stringify({ createdAt: last.createdAt, id: last.id }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    if (next === cursor) throw new Error('Order cursor did not advance');
+    cursor = next;
+  }
+}
 
 export function startPrivateSocket(
   url: string,
@@ -85,13 +105,24 @@ export function startPrivateSocket(
     delay = RETRY_MIN_MS;
     view.onLoading();
     void Promise.all([
-      apiJson<Order[]>('/api/engine/orders?status=active', { signal }),
+      readActiveOrders(signal),
       apiJson<Order[]>('/api/engine/orders?status=filled', { signal }),
       apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
     ])
-      .then(([active, filled, wallets]) => {
+      .then(async ([active, filled, wallets]) => {
         if (signal.aborted) return;
-        view.onSnapshot({ orders: [...active, ...filled], wallets }, signal);
+        const orders = [...active, ...filled];
+        const seen = new Set(orders.map(({ id }) => id));
+        // Заявка, відсутня у списку, могла завершитися між з'єднаннями.
+        for (const id of view.knownOrderIds()) {
+          if (!seen.has(id)) {
+            orders.push(
+              await apiJson<Order>('/api/engine/orders/' + encodeURIComponent(id), { signal }),
+            );
+            seen.add(id);
+          }
+        }
+        if (!signal.aborted) view.onSnapshot({ orders, wallets }, signal);
       })
       .catch((error: unknown) => {
         if (!signal.aborted) view.onError(error);
@@ -212,6 +243,9 @@ export function usePrivateSocket(url: string | undefined) {
         setStatus('reconnecting');
       },
       onError,
+      knownOrderIds() {
+        return new Set([...orders.keys(), ...pendingOrders.keys()]);
+      },
       onSnapshot(snapshot, signal) {
         const latest = snapshot.orders.map(projectOrder);
         if (!snapshot.wallets.every(validWallet)) throw new Error('Invalid wallet snapshot');
