@@ -18,6 +18,8 @@ const reasons: Record<string, string> = {
   rejected: 'Заявку відхилено',
 };
 
+const reason = ({ cancelReason }: Order) => (cancelReason ? reasons[cancelReason] : undefined);
+
 type Tab = 'active' | 'filled' | 'cancelled';
 const emptyText: Record<Tab, string> = {
   active: 'Активних заявок немає',
@@ -157,11 +159,9 @@ export function OrdersPanel({
                   <td>{quantityText(order.remainingQuantity)}</td>
                   <td>{quantityText(order.filledQuantity)}</td>
                   <td>
-                    <span
-                      className="status-label"
-                      title={order.cancelReason ? reasons[order.cancelReason] : undefined}
-                    >
+                    <span className="status-label" title={reason(order)}>
                       {labels[order.status]}
+                      {reason(order) && <span className="visually-hidden"> · {reason(order)}</span>}
                     </span>
                   </td>
                   {tab === 'active' && (

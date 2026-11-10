@@ -106,14 +106,19 @@ export function startPrivateSocket(
     view.onLoading();
     void Promise.all([
       readActiveOrders(signal),
+      apiJson<Order[]>('/api/engine/orders?status=filled&limit=100', { signal }),
       apiJson<Order[]>('/api/engine/orders?status=all&limit=100', { signal }),
       apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
     ])
-      .then(async ([active, history, wallets]) => {
+      .then(async ([active, filled, recent, wallets]) => {
         if (signal.aborted) return;
-        // Історія містить і активні заявки: перевагу має повна вибірка `active`.
-        const activeIds = new Set(active.map(({ id }) => id));
-        const orders = [...active, ...history.filter(({ id }) => !activeIds.has(id))];
+        // Запити виконуються паралельно, тож для однієї заявки береться новіша версія.
+        const byId = new Map<string, Order>();
+        for (const order of [...filled, ...recent, ...active]) {
+          const known = byId.get(order.id);
+          if (!known || order.version >= known.version) byId.set(order.id, order);
+        }
+        const orders = [...byId.values()];
         const seen = new Set(orders.map(({ id }) => id));
         // Заявка, відсутня у списку, могла завершитися між з'єднаннями.
         for (const id of view.knownOrderIds()) {

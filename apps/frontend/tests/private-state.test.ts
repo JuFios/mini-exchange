@@ -176,6 +176,7 @@ it('restores private state with a fresh handshake after server expiry', async ()
   for (const request of [
     'POST /api/auth/ws-token',
     'GET /api/engine/orders?status=active&limit=100',
+    'GET /api/engine/orders?status=filled&limit=100',
     'GET /api/engine/orders?status=all&limit=100',
     'GET /api/settlement/wallets',
   ]) {

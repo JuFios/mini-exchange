@@ -2,13 +2,12 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Header } from '../../components/header';
 import { BookPanel, ConnectionBadge, TradesPanel } from '../../components/market-tables';
 import { type Instrument, type PickedLevel, OrderForm } from '../../components/order-form';
 import { OrdersPanel, WalletPanel } from '../../components/account-panels';
-import { apiJson, errorMessage } from '../../../lib/client-api';
 import { useMarketSocket } from '../../../lib/use-market-socket';
-import { usePrivateSocket } from '../../../lib/use-private-socket';
+import { type usePrivateSocket } from '../../../lib/use-private-socket';
+import { useExchange } from '../shell';
 
 type Account = ReturnType<typeof usePrivateSocket>;
 
@@ -29,8 +28,8 @@ function InstrumentNav({ instruments, symbol }: { instruments: Instrument[]; sym
   );
 }
 
-// Ринкові дані належать одному інструменту, тож `key` у виклику скидає книгу й угоди
-// при перемиканні, а рахунок і приватне з'єднання лишаються на місці.
+// Ринкові дані належать одному інструменту й живуть разом із сегментом `[instrument]`.
+// Рахунок і приватне з'єднання лежать у layout і при перемиканні не перепідключаються.
 function Market({
   instrument,
   instruments,
@@ -93,82 +92,59 @@ function Market({
   );
 }
 
-export function Exchange({ symbol, admin }: { symbol: string; admin: boolean }) {
-  const [config, setConfig] = useState<{ wsUrl: string; instruments: Instrument[] }>();
-  const [error, setError] = useState('');
+export function Exchange({ symbol }: { symbol: string }) {
+  const { config, error, account } = useExchange();
   const instrument = config?.instruments.find(({ symbol: name }) => name === symbol);
-  const account = usePrivateSocket(instrument ? config?.wsUrl : undefined);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const { signal } = controller;
-    void Promise.all([
-      apiJson<{ wsUrl: string }>('/api/config', { signal }),
-      apiJson<Instrument[]>('/api/engine/instruments', { signal }),
-    ])
-      .then(([{ wsUrl }, instruments]) => {
-        if (!signal.aborted) setConfig({ wsUrl, instruments });
-      })
-      .catch((error: unknown) => {
-        if (!signal.aborted) setError(errorMessage(error));
-      });
-    return () => controller.abort();
-  }, []);
 
   useEffect(() => {
     document.title = `${symbol} · Mini Exchange`;
   }, [symbol]);
 
+  if (!instrument) {
+    return (
+      <>
+        <div className="market-header">
+          <div>
+            <p className="eyebrow">СПОТОВИЙ РИНОК</p>
+            <h1>Торгівля</h1>
+          </div>
+          <div className="market-nav">
+            {config && <InstrumentNav instruments={config.instruments} />}
+          </div>
+        </div>
+        {error && (
+          <p className="message error" role="alert">
+            {error}
+          </p>
+        )}
+        {!error && !config && (
+          <p className="panel empty" role="status">
+            Завантажуємо інструменти…
+          </p>
+        )}
+        {config && <p className="panel empty">Інструмент не знайдено</p>}
+      </>
+    );
+  }
+
   return (
     <>
-      <Header admin={admin} page="trade" />
-      <main className="workspace">
-        {!instrument && (
-          <>
-            <div className="market-header">
-              <div>
-                <p className="eyebrow">СПОТОВИЙ РИНОК</p>
-                <h1>Торгівля</h1>
-              </div>
-              <div className="market-nav">
-                {config && <InstrumentNav instruments={config.instruments} />}
-              </div>
-            </div>
-            {error && (
-              <p className="message error" role="alert">
-                {error}
-              </p>
-            )}
-            {!error && !config && (
-              <p className="panel empty" role="status">
-                Завантажуємо інструменти…
-              </p>
-            )}
-            {config && <p className="panel empty">Інструмент не знайдено</p>}
-          </>
-        )}
-        {config && instrument && (
-          <>
-            {account.status === 'error' && (
-              <p className="message error" role="alert">
-                Приватні дані · {account.error}
-              </p>
-            )}
-            {account.status === 'reconnecting' && (
-              <p className="message pending" role="status">
-                Відновлюємо з’єднання для заявок і балансів…
-              </p>
-            )}
-            <Market
-              key={symbol}
-              instrument={instrument}
-              instruments={config.instruments}
-              wsUrl={config.wsUrl}
-              account={account}
-            />
-          </>
-        )}
-      </main>
+      {account.status === 'error' && (
+        <p className="message error" role="alert">
+          Приватні дані · {account.error}
+        </p>
+      )}
+      {account.status === 'reconnecting' && (
+        <p className="message pending" role="status">
+          Відновлюємо з’єднання для заявок і балансів…
+        </p>
+      )}
+      <Market
+        instrument={instrument}
+        instruments={config!.instruments}
+        wsUrl={config!.wsUrl}
+        account={account}
+      />
     </>
   );
 }

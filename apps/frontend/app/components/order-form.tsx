@@ -234,6 +234,10 @@ export function OrderForm({
         <button type="submit" className={`action ${side}`} disabled={busy}>
           {busy ? 'Надсилаємо…' : 'Подати заявку'}
         </button>
+        <p className="visually-hidden" role="status">
+          {picked &&
+            `Ціну ${picked.price} підставлено, сторона: ${picked.side === 'buy' ? 'купівля' : 'продаж'}.`}
+        </p>
         {message && (
           <p
             role={failed ? 'alert' : 'status'}
