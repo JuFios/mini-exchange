@@ -84,27 +84,38 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     if (this.beating || !this.reader.ready) return;
     this.beating = true;
     try {
-      const rows: { instrument: string; last_applied_seq: string }[] = await this.source.query(
-        'SELECT instrument, last_applied_seq FROM instrument_state',
-      );
+      let rows: { instrument: string; last_applied_seq: string }[];
+      try {
+        rows = await this.source.query('SELECT instrument, last_applied_seq FROM instrument_state');
+      } catch (error) {
+        // Без свіжого seq з PG різниці немає: метрика зникає, а не показує останнє значення.
+        // Недоступна БД не доводить зависання репліки: це вирішує проба stream, а не PG.
+        this.lags.clear();
+        this.warnHeartbeat(error);
+        return;
+      }
       for (const { instrument, last_applied_seq } of rows) {
         if (!this.instruments.has(instrument)) continue;
-        const applied = BigInt(last_applied_seq);
-        const emitted = this.reader.emittedSeq(instrument);
-        this.lags.set(instrument, applied > emitted ? applied - emitted : 0n);
-        for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
+        try {
+          const applied = BigInt(last_applied_seq);
+          const emitted = this.reader.emittedSeq(instrument);
+          this.lags.set(instrument, applied > emitted ? applied - emitted : 0n);
+          for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
+        } catch (error) {
+          // Збій відправки не скасовує різницю, яку щойно прочитано з PG, і не зупиняє інші інструменти.
+          this.warnHeartbeat(error);
+        }
       }
-    } catch (error) {
-      // Без свіжого seq з PG різниці немає: метрика зникає, а не показує останнє значення.
-      this.lags.clear();
-      // Недоступна БД не доводить зависання репліки: це вирішує проба stream, а не PG.
-      this.logger.warn({
-        alert: 'realtime_heartbeat_failed',
-        message: error instanceof Error ? error.message : String(error),
-      });
     } finally {
       this.beating = false;
     }
+  }
+
+  private warnHeartbeat(error: unknown): void {
+    this.logger.warn({
+      alert: 'realtime_heartbeat_failed',
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private async probe(): Promise<void> {
