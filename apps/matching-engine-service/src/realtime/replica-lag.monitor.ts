@@ -6,6 +6,9 @@ import { RealtimeStreamReader } from './realtime-stream-reader.service';
 import { LagTracker } from './replica-lag';
 
 export const HEARTBEAT_INTERVAL_MS = 2000;
+// Після `stale` репліка повертається в пул, лише коли вердикт чистий три тіки поспіль: інакше
+// репліка на межі вікна мигала б, і nginx то виводив би її з ротації, то повертав.
+const RECOVER_AFTER_MS = 3 * HEARTBEAT_INTERVAL_MS;
 
 /**
  * Раз на HEARTBEAT_INTERVAL_MS робить дві незалежні справи. Heartbeat: читає `last_applied_seq`
@@ -26,7 +29,9 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   private timer?: NodeJS.Timeout;
   private beating = false;
   private probing = false;
-  private wasStale = false;
+  // Репліка оголошена завислою й ще не відновилася. `cleanSince` — з якого моменту вердикт чистий.
+  private latched = false;
+  private cleanSince?: number;
 
   constructor(
     config: ConfigService,
@@ -52,11 +57,12 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   }
 
   /**
-   * Репліка читає stream і просувається, а свіжа проба це підтверджує. Рахується в момент
-   * виклику, а не береться з кешу: `/ready` і upgrade не повинні чекати наступного тіку.
+   * Репліка читає stream і просувається, а свіжа проба це підтверджує. Завислість рахується в
+   * момент виклику, а не береться з кешу: `/ready` і upgrade не повинні чекати наступного тіку.
+   * Після завислості репліка лишається поза пулом ще `RECOVER_AFTER_MS`.
    */
   healthy(): boolean {
-    return this.reader.ready && !this.isStale();
+    return this.reader.ready && !this.isStale() && !this.latched;
   }
 
   onHeartbeat(handler: (instrument: string, seq: string) => void): () => void {
@@ -122,6 +128,8 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
     if (this.probing || !this.reader.ready) return;
     this.probing = true;
     try {
+      // Завислість, що настала до цієї проби, фіксується до того, як свіжа проба її перекриє.
+      this.update();
       const now = performance.now();
       await Promise.all(
         this.reader.streams.map(async (stream) => {
@@ -143,14 +151,23 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
   }
 
   private update(): void {
-    const stale = this.isStale();
-    if (stale && !this.wasStale) {
+    const now = performance.now();
+    if (this.isStale()) {
+      this.cleanSince = undefined;
+      if (this.latched) return;
+      this.latched = true;
       this.logger.error({
         alert: 'ws_replica_stale',
         message: `Replica lags behind the stream or cannot verify it for more than ${this.validForMs} ms`,
       });
       for (const handler of this.staleHandlers) handler();
+      return;
     }
-    this.wasStale = stale;
+    if (!this.latched) return;
+    this.cleanSince ??= now;
+    if (now - this.cleanSince >= RECOVER_AFTER_MS) {
+      this.latched = false;
+      this.cleanSince = undefined;
+    }
   }
 }
