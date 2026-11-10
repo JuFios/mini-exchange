@@ -59,19 +59,42 @@ describe('legacy book push after a failed read', () => {
     expect(socket.received.at(-1)).toBe(env.state.version);
   });
 
-  it('ignores a gap of the stream it does not read the book from', async () => {
+  it('pushes only the instrument whose market stream had the gap', async () => {
     const env = buildLegacyGateway();
-    const socket = env.socket();
-    const call = env.gateway.subscribe(socket as never, 'ABC');
-    await jest.advanceTimersByTimeAsync(200);
-    await call;
-    env.state.reads = 0;
+    const abc = env.socket();
+    const xyz = env.socket();
+    const calls = [
+      env.gateway.subscribe(abc as never, 'ABC'),
+      env.gateway.subscribe(xyz as never, 'XYZ'),
+    ];
+    await jest.advanceTimersByTimeAsync(300);
+    await Promise.all(calls);
+    const [abcBefore, xyzBefore] = [abc.received.length, xyz.received.length];
 
-    env.gap('exchange:user-events');
+    env.changeWithoutDelta();
+    env.gap('exchange:market:{XYZ}');
     await jest.advanceTimersByTimeAsync(1000);
 
-    expect(env.state.reads).toBe(0);
+    expect(xyz.received.length).toBe(xyzBefore + 1);
+    expect(abc.received.length).toBe(abcBefore);
   });
+
+  it.each(['exchange:user-events', 'exchange:market:{ZZZ}', 'something else'])(
+    'does not read the book for a gap of %s',
+    async (stream) => {
+      const env = buildLegacyGateway();
+      const socket = env.socket();
+      const call = env.gateway.subscribe(socket as never, 'ABC');
+      await jest.advanceTimersByTimeAsync(200);
+      await call;
+      env.state.reads = 0;
+
+      env.gap(stream);
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(env.state.reads).toBe(0);
+    },
+  );
 
   it('counts failures within one episode, not over the life of the process', async () => {
     let plan: boolean[] = [];

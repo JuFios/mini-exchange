@@ -132,6 +132,19 @@ describe('a PostgreSQL problem next to a working Redis', () => {
     monitor.onModuleDestroy();
   });
 
+  it('keeps the lag metric when only a heartbeat handler throws', async () => {
+    const { monitor } = build(5000);
+    monitor.onHeartbeat(() => {
+      throw new Error('emit failed');
+    });
+    await run(HEARTBEAT_INTERVAL_MS);
+    // Запит вдався, тож різниця відома; збій відправки її не скасовує.
+    expect(String(monitor.lag().get('ABC'))).toBe('5');
+    await run(HEARTBEAT_INTERVAL_MS);
+    expect(String(monitor.lag().get('ABC'))).toBe('5');
+    monitor.onModuleDestroy();
+  });
+
   it('keeps sending heartbeats while the stream probes fail', async () => {
     const { reader, monitor } = build(5000);
     const heartbeat = jest.fn();
