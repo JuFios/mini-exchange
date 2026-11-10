@@ -180,6 +180,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
    * записів, опублікованих раніше.
    */
   private async tails(): Promise<Map<string, string>> {
+    await this.assertStandalone();
     const ids = new Map<string, string>();
     for (const key of this.keys) {
       // Лічильники беруться до хвоста: запис, доданий між двома викликами, не завищить прочитане.
@@ -197,6 +198,18 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
       if (instrument && seq !== undefined) this.emitted.set(instrument, seq);
     }
     return ids;
+  }
+
+  /**
+   * Читач бере всі stream однією командою XREAD, а Redis Cluster розкладає ключі по слотах:
+   * частина читань завершувалась би `CROSSSLOT` чи `MOVED`, і репліка мовчки нічого б не отримувала.
+   * Замість цього репліка лишається не готовою, відмовляє клієнтам і пише причину в журнал.
+   */
+  private async assertStandalone(): Promise<void> {
+    const info = await this.probe.info('cluster');
+    if (/^cluster_enabled:1\s*$/m.test(info)) {
+      throw new Error('Redis Cluster is not supported: the stream reader needs a standalone Redis');
+    }
   }
 
   /**
