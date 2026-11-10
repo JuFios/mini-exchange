@@ -458,6 +458,38 @@ describe('a stalled reader whose stream probe starts failing', () => {
   }, 60000);
 });
 
+describe('a caught-up replica that loses contact with Redis', () => {
+  it('leaves the pool, refuses upgrades and drops its sockets, then returns', async () => {
+    peer = await api.build({
+      INSTANCE_ID: 'peer-no-redis-probe',
+      ENGINE_WORKER_ENABLED: false,
+      WS_REPLICA_MAX_LAG_MS: 1000,
+    });
+    const peerUrl = await peer.getUrl();
+    const owner = await api.register();
+    expect((await api.submit(owner)).status).toBe(201);
+    const reader = peer.get(RealtimeStreamReader);
+    await waitFor(async () => reader.emittedSeq('ABC') === 1n, 5000);
+    await join(peerUrl);
+    const client = sockets[0];
+    expect(await upgradeStatus(peerUrl)).toBe(101);
+
+    // Репліка наздогнала stream, тож відставання немає: лишається лише строк придатності проби.
+    const probe = jest.spyOn(reader, 'head').mockRejectedValue(new Error('probe timeout'));
+    try {
+      await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 503, 15000, 100);
+      await waitFor(async () => !client.connected, 2000);
+      expect(await upgradeStatus(peerUrl)).toBe(503);
+      expect(await upgradeStatus(api.url())).toBe(101);
+    } finally {
+      probe.mockRestore();
+    }
+
+    await waitFor(async () => (await fetch(`${peerUrl}/ready`)).status === 200, 15000, 100);
+    expect(await upgradeStatus(peerUrl)).toBe(101);
+  }, 60000);
+});
+
 describe('a reader that meets unreadable entries', () => {
   it('skips them on every stream and keeps delivering the entries after them', async () => {
     const received = await join(api.url());
