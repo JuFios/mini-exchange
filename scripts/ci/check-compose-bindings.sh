@@ -22,6 +22,7 @@ docker compose config --format json | jq -e '
   (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
   (["exchange-db","settlement-service"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
   ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == "127.0.0.1") and (map(.target) | sort == [3000,3001])) and
+  ($s["engine-lb"].depends_on.frontend.condition == "service_healthy") and
   (["frontend","postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
