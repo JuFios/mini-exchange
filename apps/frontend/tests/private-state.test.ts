@@ -176,11 +176,61 @@ it('restores private state with a fresh handshake after server expiry', async ()
   for (const request of [
     'POST /api/auth/ws-token',
     'GET /api/engine/orders?status=active&limit=100',
-    'GET /api/engine/orders?status=filled',
+    'GET /api/engine/orders?status=all&limit=100',
     'GET /api/settlement/wallets',
   ]) {
     assert.equal(requests.filter((entry) => entry === request).length, 2, request);
   }
   assert.equal(requests.filter((request) => request.includes('&cursor=')).length, 2);
   assert.equal(requests.filter((request) => request.endsWith('/orders/order-60')).length, 1);
+});
+
+it('accepts a decimal comma and edge spaces, and names an empty field', async () => {
+  const { submitValidatedOrder, orderTotal } = require('../lib/decimal');
+  const limits = {
+    tickSize: '0.01',
+    lotSize: '0.00000001',
+    minQty: '0.00000001',
+    maxQty: '1000000',
+    maxPrice: '1000000.00',
+  };
+  const send = mock.fn(async (order: unknown) => order);
+  const typed = await submitValidatedOrder(
+    { instrument: 'ABC', side: 'sell', price: ' 100,5 ', quantity: '1,25' },
+    limits,
+    send,
+  );
+  assert.deepEqual(typed.errors, {});
+  assert.deepEqual(send.mock.calls[0].arguments, [
+    { instrument: 'ABC', side: 'sell', price: '100.50', quantity: '1.25000000' },
+  ]);
+
+  const empty = await submitValidatedOrder(
+    { instrument: 'ABC', side: 'buy', price: '  ', quantity: '' },
+    limits,
+    send,
+  );
+  assert.deepEqual(empty.errors, { price: 'Вкажіть ціну', quantity: 'Вкажіть кількість' });
+  assert.equal(send.mock.callCount(), 1);
+
+  assert.equal(orderTotal('100,5', '1.5'), '150.7500000000');
+  assert.equal(orderTotal('0.01', '0.00000001'), '0.0000000001');
+  assert.equal(orderTotal('abc', '1'), undefined);
+});
+
+it('sends the user to the sign-in page when the session is gone', async () => {
+  const { checkedFetch, ApiError } = require('../lib/client-api');
+  const assign = mock.fn();
+  Object.assign(globalThis, { window: { location: { assign } } });
+  try {
+    mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 401 }));
+    await assert.rejects(checkedFetch('/api/engine/orders'), ApiError);
+    assert.equal(assign.mock.callCount(), 1);
+    assert.deepEqual(assign.mock.calls[0].arguments, ['/login']);
+    // Хибний пароль лишає користувача на формі.
+    await assert.rejects(checkedFetch('/api/auth/login', { method: 'POST' }), ApiError);
+    assert.equal(assign.mock.callCount(), 1);
+  } finally {
+    Reflect.deleteProperty(globalThis, 'window');
+  }
 });

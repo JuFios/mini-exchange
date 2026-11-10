@@ -7,9 +7,16 @@ export class ApiError extends Error {
   }
 }
 
+// Помилка входу також має статус 401, але лишається на сторінці з формою.
+const ANONYMOUS_PATH = /^\/api\/auth\/(?:login|register|logout)$/;
+
 export async function checkedFetch(path: string, init?: RequestInit) {
   const response = await fetch(path, { cache: 'no-store', ...init });
   if (!response.ok) {
+    // Сесія завершилась: перенаправлення швидше за «з'єднання недоступне».
+    if (response.status === 401 && !ANONYMOUS_PATH.test(path) && typeof window !== 'undefined') {
+      window.location.assign('/login');
+    }
     const body = await response.json().catch(() => null);
     const message = body?.message;
     throw new ApiError(
