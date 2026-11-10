@@ -80,6 +80,12 @@ describe('client projections', () => {
     expect(publicTrade({ ...trade, ...internal } as never)).toEqual(trade);
   });
 
+  it('sends only the listed fields of every level of a delta', () => {
+    const level = { side: 'ask', price: '100.00', quantity: '1.00000000', orders: 2 };
+    const payload = { ...delta, changes: [{ ...level, ownerId: 'u1', entryId: 'x' }] };
+    expect(publicDelta(payload as never).changes).toEqual([level]);
+  });
+
   it('sends the owner only the listed fields of an order and a wallet update', () => {
     const order = {
       orderId: 'o1',
