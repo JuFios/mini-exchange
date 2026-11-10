@@ -474,6 +474,18 @@ describe('a reader that meets unreadable entries', () => {
         'envelope',
         JSON.stringify({ eventId: 'poison', type: 'book.delta', version: 1, payload: delta }),
       );
+      // Ключі маршрутизації валідні, але застосувати delta без `changes` клієнт не може.
+      await admin.xadd(
+        'exchange:market:{ABC}',
+        '*',
+        'envelope',
+        JSON.stringify({
+          eventId: 'incomplete',
+          type: 'book.delta',
+          version: 1,
+          payload: { instrument: 'ABC', seq: '99' },
+        }),
+      );
     } finally {
       admin.disconnect();
     }
@@ -482,6 +494,9 @@ describe('a reader that meets unreadable entries', () => {
 
     await waitFor(async () => seqs(received).includes('1'), 8000);
     const reader = api.app().get(RealtimeStreamReader);
+    // Неповна delta не доходить до клієнта і не просуває `seq`, який репліка вважає розданим.
+    expect(seqs(received)).not.toContain('99');
+    expect(api.app().get(RealtimeStreamReader).emittedSeq('ABC')).toBe(1n);
     expect(reader.cursor('exchange:market:{ABC}')).toBe(await reader.head('exchange:market:{ABC}'));
   }, 30000);
 });

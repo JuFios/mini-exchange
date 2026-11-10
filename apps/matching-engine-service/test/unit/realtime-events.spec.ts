@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   fieldOf,
   parseEnvelope,
@@ -14,6 +16,10 @@ const entry = (type: string, payload: unknown, changes: Record<string, unknown> 
   'envelope',
   JSON.stringify({ eventId: 'e1', type, version: 1, payload, ...changes }),
 ];
+// Події, які виробники справді пишуть у stream (ті самі, що в контрактному тесті).
+const fixtures: Record<string, { eventId: string; payload: Record<string, unknown> }> = JSON.parse(
+  readFileSync(join(__dirname, '../contract/fixtures/events-v1.json'), 'utf8'),
+);
 const delta = { instrument: 'ABC', seq: '7', changes: [] };
 const trade = {
   tradeId: 't1',
@@ -29,8 +35,8 @@ describe('parseEnvelope', () => {
   it.each([
     ['book.delta', delta],
     ['trade.public', trade],
-    ['order.updated', { userId: 'u1', orderId: 'o1' }],
-    ['wallet.updated', { userId: 'u1', asset: 'USD' }],
+    ['order.updated', fixtures['order.updated'].payload],
+    ['wallet.updated', fixtures['wallet.updated'].payload],
   ])('reads %s', (type, payload) => {
     expect(parseEnvelope(entry(type, payload))).toEqual({ type, eventId: 'e1', payload });
   });
@@ -44,7 +50,10 @@ describe('parseEnvelope', () => {
     ['a missing event ID', entry('book.delta', delta, { eventId: '' })],
     ['a market event without instrument', entry('book.delta', { seq: '7' })],
     ['a market event without seq', entry('book.delta', { instrument: 'ABC' })],
-    ['a user event without user', entry('wallet.updated', { asset: 'USD' })],
+    [
+      'a user event without user',
+      entry('wallet.updated', { ...fixtures['wallet.updated'].payload, userId: undefined }),
+    ],
     ['a non-numeric market seq', entry('book.delta', { ...delta, seq: 'abc' })],
     ['a fractional market seq', entry('trade.public', { ...trade, seq: '1.5' })],
     ['an envelope that is JSON null', ['envelope', 'null']],
@@ -107,5 +116,74 @@ describe('stream field access', () => {
     [[], undefined],
   ])('reads seq from %j as %p', (fields, expected) => {
     expect(seqOf(fields)).toBe(expected);
+  });
+});
+
+// Поля, без яких клієнт не може застосувати подію. Решту (`entryId`, `userId` у публічних) клієнту не віддають.
+const REQUIRED: Record<string, string[]> = {
+  'book.delta': ['instrument', 'seq', 'changes'],
+  'trade.public': ['tradeId', 'instrument', 'seq', 'price', 'quantity', 'takerSide', 'executedAt'],
+  'order.updated': [
+    'orderId',
+    'userId',
+    'instrument',
+    'version',
+    'status',
+    'remainingQuantity',
+    'filledQuantity',
+  ],
+  'wallet.updated': ['userId', 'asset', 'available', 'reserved', 'version'],
+};
+
+describe('parseEnvelope payload shape', () => {
+  it.each(Object.keys(REQUIRED))('accepts the %s event a producer writes', (type) => {
+    const { eventId, payload } = fixtures[type];
+    expect(parseEnvelope(entry(type, payload, { eventId }))).toEqual({ type, eventId, payload });
+  });
+
+  it('accepts extra fields and an order update with a cancel reason', () => {
+    const payload = { ...fixtures['order.updated'].payload, cancelReason: 'user', extra: 1 };
+    expect(parseEnvelope(entry('order.updated', payload))?.payload).toEqual(payload);
+  });
+
+  const missing = Object.entries(REQUIRED).flatMap(([type, fields]) =>
+    fields.map((field) => [type, field] as const),
+  );
+
+  it.each(missing)('skips %s without %s', (type, field) => {
+    const payload = { ...fixtures[type].payload };
+    delete payload[field];
+    expect(parseEnvelope(entry(type, payload))).toBeUndefined();
+  });
+
+  it.each(missing)('skips %s whose %s is null or an object', (type, field) => {
+    for (const bad of [null, {}]) {
+      const payload = { ...fixtures[type].payload, [field]: bad };
+      expect(parseEnvelope(entry(type, payload))).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ['book.delta', { changes: {} }],
+    ['book.delta', { changes: [{}] }],
+    ['book.delta', { changes: [{ side: 'up', price: '1', quantity: '1', orders: 1 }] }],
+    ['book.delta', { changes: [{ side: 'ask', price: 'abc', quantity: '1', orders: 1 }] }],
+    ['book.delta', { changes: [{ side: 'ask', price: '1', quantity: '1', orders: '1' }] }],
+    ['trade.public', { takerSide: 'both' }],
+    ['trade.public', { price: 'abc' }],
+    ['trade.public', { quantity: 1 }],
+    ['order.updated', { status: 'unknown' }],
+    ['order.updated', { version: '2' }],
+    ['order.updated', { version: 1.5 }],
+    ['order.updated', { remainingQuantity: 'abc' }],
+    ['order.updated', { cancelReason: 5 }],
+    ['wallet.updated', { version: 7 }],
+    ['wallet.updated', { version: '1.5' }],
+    ['wallet.updated', { version: 'abc' }],
+    ['wallet.updated', { available: 90 }],
+    ['wallet.updated', { reserved: 'abc' }],
+  ])('skips %s with a malformed field %j', (type, change) => {
+    const payload = { ...fixtures[type].payload, ...change };
+    expect(parseEnvelope(entry(type, payload))).toBeUndefined();
   });
 });
