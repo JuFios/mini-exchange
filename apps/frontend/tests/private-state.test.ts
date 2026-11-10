@@ -235,3 +235,64 @@ it('sends the user to the sign-in page when the session is gone', async () => {
     Reflect.deleteProperty(globalThis, 'window');
   }
 });
+
+it('merges active, filled and recent orders by the highest version', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  const row = (id: string, status: string, version: number) => ({
+    id,
+    createdAt: '2026-11-10T00:00:00.000Z',
+    status,
+    version,
+  });
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (path.includes('status=active')) {
+      const cursor = new URL(path, 'http://localhost').searchParams.has('cursor');
+      // `a` ще відкрита в цьому читанні, а `filled` уже бачить її виконаною.
+      return Response.json(cursor ? [] : [row('a', 'open', 1), row('tie', 'open', 3)]);
+    }
+    if (path.includes('status=filled')) {
+      return Response.json([row('a', 'filled', 2), row('old-filled', 'filled', 2)]);
+    }
+    if (path.includes('status=all')) {
+      // `old-filled` випав зі сторінки `all`, бо новіших скасованих понад ліміт.
+      return Response.json([row('c', 'cancelled', 4), row('tie', 'open', 3)]);
+    }
+    return Response.json([]);
+  });
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  let snapshot: { orders: ReturnType<typeof row>[] } | undefined;
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: Error) {
+        completed.emit('error', error);
+      },
+      onSnapshot(value: { orders: ReturnType<typeof row>[] }) {
+        snapshot = value;
+        completed.emit('snapshot');
+      },
+      knownOrderIds: () => [],
+      onOrder() {},
+      onWallet() {},
+    },
+    { setTimeout: () => undefined, clearTimeout() {} },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  await once(completed, 'snapshot');
+  stop();
+  const byId = new Map(snapshot!.orders.map((order) => [order.id, order]));
+  assert.equal(snapshot!.orders.length, 4);
+  assert.equal(byId.get('a')?.status, 'filled');
+  assert.equal(byId.get('old-filled')?.status, 'filled');
+  assert.equal(byId.get('c')?.status, 'cancelled');
+  assert.equal(byId.get('tie')?.version, 3);
+});

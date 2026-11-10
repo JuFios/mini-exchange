@@ -113,9 +113,15 @@ export function Exchange({ symbol }: { symbol: string }) {
           </div>
         </div>
         {error && (
-          <p className="message error" role="alert">
-            {error}
-          </p>
+          <>
+            <p className="message error" role="alert">
+              {error}
+            </p>
+            {/* Layout не перемонтовується, тож невдале завантаження конфігу повторює лише перезавантаження. */}
+            <button type="button" className="secondary" onClick={() => window.location.reload()}>
+              Спробувати ще раз
+            </button>
+          </>
         )}
         {!error && !config && (
           <p className="panel empty" role="status">
