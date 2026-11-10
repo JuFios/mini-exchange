@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { type FormEvent, useState } from 'react';
 import { checkedFetch, errorMessage } from '../../lib/client-api';
-import { Brand } from './brand';
 
 export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   const registering = mode === 'register';
@@ -30,17 +29,6 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
 
   return (
     <main className="auth-layout">
-      <div className="auth-intro">
-        <Brand />
-        <div className="auth-copy">
-          <p className="eyebrow">ТОРГОВИЙ ТЕРМІНАЛ</p>
-          <p className="auth-display">
-            Ринок
-            <br />у реальному часі<span>.</span>
-          </p>
-          <p>Книга заявок, угоди та баланси в одному вікні.</p>
-        </div>
-      </div>
       <section className="panel auth-card">
         <p className="eyebrow">ОБЛІКОВИЙ ЗАПИС</p>
         <h1>{registering ? 'Створіть акаунт' : 'Вхід до біржі'}</h1>

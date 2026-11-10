@@ -541,42 +541,9 @@ input::placeholder {
 .auth-layout {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.12fr) minmax(290px, 0.88fr);
-  align-items: center;
-  gap: clamp(24px, 7vw, 110px);
-  width: min(1150px, 100%);
-  margin: auto;
-  padding: clamp(24px, 6vw, 80px);
-}
-.auth-intro {
-  padding: clamp(22px, 4vw, 52px);
-  min-height: 450px;
-  border: 1px solid var(--line);
-  border-radius: 24px;
-  background: linear-gradient(145deg, #14283a 0%, #0e1b27 57%, #111923 100%);
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  flex-direction: column;
-}
-.auth-copy {
-  display: grid;
-  gap: 15px;
-}
-.auth-display {
-  font-size: clamp(36px, 5.9vw, 72px);
-  line-height: 0.99;
-  font-weight: 735;
-  letter-spacing: -0.07em;
-}
-.auth-display span {
-  color: var(--mint);
-}
-.auth-copy > p:last-child {
-  color: var(--muted);
-  max-width: 275px;
-  line-height: 1.6;
-  font-size: 14px;
+  grid-template-columns: minmax(0, 420px);
+  place-content: center;
+  padding: 24px 16px;
 }
 .auth-card {
   padding: clamp(20px, 3vw, 35px);
@@ -692,14 +659,6 @@ input::placeholder {
   }
   .levels th {
     font-size: 9px;
-  }
-  .auth-layout {
-    grid-template-columns: minmax(0, 1fr);
-    align-content: flex-start;
-  }
-  .auth-intro {
-    min-height: 220px;
-    gap: 23px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
