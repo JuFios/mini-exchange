@@ -182,6 +182,29 @@ async function main() {
 
     // Часткове виконання: після скасування `order.closed` звільняє лише залишок, а виконану
     // частину має закрити `trade.executed`. Подію угоди втрачено до скасування.
+    // Попередні сценарії можуть лишити заявки на ABC. Ціна між найкращою купівлею й продажем не
+    // зіставляється ні з чужою купівлею при виставленні, ні з чужим продажем при купівлі.
+    const [best] = (
+      await db.query(
+        "SELECT max(price) FILTER (WHERE side='buy') AS bid, min(price) FILTER (WHERE side='sell') AS ask FROM orders WHERE instrument='ABC' AND status IN ('open','partially_filled')",
+      )
+    ).rows as { bid: string | null; ask: string | null }[];
+    const bid = best.bid === null ? undefined : Number(best.bid);
+    const ask = best.ask === null ? undefined : Number(best.ask);
+    const partialPrice = (
+      bid !== undefined && ask !== undefined
+        ? (bid + ask) / 2
+        : ask !== undefined
+          ? ask - 1
+          : bid !== undefined
+            ? bid + 1
+            : 300
+    ).toFixed(2);
+    assert(
+      (bid === undefined || Number(partialPrice) > bid) &&
+        (ask === undefined || Number(partialPrice) < ask),
+      `No free price between bid ${bid} and ask ${ask}`,
+    );
     const partialMaker = await token(
       'register',
       `${randomUUID()}@system.test`,
@@ -194,7 +217,7 @@ async function main() {
     );
     const partialOrder = await submit(partialMaker, {
       instrument: 'ABC',
-      price: '300',
+      price: partialPrice,
       side: 'sell',
       quantity: '2',
     });
@@ -216,7 +239,7 @@ async function main() {
       partialTaker,
       {
         instrument: 'ABC',
-        price: '300',
+        price: partialPrice,
         side: 'buy',
         quantity: '1',
       },
