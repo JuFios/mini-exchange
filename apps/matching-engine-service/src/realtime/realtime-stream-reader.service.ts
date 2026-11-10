@@ -194,7 +194,8 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
 
   /** Stream, у яких нових записів не було, звіряються раз на `QUIET_VERIFY_MS`. */
   private async verifyQuiet(reply: StreamReply): Promise<void> {
-    const now = Date.now();
+    // Монотонний годинник: зміна системного часу не відкладає перевірку.
+    const now = performance.now();
     if (now - this.quietVerifiedAt < QUIET_VERIFY_MS) return;
     this.quietVerifiedAt = now;
     const active = new Set(reply.filter(([, entries]) => entries.length > 0).map(([key]) => key));
