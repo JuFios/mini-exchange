@@ -53,6 +53,41 @@ export function mergeWallet(current: Wallet | undefined, update: Wallet): Wallet
 export const activeOrder = (order: Order) =>
   order.status === 'pending' || order.status === 'open' || order.status === 'partially_filled';
 
+/** ID заявок, чий кінцевий стан ще невідомий: лише їх треба дочитати після перепідключення. */
+export function unresolvedOrderIds(orders: Iterable<Order>, pending: Iterable<string>) {
+  const ids = new Set<string>(pending);
+  for (const order of orders) if (activeOrder(order)) ids.add(order.id);
+  return ids;
+}
+
+/**
+ * Рушій може відповісти скороченою 202: заявку записано, а повний стан прочитати не вдалося.
+ * Прийнята заявка не втрачається: показуємо її як `pending`, а далі її доповнить `order.updated`.
+ */
+export function acceptedOrder(input: OrderInput, order: Partial<Order> & { id: string }): Order {
+  if (typeof order.version === 'number') return projectOrder(order as Order);
+  return {
+    id: order.id,
+    instrument: input.instrument,
+    side: input.side,
+    price: input.price,
+    quantity: input.quantity,
+    createdAt: new Date().toISOString(),
+    status: 'pending',
+    version: 0,
+    remainingQuantity: input.quantity,
+    filledQuantity: '0.00000000',
+    cancelReason: null,
+  };
+}
+
+/** Повідомлення про ручне скасування за поточним станом заявки, а не за станом на момент кліку. */
+export function cancelNotice(order: Order | undefined) {
+  if (order?.status === 'cancelled') return { message: 'Заявку скасовано.', failed: false };
+  if (order?.status === 'filled') return { message: 'Заявка встигла виконатися.', failed: false };
+  return { message: 'Скасування прийнято. Очікуємо підтвердження.', failed: false };
+}
+
 export function orderFeedback(submitted: Order, orders: readonly Order[]) {
   const order =
     orders.find(({ id, version }) => id === submitted.id && version > submitted.version) ??

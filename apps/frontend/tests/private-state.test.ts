@@ -316,3 +316,140 @@ it('merges active, filled and recent orders by the highest version', async () =>
   assert.equal(byId.get('c')?.status, 'cancelled');
   assert.equal(byId.get('tie')?.version, 3);
 });
+
+it('keeps an order accepted with a short 202 instead of reporting a failure', () => {
+  const { acceptedOrder } = require('../lib/private-state');
+  const input = { instrument: 'ABC', side: 'buy', price: '100.00', quantity: '2.00000000' };
+  const short = acceptedOrder(input, {
+    id: 'new',
+    ownerId: 'u',
+    instrument: 'ABC',
+    status: 'pending',
+  });
+  assert.equal(short.id, 'new');
+  assert.equal(short.status, 'pending');
+  assert.equal(short.version, 0);
+  assert.equal(short.remainingQuantity, '2.00000000');
+  assert.equal(short.price, '100.00');
+  const full = {
+    ...short,
+    version: 1,
+    status: 'open',
+    createdAt: '2026-11-10T00:00:00.000Z',
+    ownerId: 'u',
+  };
+  assert.deepEqual(acceptedOrder(input, full).status, 'open');
+  assert.equal('ownerId' in acceptedOrder(input, full), false);
+});
+
+it('words the cancellation notice from the order state and rereads only open orders', () => {
+  const { cancelNotice, unresolvedOrderIds } = require('../lib/private-state');
+  const order = (id: string, status: Order['status']) => ({ id, status }) as Order;
+  assert.equal(cancelNotice(order('a', 'cancelled')).message, 'Заявку скасовано.');
+  assert.equal(cancelNotice(order('a', 'filled')).message, 'Заявка встигла виконатися.');
+  assert.match(cancelNotice(order('a', 'open')).message, /Очікуємо/);
+  assert.match(cancelNotice(undefined).message, /Очікуємо/);
+
+  const ids = unresolvedOrderIds(
+    [
+      order('open', 'open'),
+      order('part', 'partially_filled'),
+      order('done', 'filled'),
+      order('gone', 'cancelled'),
+    ],
+    ['event-only'],
+  );
+  assert.deepEqual([...ids].sort(), ['event-only', 'open', 'part']);
+});
+
+it('rejects an overlong amount instead of relying on maxLength', async () => {
+  const { submitValidatedOrder } = require('../lib/decimal');
+  const limits = {
+    tickSize: '0.01',
+    lotSize: '0.00000001',
+    minQty: '0.00000001',
+    maxQty: '1000000',
+    maxPrice: '1000000.00',
+  };
+  const send = mock.fn(async (order: unknown) => order);
+  const result = await submitValidatedOrder(
+    { instrument: 'ABC', side: 'buy', price: '1000000.0051', quantity: '1' },
+    limits,
+    send,
+  );
+  assert.ok(result.errors.price);
+  assert.equal(send.mock.callCount(), 0);
+});
+
+it('sends the bound user with engine requests and reloads when the session changed', async () => {
+  const { checkedFetch } = require('../lib/client-api');
+  const { bindSession } = require('../lib/session-binding');
+  const reload = mock.fn();
+  Object.assign(globalThis, { window: { location: { assign() {}, reload } } });
+  try {
+    const seen: (string | null)[] = [];
+    mock.method(globalThis, 'fetch', async (_path: string, options: RequestInit) => {
+      seen.push(new Headers(options.headers).get('x-session-user'));
+      return new Response(JSON.stringify({ code: 'session_changed', message: 'x' }), {
+        status: 409,
+      });
+    });
+    bindSession('user-a');
+    await assert.rejects(checkedFetch('/api/engine/orders', { method: 'POST' }));
+    await assert.rejects(checkedFetch('/api/auth/ws-token', { method: 'POST' }));
+    assert.deepEqual(seen, ['user-a', null]);
+    assert.equal(reload.mock.callCount(), 2);
+  } finally {
+    bindSession(undefined);
+    Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+it('retries the initial read on the same connection after a transient failure', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  let fail = true;
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 't', userId: 'user-a' });
+    if (fail && path.includes('/settlement/wallets')) return new Response('{}', { status: 503 });
+    return Response.json([]);
+  });
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  const timers: (() => void)[] = [];
+  const events: string[] = [];
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onSession(id: string) {
+        events.push('session:' + id);
+      },
+      onLoading() {},
+      onError() {
+        events.push('error');
+      },
+      onSnapshot() {
+        events.push('snapshot');
+        completed.emit('snapshot');
+      },
+      knownOrderIds: () => [],
+      onOrder() {},
+      onWallet() {},
+    },
+    { setTimeout: (callback: () => void) => timers.push(callback), clearTimeout() {} },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  while (!events.includes('error')) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers.length > 0, true, 'a retry must be scheduled without a reconnect');
+  fail = false;
+  const done = once(completed, 'snapshot');
+  timers.at(-1)!();
+  await done;
+  stop();
+  assert.deepEqual(events, ['session:user-a', 'error', 'snapshot']);
+});

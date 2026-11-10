@@ -8,7 +8,8 @@ import {
   Service,
   unavailable,
 } from './api';
-import { ACCESS_COOKIE } from './session';
+import { ACCESS_COOKIE, claims } from './session';
+import { SESSION_HEADER } from './session-binding';
 
 const routes: Record<Service, Partial<Record<string, RegExp>>> = {
   engine: {
@@ -29,8 +30,19 @@ export async function proxy(request: NextRequest, service: Service, path: string
   }
   if (request.method !== 'GET' && !sameOrigin(request)) return forbiddenOrigin();
 
-  const headers = backendHeaders(request);
   const token = request.cookies.get(ACCESS_COOKIE)?.value;
+  // Cookie спільні для вкладок, а вкладка пам'ятає користувача зі свого підключення.
+  // Мутація без збігу ніколи не йде від імені іншого рахунку, читання — лише якщо збіг відомий.
+  const expected = request.headers.get(SESSION_HEADER);
+  const current = claims(token)?.sub;
+  if (current && expected !== current && (request.method !== 'GET' || expected)) {
+    return Response.json(
+      { message: 'Сесію змінено в іншій вкладці. Оновлюємо сторінку.', code: 'session_changed' },
+      { status: 409, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+
+  const headers = backendHeaders(request);
   if (token) headers.set('authorization', 'Bearer ' + token);
   try {
     const result = await fetch(backendUrl(service) + '/' + route + request.nextUrl.search, {

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { checkedFetch, errorMessage } from '../../lib/client-api';
+import { announceSessionChange } from '../../lib/session-binding';
 import { Brand } from './brand';
 
 export function Header({ admin, page }: { admin: boolean; page: 'trade' | 'status' }) {
@@ -14,6 +15,7 @@ export function Header({ admin, page }: { admin: boolean; page: 'trade' | 'statu
     setBusy(true);
     try {
       await checkedFetch('/api/auth/logout', { method: 'POST' });
+      announceSessionChange();
       window.location.assign('/login');
     } catch (error) {
       setError(errorMessage(error));

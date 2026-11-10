@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { apiJson, errorMessage } from '../../lib/client-api';
-import { type Order, type Wallet, activeOrder } from '../../lib/private-state';
+import { type Order, type Wallet, activeOrder, cancelNotice } from '../../lib/private-state';
 import { quantityText, timeText } from './market-tables';
 
 const labels: Record<Order['status'], string> = {
@@ -73,8 +73,8 @@ export function OrdersPanel({
 }) {
   const [tab, setTab] = useState<Tab>('active');
   const [cancelling, setCancelling] = useState<string[]>([]);
-  const [message, setMessage] = useState('');
-  const [failed, setFailed] = useState(false);
+  // Підтверджене скасування показує поточний стан заявки, помилка — власний текст.
+  const [notice, setNotice] = useState<{ orderId: string } | { error: string }>();
   const active = orders.filter(activeOrder);
   const filled = orders.filter(({ status }) => status === 'filled');
   const cancelled = orders.filter(({ status }) => status === 'cancelled');
@@ -82,9 +82,14 @@ export function OrdersPanel({
     b.createdAt.localeCompare(a.createdAt),
   );
 
+  const shown = !notice
+    ? undefined
+    : 'error' in notice
+      ? { message: notice.error, failed: true }
+      : cancelNotice(orders.find(({ id }) => id === notice.orderId));
+
   async function cancel(order: Order) {
-    setMessage('');
-    setFailed(false);
+    setNotice(undefined);
     setCancelling((ids) => [...ids, order.id]);
     try {
       const result = await apiJson<{ order?: Order }>(
@@ -92,12 +97,9 @@ export function OrdersPanel({
         { method: 'DELETE' },
       );
       if (result.order) updateOrder(result.order);
-      setMessage(
-        result.order ? 'Заявку скасовано.' : 'Скасування прийнято. Очікуємо підтвердження.',
-      );
+      setNotice({ orderId: order.id });
     } catch (error) {
-      setFailed(true);
-      setMessage(errorMessage(error));
+      setNotice({ error: errorMessage(error) });
     } finally {
       setCancelling((ids) => ids.filter((id) => id !== order.id));
     }
@@ -121,7 +123,7 @@ export function OrdersPanel({
               aria-pressed={tab === name}
               onClick={() => {
                 setTab(name);
-                setMessage('');
+                setNotice(undefined);
               }}
             >
               {label} <span>{count}</span>
@@ -129,9 +131,12 @@ export function OrdersPanel({
           ))}
         </div>
       </div>
-      {message && (
-        <p className={`message ${failed ? 'error' : 'success'}`} role={failed ? 'alert' : 'status'}>
-          {message}
+      {shown && (
+        <p
+          className={`message ${shown.failed ? 'error' : 'success'}`}
+          role={shown.failed ? 'alert' : 'status'}
+        >
+          {shown.message}
         </p>
       )}
       {rows.length > 0 ? (

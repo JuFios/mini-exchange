@@ -4,12 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { type Clock, type SocketLike, realClock, RETRY_MIN_MS, RETRY_MAX_MS } from './book-session';
 import { apiJson, ApiError, errorMessage } from './client-api';
+import { bindSession } from './session-binding';
 import {
   type Order,
   type OrderUpdate,
   type Wallet,
   finishAttempt,
   mergeWallet,
+  unresolvedOrderIds,
   projectOrder,
   validOrderUpdate,
   validWallet,
@@ -21,6 +23,7 @@ interface Snapshot {
 }
 
 interface View {
+  onSession?(userId: string | undefined): void;
   onLoading(): void;
   onDisconnected?(): void;
   onError(error: unknown): void;
@@ -69,17 +72,21 @@ export function startPrivateSocket(
   let retry: unknown;
   let delay = RETRY_MIN_MS;
   let signedOut = false;
+  let loadRetry: unknown;
+  let loadDelay = RETRY_MIN_MS;
 
   const socket = connect(url + '/private', {
     autoConnect: false,
     transports: ['websocket'],
     auth(done) {
-      void apiJson<{ token: string }>('/api/auth/ws-token', {
+      void apiJson<{ token: string; userId?: string }>('/api/auth/ws-token', {
         method: 'POST',
         signal: lifetime.signal,
       })
-        .then(({ token }) => {
-          if (!lifetime.signal.aborted) done({ token });
+        .then(({ token, userId }) => {
+          if (lifetime.signal.aborted) return;
+          view.onSession?.(userId);
+          done({ token });
         })
         .catch((error: unknown) => {
           if (lifetime.signal.aborted) return;
@@ -97,13 +104,7 @@ export function startPrivateSocket(
     delay = Math.min(delay * 2, RETRY_MAX_MS);
   }
 
-  socket.on('connect', () => {
-    session?.abort();
-    session = new AbortController();
-    const { signal } = session;
-    clock.clearTimeout(retry);
-    delay = RETRY_MIN_MS;
-    view.onLoading();
+  function load(signal: AbortSignal) {
     void Promise.all([
       readActiveOrders(signal),
       apiJson<Order[]>('/api/engine/orders?status=filled&limit=100', { signal }),
@@ -119,24 +120,45 @@ export function startPrivateSocket(
           if (!known || order.version >= known.version) byId.set(order.id, order);
         }
         const orders = [...byId.values()];
-        const seen = new Set(orders.map(({ id }) => id));
         // Заявка, відсутня у списку, могла завершитися між з'єднаннями.
-        for (const id of view.knownOrderIds()) {
-          if (!seen.has(id)) {
-            orders.push(
-              await apiJson<Order>('/api/engine/orders/' + encodeURIComponent(id), { signal }),
-            );
-            seen.add(id);
-          }
-        }
+        const missing = [...view.knownOrderIds()].filter((id) => !byId.has(id));
+        orders.push(
+          ...(await Promise.all(
+            missing.map((id) =>
+              apiJson<Order>('/api/engine/orders/' + encodeURIComponent(id), { signal }),
+            ),
+          )),
+        );
         if (!signal.aborted) view.onSnapshot({ orders, wallets }, signal);
+        loadDelay = RETRY_MIN_MS;
       })
       .catch((error: unknown) => {
-        if (!signal.aborted) view.onError(error);
+        if (signal.aborted) return;
+        view.onError(error);
+        // Сокет лишається підключеним, тож подій не буде, доки читання не вдасться.
+        if (error instanceof ApiError && error.status === 401) return;
+        clock.clearTimeout(loadRetry);
+        loadRetry = clock.setTimeout(() => {
+          if (!signal.aborted) load(signal);
+        }, loadDelay);
+        loadDelay = Math.min(loadDelay * 2, RETRY_MAX_MS);
       });
+  }
+
+  socket.on('connect', () => {
+    session?.abort();
+    session = new AbortController();
+    const { signal } = session;
+    clock.clearTimeout(retry);
+    clock.clearTimeout(loadRetry);
+    delay = RETRY_MIN_MS;
+    loadDelay = RETRY_MIN_MS;
+    view.onLoading();
+    load(signal);
   });
   socket.on('disconnect', (reason: string) => {
     session?.abort();
+    clock.clearTimeout(loadRetry);
     if (lifetime.signal.aborted) return;
     view.onDisconnected?.();
     if (reason === 'io server disconnect') reconnect();
@@ -157,6 +179,7 @@ export function startPrivateSocket(
     lifetime.abort();
     session?.abort();
     clock.clearTimeout(retry);
+    clock.clearTimeout(loadRetry);
     socket.disconnect();
   };
 }
@@ -165,11 +188,13 @@ export function usePrivateSocket(url: string | undefined) {
   const [data, setData] = useState<Snapshot>({ orders: [], wallets: [] });
   const [status, setStatus] = useState<'loading' | 'reconnecting' | 'live' | 'error'>('loading');
   const [error, setError] = useState('');
+  const [userId, setUserId] = useState<string>();
   const receiveOrder = useRef<(order: Order) => void>(() => undefined);
 
   useEffect(() => {
     if (!url) return;
     let loading = true;
+    let known: string | undefined;
     const orders = new Map<string, Order>();
     const wallets = new Map<string, Wallet>();
     const pendingOrders = new Map<string, OrderUpdate>();
@@ -251,7 +276,14 @@ export function usePrivateSocket(url: string | undefined) {
       },
       onError,
       knownOrderIds() {
-        return new Set([...orders.keys(), ...pendingOrders.keys()]);
+        // Завершену заявку не перечитують: її стан у снапшоті не зміниться.
+        return unresolvedOrderIds(orders.values(), pendingOrders.keys());
+      },
+      onSession(id) {
+        if (known !== undefined && id !== known) return window.location.reload();
+        known = id;
+        bindSession(id);
+        setUserId(id);
       },
       onSnapshot(snapshot, signal) {
         const latest = snapshot.orders.map(projectOrder);
@@ -291,9 +323,16 @@ export function usePrivateSocket(url: string | undefined) {
     });
     return () => {
       stop();
+      bindSession(undefined);
       receiveOrder.current = () => undefined;
     };
   }, [url]);
 
-  return { ...data, status, error, updateOrder: (order: Order) => receiveOrder.current(order) };
+  return {
+    ...data,
+    status,
+    error,
+    userId,
+    updateOrder: (order: Order) => receiveOrder.current(order),
+  };
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Header } from '../../components/header';
-import { apiJson, errorMessage } from '../../../lib/client-api';
+import { apiJson, ApiError, errorMessage } from '../../../lib/client-api';
 
 interface Instrument {
   instrument: string;
@@ -68,7 +68,13 @@ export default function AdminStatusPage() {
         if (!signal.aborted) setReport(value);
       })
       .catch((error: unknown) => {
-        if (!signal.aborted) setReportError(errorMessage(error));
+        if (signal.aborted) return;
+        // 502–504 означають обрив довгої звірки або недоступний сервіс, а не відмову за правами.
+        setReportError(
+          error instanceof ApiError && [502, 503, 504].includes(error.status)
+            ? 'Звірка триває довше за очікуване або сервіс недоступний. Оновіть сторінку пізніше.'
+            : errorMessage(error),
+        );
       });
     return () => {
       controller.abort();

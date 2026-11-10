@@ -1,13 +1,17 @@
 'use client';
 
 import Link from 'next/link';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useState } from 'react';
 import { checkedFetch, errorMessage } from '../../lib/client-api';
+import { announceSessionChange } from '../../lib/session-binding';
 
 export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   const registering = mode === 'register';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // До гідратації обробника немає, і браузер відправив би форму звичайним GET із паролем в URL.
+  const [ready, setReady] = useState(false);
+  useEffect(() => setReady(true), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -20,6 +24,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email: data.get('email'), password: data.get('password') }),
       });
+      announceSessionChange();
       window.location.assign('/exchange/ABC');
     } catch (error) {
       setError(errorMessage(error));
@@ -37,7 +42,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
             ? 'Вкажіть пошту й пароль для реєстрації.'
             : 'Введіть пошту та пароль, щоб продовжити.'}
         </p>
-        <form onSubmit={submit}>
+        <form method="post" onSubmit={submit}>
           <label htmlFor="email">Електронна пошта</label>
           <input
             id="email"
@@ -62,7 +67,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
               {error}
             </p>
           )}
-          <button type="submit" className="action" disabled={busy}>
+          <button type="submit" className="action" disabled={busy || !ready}>
             {busy ? 'Зачекайте…' : registering ? 'Зареєструватися' : 'Увійти'}
           </button>
         </form>

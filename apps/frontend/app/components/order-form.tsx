@@ -12,9 +12,9 @@ import {
 import {
   type Order,
   type Wallet,
+  acceptedOrder,
   attemptKey,
   orderFeedback,
-  projectOrder,
 } from '../../lib/private-state';
 import { quantityText } from './market-tables';
 
@@ -58,12 +58,15 @@ async function sendOrder(input: OrderInput) {
   const idempotencyKey = pending?.idempotencyKey ?? crypto.randomUUID();
   writeAttempt(key, { ...pending, idempotencyKey });
   try {
-    const { order } = await apiJson<{ order: Order }>('/api/engine/orders', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
-      body: JSON.stringify(input),
-    });
-    const result = projectOrder(order);
+    const { order } = await apiJson<{ order: Partial<Order> & { id: string } }>(
+      '/api/engine/orders',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+        body: JSON.stringify(input),
+      },
+    );
+    const result = acceptedOrder(input, order);
     writeAttempt(key, result.status === 'pending' ? { idempotencyKey, orderId: result.id } : null);
     return result;
   } catch (error) {
@@ -80,12 +83,15 @@ export function OrderForm({
   orders,
   wallets,
   picked,
+  ready,
   onOrder,
 }: {
   instrument: Instrument;
   orders: readonly Order[];
   wallets: readonly Wallet[];
   picked?: PickedLevel;
+  /** Сесія вкладки відома: без неї проксі не зможе звірити користувача. */
+  ready: boolean;
   onOrder: (order: Order) => void;
 }) {
   const [side, setSide] = useState<OrderInput['side']>('buy');
@@ -126,9 +132,10 @@ export function OrderForm({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !ready) return;
     dismiss();
     setBusy(true);
+    const sent = { price, quantity };
     try {
       const { errors, result } = await submitValidatedOrder(
         { instrument: instrument.symbol, side, price, quantity },
@@ -139,8 +146,9 @@ export function OrderForm({
       if (!result) return;
       onOrder(result);
       setSubmitted(result);
-      setPrice('');
-      setQuantity('');
+      // Поки йшов запит, користувач міг почати нову чернетку: її не стираємо.
+      setPrice((current) => (current === sent.price ? '' : current));
+      setQuantity((current) => (current === sent.quantity ? '' : current));
     } catch (error) {
       setFailure(errorMessage(error));
     } finally {
@@ -154,7 +162,7 @@ export function OrderForm({
         <h2>Нова заявка</h2>
         <span className="tag">ЛІМІТНА</span>
       </div>
-      <form onSubmit={submit} noValidate>
+      <form method="post" onSubmit={submit} noValidate>
         <div className="segmented" role="group" aria-label="Сторона заявки">
           <button
             type="button"
@@ -187,7 +195,6 @@ export function OrderForm({
             placeholder="0.00"
             inputMode="decimal"
             autoComplete="off"
-            maxLength={10}
             value={price}
             onChange={(event) => edit('price', event.target.value)}
             aria-invalid={Boolean(errors.price)}
@@ -208,7 +215,6 @@ export function OrderForm({
             placeholder="0.00000000"
             inputMode="decimal"
             autoComplete="off"
-            maxLength={16}
             value={quantity}
             onChange={(event) => edit('quantity', event.target.value)}
             aria-invalid={Boolean(errors.quantity)}
@@ -231,7 +237,7 @@ export function OrderForm({
             <dd>{available === undefined ? '—' : `${quantityText(available)} ${spendAsset}`}</dd>
           </div>
         </dl>
-        <button type="submit" className={`action ${side}`} disabled={busy}>
+        <button type="submit" className={`action ${side}`} disabled={busy || !ready}>
           {busy ? 'Надсилаємо…' : 'Подати заявку'}
         </button>
         <p className="visually-hidden" role="status">

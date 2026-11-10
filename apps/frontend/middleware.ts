@@ -3,6 +3,9 @@ import { requestOrigin, sameOrigin, unavailable } from './lib/api';
 import { publicWsUrl } from './lib/public-ws';
 import { ACCESS_COOKIE, claims, clearTokens, refreshSession, setTokens } from './lib/session';
 
+// Токен оновлюється із запасом: до backend запит доходить пізніше, ніж його бачить middleware.
+const EXPIRY_MARGIN_MS = 30_000;
+
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const protectedPage = path.startsWith('/exchange/') || path === '/admin/status';
@@ -11,20 +14,29 @@ export async function middleware(request: NextRequest) {
   let token = claims(request.cookies.get(ACCESS_COOKIE)?.value);
   let update: Awaited<ReturnType<typeof refreshSession>> | undefined;
 
-  if (refresh && (!token || token.exp * 1000 <= Date.now())) {
+  const now = Date.now();
+  const expired = !token || token.exp * 1000 <= now;
+  const nearExpiry = !token || token.exp * 1000 - EXPIRY_MARGIN_MS <= now;
+
+  if (refresh && nearExpiry) {
     // Для мутацій Origin перевіряється також до можливого refresh.
     if (request.method === 'GET' || request.method === 'HEAD' || sameOrigin(request)) {
       try {
         update = await refreshSession(request);
-        if (update.failure && !protectedPage) return update.failure;
-        token = undefined;
-        if (update.tokens) {
-          request.cookies.set(ACCESS_COOKIE, update.tokens.accessToken);
-          token = claims(update.tokens.accessToken);
+        // Токен із запасу ще чинний: збій refresh не має його відбирати.
+        if (update.failure && !protectedPage && expired) return update.failure;
+        if (expired || update.tokens) {
+          token = undefined;
+          if (update.tokens) {
+            request.cookies.set(ACCESS_COOKIE, update.tokens.accessToken);
+            token = claims(update.tokens.accessToken);
+          }
         }
       } catch {
-        if (!protectedPage) return unavailable();
-        token = undefined;
+        if (expired) {
+          if (!protectedPage) return unavailable();
+          token = undefined;
+        }
       }
     }
   }

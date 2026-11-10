@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { Header } from '../components/header';
 import { type Instrument } from '../components/order-form';
 import { apiJson, errorMessage } from '../../lib/client-api';
+import { watchSessionChange } from '../../lib/session-binding';
 import { usePrivateSocket } from '../../lib/use-private-socket';
 
 interface Config {
@@ -45,6 +46,9 @@ export function ExchangeShell({ admin, children }: { admin: boolean; children: R
       });
     return () => controller.abort();
   }, []);
+
+  // Вхід або вихід в іншій вкладці міняє спільні cookie: оновлюємо сторінку, щоб не показувати чужий рахунок.
+  useEffect(() => watchSessionChange(() => window.location.reload()), []);
 
   return (
     <ExchangeContext.Provider value={{ config, error, account }}>

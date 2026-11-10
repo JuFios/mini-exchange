@@ -78,6 +78,7 @@ function Market({
             orders={account.orders}
             wallets={account.wallets}
             picked={picked}
+            ready={account.userId !== undefined}
             onOrder={account.updateOrder}
           />
           <WalletPanel wallets={account.wallets} loading={account.status === 'loading'} />
