@@ -18,6 +18,7 @@ const ERROR_LOG_INTERVAL_MS = 5000;
 const FROZEN_POLL_MS = 50;
 
 type Handler<T> = (event: T) => void;
+type StreamReply = [key: string, entries: [id: string, fields: string[]][]][];
 
 /** Лічильники stream і його хвіст, прочитані однією відповіддю `XINFO STREAM`. */
 interface StreamState extends StreamCounters {
@@ -144,27 +145,12 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
           await this.pause(FROZEN_POLL_MS);
           continue;
         }
-        const reply = await this.redis.xread(
-          'COUNT',
-          BATCH,
-          'BLOCK',
-          BLOCK_MS,
-          'STREAMS',
-          ...this.keys,
-          ...this.keys.map((key) => this.ids!.get(key)!),
-        );
+        const reply = await this.fetch(this.ids);
         backoff = 250;
         // Заморозка, що настала під час очікування, не віддає прочитане: ID не просуваються,
         // тож після розморозки записи прочитаються знову.
         if (this.chaos.readerFrozen) continue;
-        for (const [key, entries] of reply ?? []) {
-          for (const [id, fields] of entries) {
-            this.consume(fields);
-            this.ids.set(key, id);
-          }
-          this.unverified.set(key, (this.unverified.get(key) ?? 0) + entries.length);
-        }
-        for (const [key, entries] of reply ?? []) if (entries.length > 0) await this.verify(key);
+        await this.apply(reply ?? [], this.ids);
       } catch (error) {
         if (this.stopped) return;
         this.logFailure(error);
@@ -172,6 +158,31 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
         backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }
     }
+  }
+
+  /** Один блокуючий XREAD з усіх stream від збережених курсорів. */
+  private fetch(ids: Map<string, string>) {
+    return this.redis.xread(
+      'COUNT',
+      BATCH,
+      'BLOCK',
+      BLOCK_MS,
+      'STREAMS',
+      ...this.keys,
+      ...this.keys.map((key) => ids.get(key)!),
+    );
+  }
+
+  /** Роздає прочитане, просуває курсори, потім звіряє кожен stream із лічильниками. */
+  private async apply(reply: StreamReply, ids: Map<string, string>) {
+    for (const [key, entries] of reply) {
+      for (const [id, fields] of entries) {
+        this.consume(fields);
+        ids.set(key, id);
+      }
+      this.unverified.set(key, (this.unverified.get(key) ?? 0) + entries.length);
+    }
+    for (const [key, entries] of reply) if (entries.length > 0) await this.verify(key);
   }
 
   /**

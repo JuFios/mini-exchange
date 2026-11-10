@@ -100,20 +100,22 @@ export class ReplicaLagMonitor implements OnApplicationBootstrap, OnModuleDestro
         this.warnHeartbeat(error);
         return;
       }
-      for (const { instrument, last_applied_seq } of rows) {
-        if (!this.instruments.has(instrument)) continue;
-        try {
-          const applied = BigInt(last_applied_seq);
-          const emitted = this.reader.emittedSeq(instrument);
-          this.lags.set(instrument, applied > emitted ? applied - emitted : 0n);
-          for (const heartbeat of this.heartbeats) heartbeat(instrument, last_applied_seq);
-        } catch (error) {
-          // Збій відправки не скасовує різницю, яку щойно прочитано з PG, і не зупиняє інші інструменти.
-          this.warnHeartbeat(error);
-        }
-      }
+      for (const { instrument, last_applied_seq } of rows) this.beat(instrument, last_applied_seq);
     } finally {
       this.beating = false;
+    }
+  }
+
+  private beat(instrument: string, lastAppliedSeq: string): void {
+    if (!this.instruments.has(instrument)) return;
+    try {
+      const applied = BigInt(lastAppliedSeq);
+      const emitted = this.reader.emittedSeq(instrument);
+      this.lags.set(instrument, applied > emitted ? applied - emitted : 0n);
+      for (const heartbeat of this.heartbeats) heartbeat(instrument, lastAppliedSeq);
+    } catch (error) {
+      // Збій відправки не скасовує різницю, яку щойно прочитано з PG, і не зупиняє інші інструменти.
+      this.warnHeartbeat(error);
     }
   }
 
