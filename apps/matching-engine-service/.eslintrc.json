@@ -28,5 +28,30 @@
         "message": "Do not call external services inside a database transaction: sessions die after 2 s idle in transaction."
       }
     ]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/realtime/**/*.ts", "src/orders/gateway/**/*.ts"],
+      "rules": {
+        "complexity": ["error", 10],
+        "max-depth": ["error", 3],
+        "max-lines-per-function": [
+          "error",
+          {
+            "max": 60,
+            "skipBlankLines": true,
+            "skipComments": true
+          }
+        ],
+        "max-lines": [
+          "error",
+          {
+            "max": 300,
+            "skipBlankLines": true,
+            "skipComments": true
+          }
+        ]
+      }
+    }
+  ]
 }
