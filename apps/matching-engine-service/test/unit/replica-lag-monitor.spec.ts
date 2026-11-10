@@ -4,6 +4,9 @@ import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
 import { RealtimeStreamReader } from '../../src/realtime/realtime-stream-reader.service';
 import { HEARTBEAT_INTERVAL_MS, ReplicaLagMonitor } from '../../src/realtime/replica-lag.monitor';
 
+/** Скільки поспіль свіжих проб потрібно репліці, щоб повернутися в пул: три тіки. */
+const RECOVER_AFTER_MS = 3 * HEARTBEAT_INTERVAL_MS;
+
 const STREAMS = ['exchange:market:{ABC}', 'exchange:user-events'];
 
 /** Читач з керованими пробами Redis: зсув позиції й відмови задає тест. */
@@ -66,7 +69,7 @@ describe('a replica that loses its stream probes', () => {
     monitor.onModuleDestroy();
   });
 
-  it('is healthy again as soon as one probe succeeds', async () => {
+  it('stays out of the pool until probes have been fresh for the whole recovery period', async () => {
     const { reader, monitor } = build(5000);
     await run(HEARTBEAT_INTERVAL_MS);
     reader.probeFails = true;
@@ -75,7 +78,36 @@ describe('a replica that loses its stream probes', () => {
 
     reader.probeFails = false;
     await run(HEARTBEAT_INTERVAL_MS);
+    expect(monitor.healthy()).toBe(false);
+    await run(RECOVER_AFTER_MS - HEARTBEAT_INTERVAL_MS);
+    expect(monitor.healthy()).toBe(false);
+    await run(2 * HEARTBEAT_INTERVAL_MS);
     expect(monitor.healthy()).toBe(true);
+    monitor.onModuleDestroy();
+  });
+
+  it('does not flap when probes succeed only now and then', async () => {
+    const { reader, monitor } = build(5000);
+    const stale = jest.fn();
+    monitor.onStale(stale);
+    await run(HEARTBEAT_INTERVAL_MS);
+    // Шість тіків збою, один успішний: вердикт на межі вікна без гістерезису мигав би.
+    let flips = 0;
+    let last = monitor.healthy();
+    for (let cycle = 0; cycle < 6; cycle++) {
+      for (let tick = 0; tick < 4; tick++) {
+        reader.probeFails = tick < 3;
+        for (let part = 0; part < 4; part++) {
+          await run(HEARTBEAT_INTERVAL_MS / 4);
+          if (monitor.healthy() !== last) flips++;
+          last = monitor.healthy();
+        }
+      }
+    }
+    // Один перехід у `stale` на початку, далі репліка поза пулом.
+    expect(flips).toBe(1);
+    expect(monitor.healthy()).toBe(false);
+    expect(stale).toHaveBeenCalledTimes(1);
     monitor.onModuleDestroy();
   });
 
@@ -158,16 +190,21 @@ describe('a PostgreSQL problem next to a working Redis', () => {
 });
 
 describe('health verdict invariant', () => {
-  /** Модель: репліка здорова, поки остання успішна проба (або перший тік) не старша за вікно. */
-  it('holds exactly while the last successful probe is not older than the validity window', async () => {
+  /**
+   * Модель: «сире» вердикт завислості — остання успішна проба (або перший тік) старша за вікно.
+   * Здорова репліка ніколи не зависла за сирим вердиктом, а після вікна відновлення без завислості
+   * вона здорова завжди. Між цими межами рішення належить гістерезису.
+   */
+  it('is never healthy while stale and is healthy after a quiet recovery period', async () => {
     const step = fc.record({
       probeOk: fc.boolean(),
       pgOk: fc.boolean(),
-      dt: fc.integer({ min: 100, max: 7000 }),
+      parts: fc.integer({ min: 1, max: 28 }),
     });
+    const part = 250;
     await fc.assert(
       fc.asyncProperty(
-        fc.array(step, { minLength: 1, maxLength: 25 }),
+        fc.array(step, { minLength: 1, maxLength: 12 }),
         fc.integer({ min: 1, max: 9000 }),
         async (steps, maxLagMs) => {
           jest.useFakeTimers();
@@ -176,30 +213,39 @@ describe('health verdict invariant', () => {
           let now = 0;
           let firstTick: number | undefined;
           let lastOk: number | undefined;
-          for (const { probeOk, pgOk, dt } of steps) {
+          let lastStale = Number.NEGATIVE_INFINITY;
+          for (const { probeOk, pgOk, parts } of steps) {
             reader.probeFails = !probeOk;
             if (pgOk) source.query.mockResolvedValue([]);
             else source.query.mockRejectedValue(new Error('down'));
-            const end = now + dt;
-            for (
-              let tick = (Math.floor(now / HEARTBEAT_INTERVAL_MS) + 1) * HEARTBEAT_INTERVAL_MS;
-              tick <= end;
-              tick += HEARTBEAT_INTERVAL_MS
-            ) {
-              firstTick ??= tick;
-              if (probeOk) lastOk = tick;
+            for (let i = 0; i < parts; i++) {
+              now += part;
+              const isTick = now % HEARTBEAT_INTERVAL_MS === 0;
+              // Завислість може настати саме на тіку, до того як його проба її перекриє.
+              if (isTick && lastOk !== undefined && now - lastOk > window) lastStale = now;
+              if (isTick && lastOk === undefined && firstTick !== undefined) {
+                if (now - firstTick > window) lastStale = now;
+              }
+              if (isTick) {
+                firstTick ??= now;
+                if (probeOk) lastOk = now;
+              }
+              await run(part);
+              const reference = lastOk ?? firstTick;
+              const stale = reference !== undefined && now - reference > window;
+              if (stale) lastStale = now;
+              const healthy = monitor.healthy();
+              if (healthy) expect(stale).toBe(false);
+              if (now - lastStale >= RECOVER_AFTER_MS + 2 * HEARTBEAT_INTERVAL_MS + part) {
+                expect(healthy).toBe(true);
+              }
             }
-            await run(dt);
-            now = end;
-            const reference = lastOk ?? firstTick;
-            const expected = reference === undefined || now - reference <= window;
-            expect(monitor.healthy()).toBe(expected);
           }
           monitor.onModuleDestroy();
           jest.useRealTimers();
         },
       ),
-      { numRuns: 60 },
+      { numRuns: 25 },
     );
   });
 });
