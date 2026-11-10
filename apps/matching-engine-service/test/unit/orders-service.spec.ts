@@ -1,3 +1,4 @@
+import { RateLimits } from '../../src/security/rate-limits';
 import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -8,13 +9,14 @@ import { InstrumentCatalog } from '../../src/orders/instrument-catalog';
 const sell = { instrument: 'ABC', side: 'sell' as const, price: 100, quantity: 1 };
 const service = new IntakeService(
   {} as DataSource,
-  new ConfigService({ REDIS_HOST: '127.0.0.1', REDIS_PORT: 6379 }),
+  new ConfigService(),
   {
     require: (symbol: string) => {
       if (symbol !== 'ABC') throw Object.assign(new Error(), { status: 400 });
     },
   } as InstrumentCatalog,
   new NoopReservationClient(),
+  {} as RateLimits,
 );
 
 it.each([

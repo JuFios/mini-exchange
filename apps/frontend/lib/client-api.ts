@@ -16,7 +16,9 @@ export async function checkedFetch(path: string, init?: RequestInit) {
   // Проксі звіряє користувача з cookie, тож вкладка зі старим сокетом не подає заявки з чужого рахунку.
   const headers = new Headers(init?.headers);
   const user = boundSession();
-  if (user && /^\/api\/(?:engine|settlement)\//.test(path)) headers.set(SESSION_HEADER, user);
+  if (user && !headers.has(SESSION_HEADER) && /^\/api\/(?:engine|settlement)\//.test(path)) {
+    headers.set(SESSION_HEADER, user);
+  }
   const response = await fetch(path, { cache: 'no-store', ...init, headers });
   if (!response.ok) {
     // Сесія завершилась: перенаправлення швидше за «з'єднання недоступне».

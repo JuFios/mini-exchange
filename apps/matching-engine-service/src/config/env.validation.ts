@@ -108,6 +108,12 @@ function milliseconds(value: unknown, key: string): number {
   return Number(text);
 }
 
+function rateWindow(value: unknown, key: string): number {
+  const number = streamMaxLen(value, key);
+  if (number > 900_000) throw new Error(`${key} must not exceed 900000 ms`);
+  return number;
+}
+
 function streamMaxLen(value: unknown, key: string): number {
   const text = required(value ?? '1000000', key);
   const length = Number(text);
@@ -175,6 +181,20 @@ const schema = {
   SEQ_GAP_ALERT_MS: milliseconds,
   // Змінної немає в `.env`, написаних до PR з WebSocket, тож без неї сервіс має стартувати.
   WS_REPLICA_MAX_LAG_MS: (value: unknown, key: string) => milliseconds(value ?? '5000', key),
+  AUTH_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  AUTH_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
+  LOGIN_EMAIL_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  LOGIN_EMAIL_RATE_TTL_MS: (value: unknown, key: string) => rateWindow(value ?? '900000', key),
+  PUBLIC_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '120', key),
+  PUBLIC_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
+  ORDER_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  ORDER_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '1000', key),
+  ORDER_RATE_LIMIT_MIN: (value: unknown, key: string) => streamMaxLen(value ?? '300', key),
+  WS_SUBSCRIBE_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '20', key),
+  CORS_ORIGINS: (value: unknown, key: string) =>
+    required(value, key)
+      .split(',')
+      .map((item) => settlementUrl(item.trim(), key)),
   LOG_LEVEL: (value: unknown, key: string) => {
     const level = required(value ?? 'info', key);
     if (!/^(fatal|error|warn|info|debug|trace|silent)$/.test(level))
@@ -194,6 +214,11 @@ const schema = {
   ...databaseSchema,
   REDIS_HOST: required,
   REDIS_PORT: port,
+  REDIS_PASSWORD: (value: unknown, key: string) => {
+    const password = required(value, key);
+    if (password.trim().length < 16) throw new Error(`${key} must contain at least 16 characters`);
+    return password;
+  },
   JWT_ACCESS_SECRET: jwtSecret,
   JWT_REFRESH_SECRET: jwtSecret,
   JWT_ACCESS_TTL: accessTtl,

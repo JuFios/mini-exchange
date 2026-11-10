@@ -41,8 +41,8 @@ it('returns only the access token owner balances and rejects userId query overri
   const b = randomUUID();
   await reserve(randomUUID(), b, 'USD', '10000000000').expect(201);
   const jwt = new JwtService({ secret: ledger.jwtSecret });
-  const access = jwt.sign({ sub: a, typ: 'access' }, { expiresIn: '15m' });
-  const secondAccess = jwt.sign({ sub: b, typ: 'access' }, { expiresIn: '15m' });
+  const access = jwt.sign({ sub: a, sid: randomUUID(), typ: 'access' }, { expiresIn: '15m' });
+  const secondAccess = jwt.sign({ sub: b, sid: randomUUID(), typ: 'access' }, { expiresIn: '15m' });
   const refresh = jwt.sign({ sub: a, typ: 'refresh' }, { expiresIn: '15m' });
 
   await api()

@@ -1,3 +1,8 @@
+x-redis-password: &redis-password ${REDIS_PASSWORD:-exchange-redis-local-only}
+x-tracing-environment: &tracing-environment
+  OTEL_TRACES_EXPORTER: ${OTEL_TRACES_EXPORTER:-none}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+
 x-engine: &engine
   init: true
   # Без перезапуску впала репліка не повертається, і резерв лишається єдиним.
@@ -5,8 +10,10 @@ x-engine: &engine
   build: &engine-build ./apps/matching-engine-service
   env_file: ./apps/matching-engine-service/.env.example
   environment: &engine-environment
+    <<: *tracing-environment
     DATABASE_HOST: exchange-db
     REDIS_HOST: redis
+    REDIS_PASSWORD: *redis-password
   depends_on:
     engine-migrate:
       condition: service_completed_successfully
@@ -49,7 +56,12 @@ services:
   redis:
     restart: unless-stopped
     image: redis:7-alpine
-    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
+    environment:
+      REDISCLI_AUTH: *redis-password
+    command:
+      - sh
+      - -ec
+      - exec redis-server --appendonly yes --maxmemory-policy noeviction --requirepass "$$REDISCLI_AUTH"
     volumes: ['redis-data:/data']
     healthcheck:
       test: ['CMD-SHELL', 'redis-cli -h 127.0.0.1 ping | grep -qx PONG']
@@ -75,14 +87,12 @@ services:
     environment:
       <<: *engine-environment
       INSTANCE_ID: engine-1
-    ports: ['127.0.0.1:3101:3001']
 
   matching-engine-2:
     <<: *engine
     environment:
       <<: *engine-environment
       INSTANCE_ID: engine-2
-    ports: ['127.0.0.1:3102:3001']
 
   engine-lb:
     restart: unless-stopped
@@ -115,6 +125,9 @@ services:
     restart: unless-stopped
     build: *settlement-build
     env_file: ./apps/settlement-service/.env.example
+    environment:
+      <<: *tracing-environment
+      REDIS_PASSWORD: *redis-password
     depends_on:
       settlement-migrate:
         condition: service_completed_successfully
@@ -122,7 +135,7 @@ services:
         condition: service_healthy
     ports: ['127.0.0.1:3002:3002']
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/health']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3002/ready']
       interval: 5s
       timeout: 3s
       retries: 10

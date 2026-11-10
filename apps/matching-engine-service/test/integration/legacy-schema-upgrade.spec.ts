@@ -63,6 +63,7 @@ it('quarantines legacy resting orders while preserving deterministic forensic re
     RESERVATIONS_ENABLED: 'false',
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
   };
   const original = new Map(Object.keys(settings).map((key) => [key, process.env[key]]));
   Object.assign(process.env, settings);

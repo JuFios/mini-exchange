@@ -8,7 +8,10 @@ const ledger = ledgerApp({ DEMO_INITIAL_BALANCES: 'USD:6000000000000000000000000
 it('creates wallets for multiple owners when cumulative genesis exceeds one posting', async () => {
   const jwt = new JwtService({ secret: ledger.jwtSecret });
   for (let user = 0; user < 3; user++) {
-    const token = jwt.sign({ sub: randomUUID(), typ: 'access' }, { expiresIn: '15m' });
+    const token = jwt.sign(
+      { sub: randomUUID(), sid: randomUUID(), typ: 'access' },
+      { expiresIn: '15m' },
+    );
     const response = await request(ledger.app().getHttpServer())
       .get('/wallets')
       .auth(token, { type: 'bearer' })

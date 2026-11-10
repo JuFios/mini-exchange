@@ -16,7 +16,11 @@ let peer: INestApplication | undefined;
 let redis: Redis;
 
 beforeAll(() => {
-  redis = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+  redis = new Redis({
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+  });
 });
 afterAll(async () => {
   await redis.del(USER_EVENTS);

@@ -2,14 +2,11 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  OnModuleDestroy,
-  OnModuleInit,
   ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
-import Redis from 'ioredis';
 import { DataSource, EntityManager } from 'typeorm';
 import { Order } from '../orders/entities/order.entity';
 import { SubmitOrderDto } from '../orders/dto/submit-order.dto';
@@ -22,6 +19,7 @@ import {
   parseQuantity,
 } from '../matching/decimal';
 import { ReservationClient } from './reservation.client';
+import { RateLimits } from '../security/rate-limits';
 
 interface RequestRow {
   order_id: string;
@@ -36,34 +34,14 @@ export interface Acceptance {
 }
 
 @Injectable()
-export class IntakeService implements OnModuleInit, OnModuleDestroy {
-  private readonly redis: Redis;
-
+export class IntakeService {
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
     private readonly catalog: InstrumentCatalog,
     private readonly reservations: ReservationClient,
-  ) {
-    this.redis = new Redis({
-      host: config.getOrThrow('REDIS_HOST'),
-      port: config.getOrThrow('REDIS_PORT'),
-      lazyConnect: true,
-      enableOfflineQueue: false,
-      maxRetriesPerRequest: 0,
-      connectTimeout: 1000,
-      commandTimeout: 1000,
-      retryStrategy: () => 200,
-    });
-    this.redis.on('error', () => undefined);
-  }
-
-  async onModuleInit(): Promise<void> {
-    await this.redis.connect().catch(() => undefined);
-  }
-  onModuleDestroy(): void {
-    this.redis.disconnect();
-  }
+    private readonly limits: RateLimits,
+  ) {}
 
   normalize(dto: SubmitOrderDto): SubmitOrderDto & { price: string; quantity: string } {
     this.catalog.require(dto.instrument);
@@ -124,11 +102,7 @@ export class IntakeService implements OnModuleInit, OnModuleDestroy {
         if (completed) return completed;
       }
     }
-    try {
-      await this.redis.ping();
-    } catch {
-      throw new ServiceUnavailableException('Сервіс прийому заявок недоступний');
-    }
+    await this.limits.order(userId);
     await this.assertActive(this.source.manager, dto.instrument);
     const [row]: RequestRow[] = await this.source.transaction(async (db) => {
       await db.query(

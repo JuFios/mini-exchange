@@ -30,7 +30,7 @@ interface Waiting {
  * номера послідовності, а після кожної зміни книги надходить нова. Виявити пропуск тут
  * неможливо, тому нові клієнти використовують namespace `/market`.
  */
-@WebSocketGateway({ transports: ['websocket'], cors: { origin: '*' } })
+@WebSocketGateway({ transports: ['websocket'] })
 export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModuleDestroy {
   @WebSocketServer()
   server: Server;

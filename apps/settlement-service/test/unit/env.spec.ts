@@ -37,3 +37,9 @@ it.each([
 ])('rejects an invalid %s', (key, value) => {
   expect(() => validateEnv({ ...example, [key]: value })).toThrow(key);
 });
+
+it('rejects a 15-character Redis password', () => {
+  expect(() => validateEnv({ ...example, REDIS_PASSWORD: 'a'.repeat(15) })).toThrow(
+    'REDIS_PASSWORD',
+  );
+});

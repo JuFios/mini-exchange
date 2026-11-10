@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, HttpCode, Post, Query, UseGuards } from '@nestjs/common';
 import { AdminAccessGuard } from '../security/admin-access.guard';
 import { ReconciliationQuery, toPeriod } from './reconciliation-query';
 import { ReconciliationService } from './reconciliation.service';
@@ -8,7 +8,8 @@ import { ReconciliationService } from './reconciliation.service';
 export class ReconciliationController {
   constructor(private readonly reconciliation: ReconciliationService) {}
 
-  @Get()
+  @Post()
+  @HttpCode(200)
   run(@Query() query: ReconciliationQuery) {
     return this.reconciliation.run(toPeriod(query));
   }

@@ -161,3 +161,9 @@ describe('environments written before WS_REPLICA_MAX_LAG_MS existed', () => {
       );
   });
 });
+
+it('rejects a 15-character Redis password', () => {
+  expect(() => validateEnv({ ...example, REDIS_PASSWORD: 'a'.repeat(15) })).toThrow(
+    'REDIS_PASSWORD',
+  );
+});

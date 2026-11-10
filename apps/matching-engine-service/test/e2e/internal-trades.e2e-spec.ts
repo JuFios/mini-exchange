@@ -113,7 +113,11 @@ describe('outbox redrive', () => {
     )[0];
 
   beforeAll(() => {
-    redis = new Redis({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+    redis = new Redis({
+      host: process.env.REDIS_HOST,
+      port: Number(process.env.REDIS_PORT),
+      password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+    });
   });
   beforeEach(() => redis.del(stream));
   afterAll(async () => {

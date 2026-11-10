@@ -6,7 +6,11 @@ import { NextRequest } from 'next/server';
 
 const origin = 'http://localhost:3000';
 const token = (claims: Record<string, unknown>) =>
-  'h.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.s';
+  'h.' +
+  Buffer.from(JSON.stringify({ sid: '5dfe7681-ea32-49e1-a4bb-7ac31a32da8f', ...claims })).toString(
+    'base64url',
+  ) +
+  '.s';
 const inSeconds = (seconds: number) => Math.floor(Date.now() / 1000) + seconds;
 
 function request(

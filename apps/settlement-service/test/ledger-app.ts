@@ -9,6 +9,7 @@ import { configureApp } from '../src/configure-app';
 import { validateDatabaseEnv } from '../src/config/env.validation';
 import { ledgerDataSourceOptions } from '../src/data-source';
 import { migrate } from '../src/database/migrate';
+import { AccessSession } from '../src/security/access-session';
 import { SettlementConsumer } from '../src/consumer/settlement-consumer.service';
 
 const demo = parseEnv(readFileSync(join(__dirname, '../.env.example'), 'utf8'));
@@ -38,11 +39,13 @@ export function ledgerApp(
   const name = `ledger_e2e_${randomUUID().replaceAll('-', '')}`;
   const env = {
     ...demo,
+    LOG_LEVEL: 'silent',
     ...overrides,
     ...base,
     LEDGER_DATABASE_NAME: name,
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
   };
   const admin = new DataSource(ledgerDataSourceOptions(validateDatabaseEnv(base)));
   const options = ledgerDataSourceOptions(validateDatabaseEnv(env));
@@ -71,6 +74,7 @@ export function ledgerApp(
     if (!consumer) builder.overrideProvider(SettlementConsumer).useClass(IdleConsumer);
     customize?.(builder);
     const module = await builder.compile();
+    jest.spyOn(module.get(AccessSession), 'requireActive').mockResolvedValue(undefined);
     app = module.createNestApplication({ logger: ['error'], abortOnError: false });
     configureApp(app);
     await app.init();

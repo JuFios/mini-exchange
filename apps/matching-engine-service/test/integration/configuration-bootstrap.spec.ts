@@ -28,6 +28,7 @@ it.each(['true', 'false'])(
       ...database.env,
       REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
       REDIS_PORT: process.env.REDIS_PORT ?? '6379',
+      REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
       CHAOS_ENABLED: flag,
       ENGINE_WORKER_ENABLED: 'false',
     };

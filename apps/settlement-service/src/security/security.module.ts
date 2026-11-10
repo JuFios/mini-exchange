@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { AccessSession } from './access-session';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { JwtModule } from '@nestjs/jwt';
       }),
     }),
   ],
-  exports: [JwtModule],
+  providers: [AccessSession],
+  exports: [AccessSession],
 })
 export class SecurityModule {}

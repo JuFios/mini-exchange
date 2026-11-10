@@ -17,6 +17,7 @@ export function redisClient(): Redis {
   return new Redis({
     host: process.env.REDIS_HOST ?? '127.0.0.1',
     port: Number(process.env.REDIS_PORT ?? 6379),
+    password: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
   });
 }
 
@@ -90,6 +91,7 @@ export function startConsumer(
     STREAM_MAXLEN: 1000,
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: Number(process.env.REDIS_PORT ?? 6379),
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
   };
   const consumer = new SettlementConsumer(
     { getOrThrow: (key: string) => values[key] } as never,

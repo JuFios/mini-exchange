@@ -1,3 +1,4 @@
+import { RateLimits } from '../../src/security/rate-limits';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
@@ -34,9 +35,10 @@ const intake = {
   submit: async (dto: SubmitOrderDto, ownerId: string) => {
     const normalized = new IntakeService(
       source as unknown as DataSource,
-      new ConfigService({ REDIS_HOST: '127.0.0.1', REDIS_PORT: 6379 }),
+      new ConfigService(),
       catalog as InstrumentCatalog,
       new NoopReservationClient(),
+      {} as RateLimits,
     ).normalize(dto);
     const order = {
       ...normalized,

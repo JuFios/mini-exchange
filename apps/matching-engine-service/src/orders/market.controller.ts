@@ -1,10 +1,12 @@
+import { PublicRateGuard } from '../security/rate-limit.guards';
 import { DataSource } from 'typeorm';
-import { BadRequestException, Controller, Get, Param, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { InstrumentCatalog } from './instrument-catalog';
 import { CommittedBook } from '../engine/committed-book';
 import { DEFAULT_BOOK_DEPTH, MAX_BOOK_DEPTH } from './order-book.types';
 
 @Controller()
+@UseGuards(PublicRateGuard)
 export class MarketController {
   constructor(
     private readonly book: CommittedBook,
