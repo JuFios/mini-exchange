@@ -113,7 +113,8 @@ export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefi
 export const publicDelta = ({ instrument, seq, changes }: BookDeltaV1) => ({
   instrument,
   seq,
-  changes,
+  // Рівні теж перелічені явно: зайве поле запису в Redis не повинно дійти до публічного клієнта.
+  changes: changes.map(({ side, price, quantity, orders }) => ({ side, price, quantity, orders })),
 });
 
 export const publicTrade = ({
