@@ -42,9 +42,14 @@ export function buildLegacyGateway(fail: () => boolean = () => false) {
     }),
   };
   let onMarket: (event: unknown) => void = () => undefined;
+  let onGap: (stream: string) => void = () => undefined;
   const reader = {
     onMarket: (handler: typeof onMarket) => {
       onMarket = handler;
+      return () => undefined;
+    },
+    onGap: (handler: typeof onGap) => {
+      onGap = handler;
       return () => undefined;
     },
   };
@@ -81,5 +86,10 @@ export function buildLegacyGateway(fail: () => boolean = () => false) {
       state.version++;
       onMarket({ type: 'book.delta', payload: { instrument: 'ABC' } });
     },
+    /** Книга змінилась, але репліка пропустила її delta: stream обрізано до того, як її прочитано. */
+    changeWithoutDelta: () => {
+      state.version++;
+    },
+    gap: (stream: string) => onGap(stream),
   };
 }

@@ -45,6 +45,34 @@ describe('legacy book push after a failed read', () => {
     expect(env.state.reads).toBe(4);
   });
 
+  it('pushes a fresh book after a market stream gap, when no delta will announce the change', async () => {
+    const env = buildLegacyGateway();
+    const socket = env.socket();
+    const call = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(200);
+    await call;
+
+    env.changeWithoutDelta();
+    env.gap('exchange:market:{ABC}');
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(socket.received.at(-1)).toBe(env.state.version);
+  });
+
+  it('ignores a gap of the stream it does not read the book from', async () => {
+    const env = buildLegacyGateway();
+    const socket = env.socket();
+    const call = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(200);
+    await call;
+    env.state.reads = 0;
+
+    env.gap('exchange:user-events');
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(env.state.reads).toBe(0);
+  });
+
   it('counts failures within one episode, not over the life of the process', async () => {
     let plan: boolean[] = [];
     const env = buildLegacyGateway(() => plan.shift() ?? false);

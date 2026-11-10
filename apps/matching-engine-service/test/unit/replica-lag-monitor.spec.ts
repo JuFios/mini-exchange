@@ -121,6 +121,17 @@ describe('a PostgreSQL problem next to a working Redis', () => {
     monitor.onModuleDestroy();
   });
 
+  it('stops reporting the lag while the heartbeat query fails instead of freezing the last value', async () => {
+    const { source, monitor } = build(5000);
+    await run(HEARTBEAT_INTERVAL_MS);
+    expect(monitor.lag().get('ABC')).toBe(5n);
+
+    source.query.mockRejectedValue(new Error('connection refused'));
+    await run(2 * HEARTBEAT_INTERVAL_MS);
+    expect(monitor.lag().size).toBe(0);
+    monitor.onModuleDestroy();
+  });
+
   it('keeps sending heartbeats while the stream probes fail', async () => {
     const { reader, monitor } = build(5000);
     const heartbeat = jest.fn();

@@ -64,3 +64,37 @@ describe('a private update that cannot be delivered', () => {
     expect(env.disconnect).not.toHaveBeenCalled();
   });
 });
+
+describe('a private handshake that is still verifying when the replica turns stale', () => {
+  it('is refused instead of staying connected to a replica that was just taken out', async () => {
+    const middlewares: ((socket: unknown, next: (error?: Error) => void) => unknown)[] = [];
+    let healthy = true;
+    const gateway = new PrivateGateway(
+      { getOrThrow: () => 'secret' } as unknown as ConfigService,
+      {
+        // Токен перевіряється асинхронно: за цей час репліка встигає стати завислою.
+        verifyAsync: async () => {
+          healthy = false;
+          return { typ: 'access', sub: USER, email: 'a@example.test', exp: 4_102_444_800 };
+        },
+      } as unknown as JwtService,
+      {
+        onUser: () => () => undefined,
+        onGap: () => () => undefined,
+      } as unknown as RealtimeStreamReader,
+      { healthy: () => healthy, onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+    );
+    gateway.afterInit({ use: (middleware: never) => middlewares.push(middleware) } as never);
+
+    const errors: (Error | undefined)[] = [];
+    const socket = { handshake: { auth: { token: 'token' } }, data: {} };
+    // Охорону пройдено, поки репліка ще здорова.
+    middlewares[0](socket, (error) => errors.push(error));
+    void middlewares[1](socket, (error) => errors.push(error));
+    // Проміжне ПЗ повертає керування до завершення перевірки токена.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errors[0]).toBeUndefined();
+    expect(errors[1]?.message).toBe('REPLICA_UNAVAILABLE');
+  });
+});
