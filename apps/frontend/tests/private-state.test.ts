@@ -59,12 +59,32 @@ it('sends only a valid order with decimal strings', async () => {
 it('restores private state with a fresh handshake after server expiry', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
   const requests: string[] = [];
+  const row = (index: number, status = 'open') => ({
+    id: `order-${index}`,
+    createdAt: '2026-11-10T00:00:00.000Z',
+    status,
+    version: status === 'filled' ? 2 : 1,
+  });
+  const open = Array.from({ length: 60 }, (_, index) => row(index));
+  const raced = row(60);
+  const snapshots: { orders: ReturnType<typeof row>[] }[] = [];
   let issued = 0;
   mock.method(globalThis, 'fetch', async (path: string, options: RequestInit) => {
     requests.push((options.method ?? 'GET') + ' ' + path);
-    return path.endsWith('/ws-token')
-      ? Response.json({ token: String(++issued) })
-      : Response.json([]);
+    if (path.endsWith('/ws-token')) return Response.json({ token: String(++issued) });
+    if (path.endsWith('/orders/order-60')) return Response.json(row(60, 'filled'));
+    if (!path.includes('status=active')) return Response.json([]);
+    const query = new URL(path, 'http://localhost').searchParams;
+    if (query.has('cursor')) {
+      const last = issued === 1 ? raced : open.at(-1);
+      assert.deepEqual(JSON.parse(Buffer.from(query.get('cursor')!, 'base64url').toString()), {
+        id: last?.id,
+        createdAt: last?.createdAt,
+      });
+      return Response.json([]);
+    }
+    const active = issued === 1 ? [...open, raced] : open;
+    return Response.json(active.slice(0, Number(query.get('limit') ?? 50)));
   });
   const socket = new EventEmitter();
   const completed = new EventEmitter();
@@ -77,8 +97,12 @@ it('restores private state with a fresh handshake after server expiry', async ()
       onError(error: Error) {
         completed.emit('error', error);
       },
-      onSnapshot() {
+      onSnapshot(snapshot: { orders: ReturnType<typeof row>[] }) {
+        snapshots.push(snapshot);
         completed.emit('snapshot');
+      },
+      knownOrderIds() {
+        return snapshots.at(-1)?.orders.map(({ id }) => id) ?? [];
       },
       onOrder() {},
       onWallet() {},
@@ -110,11 +134,20 @@ it('restores private state with a fresh handshake after server expiry', async ()
   await second;
   stop();
   assert.deepEqual(tokens, ['1', '2']);
-  const expected = [
+  assert.equal(snapshots[0].orders.length, 61);
+  assert.equal(snapshots[1].orders.filter(({ status }) => status === 'open').length, 60);
+  assert.deepEqual(
+    snapshots[1].orders.find(({ id }) => id === raced.id),
+    row(60, 'filled'),
+  );
+  for (const request of [
     'POST /api/auth/ws-token',
-    'GET /api/engine/orders?status=active',
+    'GET /api/engine/orders?status=active&limit=100',
     'GET /api/engine/orders?status=filled',
     'GET /api/settlement/wallets',
-  ];
-  assert.deepEqual(requests, [...expected, ...expected]);
+  ]) {
+    assert.equal(requests.filter((entry) => entry === request).length, 2, request);
+  }
+  assert.equal(requests.filter((request) => request.includes('&cursor=')).length, 2);
+  assert.equal(requests.filter((request) => request.endsWith('/orders/order-60')).length, 1);
 });
