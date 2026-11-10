@@ -36,7 +36,12 @@ services:
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set a unique INTERNAL_API_TOKEN}
       LEDGER_DATABASE_PASSWORD: ${LEDGER_DB_PASSWORD:?Set a unique LEDGER_DB_PASSWORD}
   engine-lb:
-    ports: !override ['3001:3001', '3000:3000']
+    environment:
+      TRUSTED_TLS_PROXY_IP: ${TRUSTED_TLS_PROXY_IP:?Set the TLS proxy address seen by nginx}
+      NGINX_ENVSUBST_FILTER: '^TRUSTED_TLS_PROXY_IP$'
+    volumes:
+      - './deploy/nginx/real-ip.conf.template:/etc/nginx/templates/real-ip.conf.template:ro'
+      - './deploy/nginx/check-proxy-ip.sh:/docker-entrypoint.d/15-check-proxy-ip.sh:ro'
   frontend:
     environment:
       COOKIE_SECURE: 'true'

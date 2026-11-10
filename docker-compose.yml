@@ -59,9 +59,13 @@ services:
     environment:
       REDISCLI_AUTH: *redis-password
     command:
-      - sh
-      - -ec
-      - exec redis-server --appendonly yes --maxmemory-policy noeviction --requirepass "$$REDISCLI_AUTH"
+      - redis-server
+      - --appendonly
+      - 'yes'
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - *redis-password
     volumes: ['redis-data:/data']
     healthcheck:
       test: ['CMD-SHELL', 'redis-cli -h 127.0.0.1 ping | grep -qx PONG']

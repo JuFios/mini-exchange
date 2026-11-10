@@ -104,7 +104,8 @@ export class RateLimits implements OnModuleDestroy {
   }
 
   private async check(scope: Scope, identity: string, ttl: number, limit: number): Promise<void> {
-    const key = this.prefix + ':' + createHash('sha256').update(identity).digest('hex');
+    const identityHash = createHash('sha256').update(identity).digest('hex');
+    const key = `${this.prefix}:${limit}:${ttl}:${identityHash}`;
     let retryAfter: number;
     try {
       const hit = await this.storage.increment(key, ttl, limit, ttl, scope);

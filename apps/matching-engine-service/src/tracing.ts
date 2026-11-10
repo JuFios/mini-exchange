@@ -1,3 +1,4 @@
+import type { OnApplicationShutdown } from '@nestjs/common';
 import { existsSync } from 'node:fs';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { IORedisInstrumentation } from '@opentelemetry/instrumentation-ioredis';
@@ -34,4 +35,20 @@ const sdk = new NodeSDK({
 });
 sdk.start();
 
-export const shutdownTracing = () => sdk.shutdown();
+export class TracingShutdown implements OnApplicationShutdown {
+  async onApplicationShutdown(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        sdk.shutdown(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 3000);
+        }),
+      ]);
+    } catch {
+      // Помилка колектора не має затримувати завершення процесу.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}

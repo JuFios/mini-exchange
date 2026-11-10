@@ -119,8 +119,8 @@ backend-сервіси однією командою `docker compose up -d --bui
 
 Локальний Compose публікує порти `3000` і `3001` лише на `127.0.0.1`.
 `.env.example` містить публічні демо-секрети JWT для цього режиму. Для доступу з інших
-хостів використовуйте `docker-compose.remote.yml`. Він публікує ці порти на всіх
-інтерфейсах і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
+хостів використовуйте `docker-compose.remote.yml` з TLS-проксі на тому самому хості.
+Override зберігає прив’язку портів Compose до loopback і вимагає власні `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `ADMIN_EMAILS`,
 `ADMIN_PASSWORD`, `INTERNAL_API_TOKEN`, `POSTGRES_PASSWORD`, `ENGINE_DB_PASSWORD`,
 `LEDGER_DB_PASSWORD`, `REDIS_PASSWORD`, `CORS_ORIGINS` та адресу WebSocket, доступну браузеру. Використовуйте окремий
 Compose-проєкт із власними томами й адресою адміністратора. Так віддалений стек
@@ -143,6 +143,7 @@ export LEDGER_DB_PASSWORD="$(openssl rand -hex 32)"
 export REDIS_PASSWORD="$(openssl rand -hex 32)"
 export CORS_ORIGINS=https://exchange.example.com
 export ENGINE_PUBLIC_WS_URL=wss://exchange.example.com
+export TRUSTED_TLS_PROXY_IP='<IP-адреса TLS-проксі, яку бачить nginx у Compose>'
 docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 ```
 
@@ -152,11 +153,12 @@ docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 Для повторного запуску з тим самим томом використовуйте чинний `POSTGRES_PASSWORD`:
 змінюйте пароль адміністратора в PostgreSQL перед оновленням змінної.
 
-Для віддаленого входу потрібен HTTPS перед frontend і WSS перед engine. Override вмикає
-`Secure` для cookies. Обмежте зовнішній доступ до портів Compose вашим TLS-проксі.
-Listener nginx на `:3000` є входом до frontend і перезаписує `X-Forwarded-For` адресою
-сокета. Контейнер Next не публікує портів. За наявності зовнішнього TLS-проксі це адреса
-підключення до nginx.
+TLS-проксі передає HTTPS до `127.0.0.1:3000` і WSS upgrade до `127.0.0.1:3001`.
+На обох маршрутах він зберігає публічний `Host` і перезаписує `X-Forwarded-For` IP-адресою
+клієнта. `TRUSTED_TLS_PROXY_IP` — одна адреса TCP-відправника з боку nginx. Для проксі на хості
+за Docker NAT це адреса шлюзу, а не публічна адреса проксі. nginx бере адресу клієнта з цього
+заголовка лише для довіреного відправника. В інших з’єднаннях він бере адресу сокета.
+Доступ до loopback на цьому хості є частиною довіреної межі. Override вмикає `Secure` для cookies.
 
 Для локального запуску frontend використовує `ws://localhost:3001`. `GET /api/config`
 читає `ENGINE_PUBLIC_WS_URL` у runtime. Для зміни адреси передайте нове значення через
@@ -267,11 +269,11 @@ JSON-чисел перевіряється запис із тіла запиту
   цього вікна або використання старішого refresh відкликає сесію і повертає 401.
   Відповіді з токенами мають `Cache-Control: no-store`. `POST /auth/logout` з тим самим
   форматом тіла відкликає сесію й повертає 204.
-- Engine перевіряє тип токена і підпис окремим секретом для кожного типу. Токени,
-  видані до оновлення, потребують повторного входу. Акаунт має одну refresh-сесію:
+- Engine перевіряє тип токена і підпис окремим секретом для кожного типу. Access старого формату
+  можна замінити через чинний refresh. Акаунт має одну refresh-сесію:
   новий вхід замінює попередню, і refresh старого клієнта повертає 401, не зачіпаючи
-  нову сесію. Вихід і відкликання завершують refresh-сесію, а виданий access діє
-  до `exp`, щонайбільше 15 хв.
+  нову сесію. Вихід і відкликання завершують сесію для нових HTTP-запитів і WS-handshake.
+  Уже підключена приватна namespace закривається на `exp`.
 - Після міграцій engine створює admin-акаунти з `ADMIN_EMAILS`. Для локального
   запуску увійдіть на `POST /auth/login` як `admin@demo.local` з `ADMIN_PASSWORD`
   з `apps/matching-engine-service/.env.example`. Реєстрація налаштованих адрес дає

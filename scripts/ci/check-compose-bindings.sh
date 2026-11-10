@@ -15,6 +15,7 @@ export ENGINE_DB_PASSWORD=ci-only-engine-password
 export LEDGER_DB_PASSWORD=ci-only-ledger-password
 export REDIS_PASSWORD=ci-only-redis-password
 export CORS_ORIGINS=https://exchange.example.test
+export TRUSTED_TLS_PROXY_IP=192.0.2.2
 export ADMIN_EMAILS=ci-admin@example.test
 export ADMIN_PASSWORD=ci-only-admin-password-000001
 export ENGINE_PUBLIC_WS_URL=wss://exchange.example.test
@@ -50,7 +51,7 @@ expect_rejection JWT_ACCESS_SECRET \
 expect_rejection ADMIN_PASSWORD \
   env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
   ADMIN_PASSWORD= docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
-for variable in INTERNAL_API_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD; do
+for variable in INTERNAL_API_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD TRUSTED_TLS_PROXY_IP; do
   expect_rejection "$variable" env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
     "$variable=" docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
 done
@@ -69,6 +70,7 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
       .JWT_ACCESS_SECRET == $access and .INTERNAL_API_TOKEN == $token and .LEDGER_DATABASE_PASSWORD == $ledger and
       .REDIS_PASSWORD == $ENV.REDIS_PASSWORD) and
     ($s.redis.environment.REDISCLI_AUTH == $ENV.REDIS_PASSWORD) and
+    ($s.redis.command[0] == "redis-server" and .services.redis.command[-1] == $ENV.REDIS_PASSWORD) and
     ($s["exchange-db"].environment.POSTGRES_PASSWORD == $postgres) and
     ($s["postgres-bootstrap"].environment |
       .POSTGRES_PASSWORD == $postgres and .ENGINE_DB_PASSWORD == $engine and .LEDGER_DB_PASSWORD == $ledger) and
@@ -77,7 +79,8 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     ($s["settlement-service"].environment.DATABASE_PASSWORD == null) and
     (["postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     ($s["settlement-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
-    ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == null) and (map(.target) | sort == [3000,3001])) and
+    ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == "127.0.0.1") and (map(.target) | sort == [3000,3001])) and
+    ($s["engine-lb"].environment.TRUSTED_TLS_PROXY_IP == $ENV.TRUSTED_TLS_PROXY_IP) and
     (["matching-engine-1","matching-engine-2"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     (($s.frontend.ports // []) | length == 0) and
     ($s.frontend.environment.COOKIE_SECURE == "true") and
