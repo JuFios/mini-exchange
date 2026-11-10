@@ -32,7 +32,6 @@ services:
       SETTLEMENT_GRACE_MS: '1000'
   frontend:
     restart: 'no'
-    ports: !reset []
   system-tests:
     profiles: [test]
     build:

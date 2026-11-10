@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sameOrigin, unavailable } from './lib/api';
+import { requestOrigin, sameOrigin, unavailable } from './lib/api';
 import { publicWsUrl } from './lib/public-ws';
 import { ACCESS_COOKIE, claims, clearTokens, refreshSession, setTokens } from './lib/session';
 
@@ -31,9 +31,9 @@ export async function middleware(request: NextRequest) {
 
   let response: NextResponse;
   if (protectedPage && !token) {
-    response = NextResponse.redirect(new URL('/login', request.url));
+    response = NextResponse.redirect(new URL('/login', requestOrigin(request)));
   } else if (path === '/admin/status' && !token?.roles?.includes('admin')) {
-    response = NextResponse.redirect(new URL('/exchange/ABC', request.url));
+    response = NextResponse.redirect(new URL('/exchange/ABC', requestOrigin(request)));
   } else {
     response = update?.tokens
       ? NextResponse.next({ request: { headers: new Headers(request.headers) } })

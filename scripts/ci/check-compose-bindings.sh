@@ -15,13 +15,14 @@ export ENGINE_DB_PASSWORD=ci-only-engine-password
 export LEDGER_DB_PASSWORD=ci-only-ledger-password
 export ADMIN_EMAILS=ci-admin@example.test
 export ADMIN_PASSWORD=ci-only-admin-password-000001
-export NEXT_PUBLIC_WS_URL=wss://exchange.example.test
+export ENGINE_PUBLIC_WS_URL=wss://exchange.example.test
 
 docker compose config --format json | jq -e '
   .services as $s |
-  (["matching-engine-1","matching-engine-2","engine-lb"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
-  (["frontend","exchange-db","settlement-service"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
-  (["postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
+  (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
+  (["exchange-db","settlement-service"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
+  ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == "127.0.0.1") and (map(.target) | sort == [3000,3001])) and
+  (["frontend","postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
   docker compose -f docker-compose.yml -f docker-compose.remote.yml "$@"
@@ -70,9 +71,11 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     ($s["settlement-service"].environment.DATABASE_PASSWORD == null) and
     (["postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     ($s["settlement-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
-    ($s["engine-lb"].ports | length == 1 and .[0].host_ip == null) and
+    ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == null) and (map(.target) | sort == [3000,3001])) and
     (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
-    ($s.frontend.ports | length == 1 and .[0].host_ip == null)'
+    (($s.frontend.ports // []) | length == 0) and
+    ($s.frontend.environment.COOKIE_SECURE == "true") and
+    ($s.frontend.environment.ENGINE_PUBLIC_WS_URL == "wss://exchange.example.test")'
 
 # Test-overlay не публікує портів і не використовує локальні томи.
 docker compose -f docker-compose.yml -f docker-compose.test.yml config --format json | jq -e '

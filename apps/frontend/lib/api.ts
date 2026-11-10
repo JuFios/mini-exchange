@@ -6,12 +6,16 @@ export function backendUrl(service: Service) {
     : (process.env.SETTLEMENT_URL ?? 'http://localhost:3002');
 }
 
-export function sameOrigin(request: Request) {
+export function requestOrigin(request: Request) {
   const url = new URL(request.url);
   const host = request.headers.get('host') ?? url.host;
   // У віддаленому режимі TLS завершується перед контейнером.
   const protocol = process.env.COOKIE_SECURE === 'true' ? 'https:' : url.protocol;
-  return request.headers.get('origin') === protocol + '//' + host;
+  return protocol + '//' + host;
+}
+
+export function sameOrigin(request: Request) {
+  return request.headers.get('origin') === requestOrigin(request);
 }
 
 export function backendHeaders(request: Request) {
