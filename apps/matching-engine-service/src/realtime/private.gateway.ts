@@ -98,7 +98,20 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
     }
   }
 
+  // Виклик із таймера: виняток тут став би необробленим відхиленням і зупинив би процес.
   private async checkSessions(): Promise<void> {
+    try {
+      await this.confirmSessions();
+    } catch (error) {
+      // Сокети лишаються до межі SESSION_UNVERIFIED_MS: короткий збій PG не розриває всіх.
+      this.logger.warn({
+        alert: 'private_session_check_failed',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async confirmSessions(): Promise<void> {
     // Перевірка до запиту: зависла звірка не продовжує життя непідтверджених сокетів.
     const now = performance.now();
     for (const socket of [...this.server.sockets.values()]) {
@@ -128,12 +141,6 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
         if (active.has(`${userId}:${sid}`.toLowerCase())) socket.data.verifiedAt = now;
         else socket.disconnect();
       }
-    } catch (error) {
-      // Сокети лишаються до межі SESSION_UNVERIFIED_MS: короткий збій PG не розриває всіх.
-      this.logger.warn({
-        alert: 'private_session_check_failed',
-        message: error instanceof Error ? error.message : String(error),
-      });
     } finally {
       clearTimeout(timer);
       this.checking = false;

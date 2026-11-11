@@ -27,6 +27,10 @@ const event: UserEvent = {
   },
 };
 
+// Шлюз у afterInit запускає таймер звірки сесій: кожен створений тут шлюз треба зупинити.
+const gateways: PrivateGateway[] = [];
+afterEach(() => gateways.splice(0).forEach((gateway) => gateway.onModuleDestroy()));
+
 function build(emit: () => void) {
   let onUser: (event: UserEvent) => void = () => undefined;
   const disconnect = jest.fn();
@@ -53,6 +57,7 @@ function build(emit: () => void) {
     { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
     sessions,
   );
+  gateways.push(gateway);
   gateway.afterInit(server as never);
   return { deliver: () => onUser(event), disconnect, rooms };
 }
@@ -100,6 +105,7 @@ describe('a private handshake that is still verifying when the replica turns sta
       { healthy: () => healthy, onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
       sessions,
     );
+    gateways.push(gateway);
     gateway.afterInit({ use: (middleware: never) => middlewares.push(middleware) } as never);
 
     const errors: (Error | undefined)[] = [];
@@ -131,6 +137,7 @@ describe('private sockets whose session cannot be confirmed', () => {
       { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
       { activeSessions } as unknown as AuthService,
     );
+    gateways.push(gateway);
     gateway.afterInit({ use: jest.fn(), sockets } as never);
     const connect = (sid: string) => {
       const socket = {
@@ -183,6 +190,22 @@ describe('private sockets whose session cannot be confirmed', () => {
     expect(first.disconnect).not.toHaveBeenCalled();
     expect(later.disconnect).not.toHaveBeenCalled();
     env.gateway.onModuleDestroy();
+  });
+
+  it('keeps a failing check inside the timer instead of rejecting it', async () => {
+    const gateway = new PrivateGateway(
+      { getOrThrow: () => 'secret' } as unknown as ConfigService,
+      {} as JwtService,
+      {
+        onUser: () => () => undefined,
+        onGap: () => () => undefined,
+      } as unknown as RealtimeStreamReader,
+      { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+      sessions,
+    );
+    gateways.push(gateway);
+    gateway.afterInit({ use: jest.fn() } as never);
+    await expect(gateway['checkSessions']()).resolves.toBeUndefined();
   });
 
   it('keeps a confirmed session open and closes a revoked one at the next check', async () => {
