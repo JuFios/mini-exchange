@@ -10,7 +10,7 @@ import { formatPrice, formatQuantity } from '../matching/decimal';
 import { Order } from '../orders/entities/order.entity';
 import { OrderBookService } from '../orders/order-book.service';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
-import { BookLoader, counters } from './book-loader';
+import { counters } from './book-loader';
 import { bookOrder, CommandRow } from './command';
 import { CommandApplier, toRejectedInternal, WorkerResult } from './command-applier';
 import { OwnershipCoordinator } from '../ownership/ownership-coordinator';
@@ -57,7 +57,6 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     private readonly config: ConfigService,
     private readonly catalog: InstrumentCatalog,
     private readonly books: OrderBookService,
-    private readonly loader: BookLoader,
     private readonly ownership: OwnershipCoordinator,
     private readonly chaos: ChaosHooks,
     private readonly notifications: PgNotifications,

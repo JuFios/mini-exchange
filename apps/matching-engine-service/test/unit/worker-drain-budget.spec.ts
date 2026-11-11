@@ -20,7 +20,6 @@ it('stops a drain pass when its time budget is spent so resume and shutdown do n
     { getOrThrow: () => 1000 } as never,
     {} as never,
     { commit: () => undefined } as never,
-    {} as never,
     { leases: { assert: () => undefined } } as never,
     { reach: async () => undefined } as never,
     {} as never,
