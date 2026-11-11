@@ -109,13 +109,13 @@ function milliseconds(value: unknown, key: string): number {
 }
 
 function rateWindow(value: unknown, key: string): number {
-  const number = streamMaxLen(value, key);
+  const number = positiveInteger(value, key);
   if (number > 900_000) throw new Error(`${key} must not exceed 900000 ms`);
   return number;
 }
 
-function streamMaxLen(value: unknown, key: string): number {
-  const text = required(value ?? '1000000', key);
+function positiveInteger(value: unknown, key: string): number {
+  const text = required(value, key);
   const length = Number(text);
   if (!/^[1-9][0-9]*$/.test(text) || !Number.isSafeInteger(length)) {
     throw new Error(`${key} must be a positive safe integer`);
@@ -123,7 +123,7 @@ function streamMaxLen(value: unknown, key: string): number {
   return length;
 }
 
-function settlementUrl(value: unknown, key: string): string {
+function httpOrigin(value: unknown, key: string): string {
   const text = required(value, key);
   try {
     const url = new URL(text);
@@ -158,7 +158,7 @@ function internalToken(value: unknown, key: string): string {
 }
 
 const reservationSchema = {
-  SETTLEMENT_URL: settlementUrl,
+  SETTLEMENT_URL: httpOrigin,
   INTERNAL_API_TOKEN: internalToken,
   RESERVATION_TIMEOUT_MS: milliseconds,
   RESERVATION_SWEEP_AFTER_MS: milliseconds,
@@ -176,25 +176,25 @@ const schema = {
   RESERVATIONS_ENABLED: boolean,
   COMMAND_POLL_INTERVAL_MS: milliseconds,
   OUTBOX_POLL_INTERVAL_MS: (value: unknown, key: string) => milliseconds(value ?? '100', key),
-  STREAM_MAXLEN: streamMaxLen,
+  STREAM_MAXLEN: (value: unknown, key: string) => positiveInteger(value ?? '1000000', key),
   ORDER_SYNC_WAIT_MS: milliseconds,
   SEQ_GAP_ALERT_MS: milliseconds,
   // Змінної немає в `.env`, написаних до PR з WebSocket, тож без неї сервіс має стартувати.
   WS_REPLICA_MAX_LAG_MS: (value: unknown, key: string) => milliseconds(value ?? '5000', key),
-  AUTH_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  AUTH_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
   AUTH_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
-  LOGIN_EMAIL_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  LOGIN_EMAIL_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
   LOGIN_EMAIL_RATE_TTL_MS: (value: unknown, key: string) => rateWindow(value ?? '900000', key),
-  PUBLIC_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '120', key),
+  PUBLIC_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '120', key),
   PUBLIC_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
-  ORDER_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '10', key),
+  ORDER_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
   ORDER_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '1000', key),
-  ORDER_RATE_LIMIT_MIN: (value: unknown, key: string) => streamMaxLen(value ?? '300', key),
-  WS_SUBSCRIBE_RATE_LIMIT: (value: unknown, key: string) => streamMaxLen(value ?? '20', key),
+  ORDER_RATE_LIMIT_MIN: (value: unknown, key: string) => positiveInteger(value ?? '300', key),
+  WS_SUBSCRIBE_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '20', key),
   CORS_ORIGINS: (value: unknown, key: string) =>
     required(value, key)
       .split(',')
-      .map((item) => settlementUrl(item.trim(), key)),
+      .map((item) => httpOrigin(item.trim(), key)),
   LOG_LEVEL: (value: unknown, key: string) => {
     const level = required(value ?? 'info', key);
     if (!/^(fatal|error|warn|info|debug|trace|silent)$/.test(level))
@@ -209,7 +209,7 @@ const schema = {
     return exporter;
   },
   OTEL_EXPORTER_OTLP_ENDPOINT: (value: unknown, key: string) =>
-    settlementUrl(value ?? 'http://jaeger:4318', key),
+    httpOrigin(value ?? 'http://jaeger:4318', key),
   PORT: port,
   ...databaseSchema,
   REDIS_HOST: required,

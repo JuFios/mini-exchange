@@ -54,7 +54,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   private loop?: Promise<void>;
   private stopped = false;
   private readonly abort = new AbortController();
-  private lastErrorLogAt = 0;
+  private lastErrorLogAt = -Infinity;
   private quietVerifiedAt = 0;
 
   constructor(
@@ -364,7 +364,8 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   }
 
   private logFailure(error: unknown): void {
-    const now = Date.now();
+    // Монотонний годинник: перевід системного часу назад не глушить журнал збоїв.
+    const now = performance.now();
     if (now - this.lastErrorLogAt < ERROR_LOG_INTERVAL_MS) return;
     this.lastErrorLogAt = now;
     this.logger.error({

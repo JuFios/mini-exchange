@@ -17,7 +17,6 @@ function setup() {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
     ownership as never,
     {} as never,
     {} as never,

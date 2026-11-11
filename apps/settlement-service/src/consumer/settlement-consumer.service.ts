@@ -281,7 +281,10 @@ function pairs(fields: unknown[]): [string, unknown][] {
 function tradeIdOf(envelope: string | undefined): string | null {
   try {
     const id = JSON.parse(envelope ?? '')?.payload?.tradeId;
-    return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id) ? id.toLowerCase() : null;
+    // Колонка trade_id має тип uuid: інший рядок зірвав би вставку журналу й лишив запис у PEL.
+    return typeof id === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)
+      ? id.toLowerCase()
+      : null;
   } catch {
     return null;
   }

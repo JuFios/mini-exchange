@@ -134,3 +134,17 @@ it('names the engine trade that cannot be compared instead of reporting a partia
   const bad = engineTrade('2026-01-01T09:00:00.000Z', { price: 'x' });
   await expect(compare([bad], [])).rejects.toThrow(bad.tradeId);
 });
+
+it('reports a ledger trade stored under another instrument even when hash and postings match', async () => {
+  const trade = engineTrade('2026-01-01T09:00:00.000Z');
+  const result = await compare([trade], [settled(trade, (ledger) => (ledger.instrument = 'XYZ'))]);
+  expect(result.discrepancies).toEqual([
+    expect.objectContaining({
+      type: 'payload_conflict',
+      tradeId: trade.tradeId,
+      expected: { instrument: 'ABC' },
+      actual: { instrument: 'XYZ' },
+    }),
+  ]);
+  expect(result.matched).toBe(0);
+});

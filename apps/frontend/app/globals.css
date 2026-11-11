@@ -314,6 +314,11 @@ p {
 .book-grid.dimmed {
   opacity: 0.66;
 }
+/* Довгі числа не повинні налазити на сусідню сторону книги: зайве прокручується всередині. */
+.levels {
+  min-width: 0;
+  overflow-x: auto;
+}
 .levels + .levels {
   border-left: 1px solid var(--line);
 }
@@ -714,6 +719,9 @@ input::placeholder {
   .account-rail {
     grid-row: 2;
   }
+}
+@media (max-width: 900px) {
+  /* Поруч із колонкою заявки кожна сторона книги вужча за три колонки зі звичайними відступами. */
   .levels th,
   .levels td {
     padding-left: 5px;

@@ -215,4 +215,16 @@ describe('outbox redrive', () => {
       (await api.request('/admin/outbox/redrive', 'POST', token, { orderIds: [] })).status,
     ).toBe(400);
   });
+
+  it('rejects a null list of IDs instead of failing inside the handler', async () => {
+    const token = await admin();
+    const id = '5a0a6d70-000e-4e19-a8b6-3cb26021396e';
+    for (const body of [
+      { tradeIds: null },
+      { orderIds: null },
+      { tradeIds: null, orderIds: [id] },
+      { tradeIds: [id], orderIds: null },
+    ])
+      expect((await api.request('/admin/outbox/redrive', 'POST', token, body)).status).toBe(400);
+  });
 });

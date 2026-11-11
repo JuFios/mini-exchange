@@ -44,7 +44,7 @@ export function setTokens(response: NextResponse, tokens: Tokens) {
     return expiry === undefined ? undefined : Math.max(0, expiry - now);
   };
   setCookie(response, ACCESS_COOKIE, tokens.accessToken, age(tokens.accessToken));
-  // D18: відповідь у grace не має замінювати вже ротований refresh.
+  // Відповідь у grace не має замінювати вже ротований refresh.
   if (tokens.refreshToken) {
     setCookie(response, REFRESH_COOKIE, tokens.refreshToken, age(tokens.refreshToken));
   }

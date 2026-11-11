@@ -131,7 +131,7 @@ export function BookPanel({
       </div>
       {status === 'error' && (
         <p className="message error" role="alert">
-          Не вдалося оновити книгу. Перезавантажте сторінку.
+          Не вдалося оновити книгу. Очікуємо на відновлення.
         </p>
       )}
       {!book && status !== 'error' && <p className="empty">Очікуємо знімок книги…</p>}

@@ -34,7 +34,6 @@ function setup(recover: () => Promise<unknown> = never, source: object = {}, app
     { getOrThrow: () => 1000 } as never,
     {} as never,
     { commit: () => undefined, quarantine: () => undefined } as never,
-    {} as never,
     ownership as never,
     { reach: async () => undefined } as never,
     {} as never,

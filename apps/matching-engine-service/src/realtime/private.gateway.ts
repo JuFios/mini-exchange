@@ -13,6 +13,13 @@ import { refuseWhileStale } from './replica-guard';
 
 // setTimeout з більшою затримкою спрацював би одразу.
 const MAX_TIMER_MS = 2 ** 31 - 1;
+// Logout, повторне використання refresh і новий вхід відкликають сесію. Без звірки відкритий
+// сокет отримував би приватні події до `exp`. Кожна репліка перевіряє лише власні сокети.
+export const SESSION_CHECK_MS = 3000;
+// Довше сокет не живе без підтвердженої сесії: збій чи зависання PG інакше продовжували б
+// відкликану сесію до `exp`. Межа не залежить від часу запиту, тож разом із тіком дає ≤ 13 с.
+export const SESSION_UNVERIFIED_MS = 10_000;
+export const SESSION_CHECK_DEADLINE_MS = 2000;
 
 export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
 
@@ -26,6 +33,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
   private readonly secret: string;
   private readonly logger = new Logger(PrivateGateway.name);
   private readonly detach: (() => void)[] = [];
+  private checking = false;
 
   constructor(
     config: ConfigService,
@@ -49,6 +57,9 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
       }),
       this.monitor.onStale(() => server.disconnectSockets(true)),
     );
+    const sessions = setInterval(() => void this.checkSessions(), SESSION_CHECK_MS);
+    sessions.unref();
+    this.detach.push(() => clearInterval(sessions));
   }
 
   onModuleDestroy(): void {
@@ -69,6 +80,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
 
   private async authenticate(socket: Socket, next: (error?: Error) => void): Promise<void> {
     const token: unknown = socket.handshake.auth?.token;
+    const checkedAt = performance.now();
     try {
       if (typeof token !== 'string' || token === '') throw new Error();
       const payload = await this.jwt.verifyAsync<JwtPayload>(token, {
@@ -76,13 +88,62 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
         algorithms: ['HS256'],
       });
       const { userId } = await accessPrincipal(payload, this.auth);
-      socket.data = { userId, exp: payload.exp };
+      socket.data = { userId, sid: payload.sid, exp: payload.exp, verifiedAt: checkedAt };
       // Перевірка токена асинхронна: репліка могла стати завислою після охорони, а розрив за
       // `onStale` відбувається лише раз, на переході, тож сокет, що прослизнув, лишився б.
       if (!this.monitor.healthy()) return next(new Error('REPLICA_UNAVAILABLE'));
       next();
     } catch {
       next(new Error('UNAUTHORIZED'));
+    }
+  }
+
+  // Виклик із таймера: виняток тут став би необробленим відхиленням і зупинив би процес.
+  private async checkSessions(): Promise<void> {
+    try {
+      await this.confirmSessions();
+    } catch (error) {
+      // Сокети лишаються до межі SESSION_UNVERIFIED_MS: короткий збій PG не розриває всіх.
+      this.logger.warn({
+        alert: 'private_session_check_failed',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async confirmSessions(): Promise<void> {
+    // Перевірка до запиту: зависла звірка не продовжує життя непідтверджених сокетів.
+    const now = performance.now();
+    for (const socket of [...this.server.sockets.values()]) {
+      if (now - socket.data.verifiedAt > SESSION_UNVERIFIED_MS) socket.disconnect();
+    }
+    const sockets = [...this.server.sockets.values()];
+    if (this.checking || sockets.length === 0) return;
+    this.checking = true;
+    // Дедлайн менший за тік: завислий запит не блокує наступні звірки й не старить нові сокети.
+    const deadline = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const active = await Promise.race([
+        this.auth.activeSessions(
+          sockets.map(({ data }) => data),
+          deadline.signal,
+        ),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            deadline.abort();
+            reject(new Error('Session check timed out'));
+          }, SESSION_CHECK_DEADLINE_MS);
+        }),
+      ]);
+      for (const socket of sockets) {
+        const { userId, sid } = socket.data;
+        if (active.has(`${userId}:${sid}`.toLowerCase())) socket.data.verifiedAt = now;
+        else socket.disconnect();
+      }
+    } finally {
+      clearTimeout(timer);
+      this.checking = false;
     }
   }
 

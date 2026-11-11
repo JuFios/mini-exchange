@@ -114,6 +114,26 @@ it('refuses a new private handshake after logout, including an access token from
   }
 });
 
+it('closes an open private socket once its session is revoked or replaced by a new login', async () => {
+  for (const end of ['logout', 'login'] as const) {
+    const user = await account();
+    const socket = await connect(api.url(), '/private', user.accessToken);
+    sockets.push(socket);
+    const closed = disconnected(socket, 10000);
+    const response =
+      end === 'logout'
+        ? await api.request('/auth/logout', 'POST', undefined, {
+            refreshToken: user.refreshToken,
+          })
+        : await api.request('/auth/login', 'POST', undefined, {
+            email: user.email,
+            password: 'example-password',
+          });
+    expect(response.ok).toBe(true);
+    await expect(closed).resolves.toBeGreaterThan(0);
+  }
+}, 30000);
+
 it('delivers order and wallet updates only to their owner and without identities', async () => {
   const [a, b] = await Promise.all([account(), account()]);
   const [forA, forB] = [await listen(a.accessToken), await listen(b.accessToken)];

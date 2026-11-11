@@ -2,6 +2,8 @@ import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/co
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
+import type { PostgresDriver } from 'typeorm/driver/postgres/PostgresDriver';
+import type { Pool } from 'pg';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
@@ -101,6 +103,57 @@ export class AuthService {
 
   isSessionActive(userId: string, sid: string): Promise<boolean> {
     return this.users.existsBy({ id: userId, refreshSessionId: sid });
+  }
+
+  /**
+   * Ключі `userId:sid` активних сесій серед переданих; одним запитом для багатьох сокетів.
+   * Завислий TCP PostgreSQL не відповідає й на statement_timeout. Тому скасування `signal`
+   * знищує клієнта пулу: pg розриває сокет активного запиту, і з'єднання не повертається в пул.
+   */
+  async activeSessions(
+    sessions: { userId: string; sid: string }[],
+    signal: AbortSignal,
+  ): Promise<Set<string>> {
+    const ids = [...new Set(sessions.map(({ userId }) => userId.toLowerCase()))];
+    if (ids.length === 0) return new Set();
+    const pool = (this.users.manager.connection.driver as PostgresDriver).master as Pool;
+    const client = await pool.connect();
+    // На час видачі пул знімає свій обробник. Без власного розрив з'єднання став би
+    // необробленою подією `error` і зупинив би процес; запит при цьому відхиляється сам.
+    let broken: Error | undefined;
+    const onError = (error: Error) => {
+      broken ??= error;
+    };
+    client.on('error', onError);
+    let released = false;
+    // Зламане чи покинуте з'єднання знищується, і слухач лишається на ньому до кінця.
+    const release = (destroy?: Error | boolean) => {
+      if (released) return;
+      released = true;
+      if (!destroy) client.removeListener('error', onError);
+      client.release(destroy);
+    };
+    if (signal.aborted) {
+      // Пул видав з'єднання вже після дедлайну: воно справне, запит лише не потрібен.
+      release();
+      signal.throwIfAborted();
+    }
+    const abandon = () => release(true);
+    signal.addEventListener('abort', abandon, { once: true });
+    try {
+      const { rows } = await client.query<{ id: string; refresh_session_id: string | null }>(
+        'SELECT id, refresh_session_id FROM users WHERE id = ANY($1::uuid[])',
+        [ids],
+      );
+      return new Set(
+        rows.flatMap(({ id, refresh_session_id }) =>
+          refresh_session_id ? [`${id}:${refresh_session_id}`.toLowerCase()] : [],
+        ),
+      );
+    } finally {
+      signal.removeEventListener('abort', abandon);
+      release(broken);
+    }
   }
 
   private async startSession(user: User): Promise<TokenPair> {

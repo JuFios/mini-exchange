@@ -81,7 +81,7 @@ export class IntakeService {
     traceparent?: string,
   ): Promise<Acceptance> {
     const payload = this.normalize(dto);
-    if (key !== undefined && /^[A-Za-z0-9_-]{1,64}$/.exec(key)?.[0] !== key) {
+    if (key !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
       throw new BadRequestException('Некоректний Idempotency-Key');
     }
     const idempotencyKey = key ?? randomUUID();

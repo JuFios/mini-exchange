@@ -214,6 +214,94 @@ it('dead-letters an invalid record at once and a conflicting trade without movin
   ]);
 });
 
+it('dead-letters malformed trade identifiers and still settles the next valid trade once', async () => {
+  const valid = tradeFixture();
+  await reserveTrade(ledger.app(), valid);
+  const invalidIds: unknown[] = [
+    '-'.repeat(36),
+    'a'.repeat(36),
+    '12345678-1234-1234-1234-12345678901-',
+    'not-a-uuid',
+    valid.tradeId + '\n',
+    null,
+    123,
+    { value: valid.tradeId },
+  ];
+  const records = invalidIds.map((tradeId) =>
+    streamFields('trade.executed', { ...valid, tradeId }),
+  );
+  consumer = startConsumer(ledger.app());
+  for (const fields of records) await redis.xadd(abcStream, '*', ...fields);
+  await redis.xadd(abcStream, '*', ...tradeFields(valid));
+  await redis.xadd(abcStream, '*', ...tradeFields(valid));
+  await until(
+    () => consumer!.queue(),
+    ({ streams, deadLetters }) =>
+      deadLetters === invalidIds.length &&
+      streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+  );
+
+  const failures = await source().query(
+    'SELECT trade_id,payload FROM settlement_failures ORDER BY id',
+  );
+  expect(failures.map(({ trade_id }: { trade_id: string | null }) => trade_id)).toEqual(
+    invalidIds.map(() => null),
+  );
+  expect(
+    failures.map(
+      ({ payload }: { payload: { fields: { envelope: string } } }) =>
+        JSON.parse(payload.fields.envelope).payload.tradeId,
+    ),
+  ).toEqual(invalidIds);
+  expect(await entries(valid)).toHaveLength(1);
+});
+
+it('preserves canonical trade identifiers in rejected records regardless of UUID version or case', async () => {
+  const ids = [
+    randomUUID().toUpperCase(),
+    '00000000-0000-0000-0000-000000000000',
+    'AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA',
+  ];
+  consumer = startConsumer(ledger.app());
+  for (const tradeId of ids) {
+    await redis.xadd(
+      abcStream,
+      '*',
+      ...streamFields('trade.executed', { ...tradeFixture(), tradeId }, 'invalid-producer'),
+    );
+  }
+  await until(
+    () => consumer!.queue(),
+    ({ streams, deadLetters }) =>
+      deadLetters === ids.length && streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+  );
+  const failures: { trade_id: string }[] = await source().query(
+    'SELECT trade_id FROM settlement_failures ORDER BY id',
+  );
+  expect(failures.map(({ trade_id }) => trade_id)).toEqual(ids.map((id) => id.toLowerCase()));
+});
+
+it('keeps a malformed trade identifier and unstoreable JSON in an encoded dead letter', async () => {
+  const fields = streamFields('trade.executed', {
+    ...tradeFixture(),
+    tradeId: '-'.repeat(36),
+  });
+  fields.push('diagnostic', '\u0000');
+  consumer = startConsumer(ledger.app());
+  await redis.xadd(abcStream, '*', ...fields);
+  await until(
+    () => consumer!.queue(),
+    ({ streams, deadLetters }) =>
+      deadLetters === 1 && streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+  );
+  const [failure] = await source().query('SELECT trade_id,payload FROM settlement_failures');
+  expect(failure.trade_id).toBeNull();
+  expect(failure.payload.encoding).toBe('base64');
+  expect(JSON.parse(Buffer.from(failure.payload.fields, 'base64').toString('utf8'))).toEqual(
+    fields,
+  );
+});
+
 it('keeps a record that jsonb cannot store by dead-lettering an encoded copy', async () => {
   consumer = startConsumer(ledger.app());
   await redis.xadd(abcStream, '*', 'envelope', 'bad\u0000record');

@@ -65,6 +65,34 @@ it('returns only the access token owner balances and rejects userId query overri
   await api().get('/wallets').expect(401);
 });
 
+it('reads balances without waiting for a settlement that holds the wallet accounts', async () => {
+  const userId = randomUUID();
+  const jwt = new JwtService({ secret: ledger.jwtSecret });
+  const access = jwt.sign({ sub: userId, sid: randomUUID(), typ: 'access' }, { expiresIn: '15m' });
+  await api().get('/wallets').auth(access, { type: 'bearer' }).expect(200);
+  await reserve(randomUUID(), userId, 'USD', '10000000000').expect(201);
+
+  const holder = await ledger.secondary().initialize();
+  const settlement = holder.createQueryRunner();
+  try {
+    await settlement.startTransaction();
+    await settlement.query('SELECT id FROM accounts WHERE user_id=$1 FOR UPDATE', [userId]);
+    await api()
+      .get('/wallets')
+      .auth(access, { type: 'bearer' })
+      .timeout(2000)
+      .expect(200, [
+        { asset: 'ABC', available: '1000.00000000', reserved: '0.00000000', version: '1' },
+        { asset: 'USD', available: '99999.0000000000', reserved: '1.0000000000', version: '3' },
+        { asset: 'XYZ', available: '1000.00000000', reserved: '0.00000000', version: '1' },
+      ]);
+  } finally {
+    await settlement.rollbackTransaction();
+    await settlement.release();
+    await holder.destroy();
+  }
+});
+
 it('settles the same trade only once and returns a conflict for a changed quantity', async () => {
   const trade = tradeFixture();
   await reserve(trade.buyOrderId, trade.buyerUserId, 'USD', '505000000000', '101.00').expect(201);
