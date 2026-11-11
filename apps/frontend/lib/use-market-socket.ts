@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { type BookState, type BookStatus, startBookSession } from './book-session';
 import { apiJson, errorMessage } from './client-api';
+import { startTradeHistory } from './trade-history';
 
 export interface Trade {
   tradeId: string;
@@ -53,33 +54,34 @@ export function useMarketSocket(url: string | undefined, instrument: string) {
   useEffect(() => {
     if (!url) return;
     const socket = io(url + '/market', { autoConnect: false, transports: ['websocket'] });
-    let history: AbortController | undefined;
+    const history = startTradeHistory(
+      socket,
+      instrument,
+      async (signal) => {
+        const rows = await apiJson<Trade[]>(
+          `/api/engine/instruments/${encodeURIComponent(instrument)}/trades?limit=50`,
+          { signal },
+        );
+        if (!Array.isArray(rows) || !rows.every(validTrade))
+          throw new Error('Invalid trade snapshot');
+        return rows;
+      },
+      {
+        onRows(rows) {
+          setTrades((current) => tradeRows(rows, current));
+          setTradeStatus('ready');
+          setTradeError('');
+        },
+        onError(error) {
+          setTradeStatus('error');
+          setTradeError(errorMessage(error));
+        },
+      },
+    );
     const stop = startBookSession(socket, instrument, {
       onBook: setBook,
       onStatus: setStatus,
-      onSnapshot() {
-        history?.abort();
-        history = new AbortController();
-        const { signal } = history;
-        void apiJson<Trade[]>(
-          `/api/engine/instruments/${encodeURIComponent(instrument)}/trades?limit=50`,
-          {
-            signal,
-          },
-        )
-          .then((rows) => {
-            if (signal.aborted) return;
-            if (!Array.isArray(rows) || !rows.every(validTrade))
-              throw new Error('Invalid trade snapshot');
-            setTrades((current) => tradeRows(rows, current));
-            setTradeStatus('ready');
-          })
-          .catch((error: unknown) => {
-            if (signal.aborted) return;
-            setTradeStatus('error');
-            setTradeError(errorMessage(error));
-          });
-      },
+      onSnapshot: history.refresh,
     });
     socket.on('trade', (trade: Trade & { instrument: string }) => {
       if (trade?.instrument !== instrument) return;
@@ -92,7 +94,7 @@ export function useMarketSocket(url: string | undefined, instrument: string) {
     });
     socket.connect();
     return () => {
-      history?.abort();
+      history.stop();
       stop();
     };
   }, [url, instrument]);
