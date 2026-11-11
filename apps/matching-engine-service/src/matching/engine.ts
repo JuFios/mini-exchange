@@ -5,10 +5,7 @@ import { cancelNewest, StpPolicy } from './stp';
 export const TRADE_ID_NAMESPACE = 'f9e78716-da87-438a-9f3b-597adb11b678';
 
 export function uuidv5(namespace: string, name: string): string {
-  if (
-    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(namespace) ||
-    namespace.length !== 36
-  ) {
+  if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(namespace)) {
     throw new Error('Invalid UUID namespace');
   }
   const bytes = createHash('sha1')
