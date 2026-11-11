@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
-import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsOptional, IsUUID } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, ArrayUnique, IsUUID, ValidateIf } from 'class-validator';
 import { DataSource } from 'typeorm';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
@@ -7,14 +7,14 @@ import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 const MAX_IDS = 1000;
 
 export class RedriveDto {
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @ArrayMinSize(1)
   @ArrayMaxSize(MAX_IDS)
   @ArrayUnique()
   @IsUUID(undefined, { each: true })
   tradeIds?: string[];
 
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @ArrayMinSize(1)
   @ArrayMaxSize(MAX_IDS)
   @ArrayUnique()
