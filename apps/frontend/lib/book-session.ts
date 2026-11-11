@@ -39,6 +39,8 @@ export const RETRY_MAX_MS = 2000;
 export const SUBSCRIBE_TIMEOUT_MS = 3000;
 // Сервер надсилає heartbeat кожні 2 с. Чотири інтервали дають запас на затримки.
 export const HEARTBEAT_TIMEOUT_MS = 8000;
+// Повтор першої підписки після вичерпання швидких спроб: одна спроба на серверне вікно ліміту.
+export const SLOW_RETRY_MS = 10_000;
 
 export const realClock: Clock = {
   setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -142,8 +144,16 @@ export function startBookSession(
     if (failures === 5) {
       buffered.clear();
       resyncPending = false;
-      // Після вичерпання спроб не опитуємо БД, доки знову не маємо сигналу свіжості.
-      awaitingHeartbeat = true;
+      if (status === 'loading') {
+        // Книга ще не стала live на цьому з'єднанні: сокет може бути поза кімнатою heartbeat.
+        waiting = clock.setTimeout(() => {
+          setStatus('loading');
+          subscribe();
+        }, SLOW_RETRY_MS);
+      } else {
+        // Уже підписаний сокет отримає heartbeat, коли сервер знову підтвердить свіжість.
+        awaitingHeartbeat = true;
+      }
       setStatus('error');
       return;
     }

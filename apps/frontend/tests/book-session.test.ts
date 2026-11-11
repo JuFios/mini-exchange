@@ -91,6 +91,9 @@ class FakeSocket implements SocketLike {
   get subscribes() {
     return this.emitted.filter(({ event }) => event === 'book.subscribe').length;
   }
+  get awaitingAck() {
+    return this.cancelAck !== undefined;
+  }
 }
 
 const BOOK: BookState = {
@@ -275,6 +278,266 @@ describe('the book page connection', () => {
     stop();
     assert.equal(socket.disconnects, 1);
     assert.equal(clock.pending, 0);
+  });
+});
+
+describe('recovery before the first snapshot on a connection', () => {
+  function refuse(socket: FakeSocket) {
+    const subscription = socket.emitted.at(-1);
+    assert.ok(subscription);
+    assert.equal(subscription.event, 'book.subscribe');
+    (subscription.args[1] as (reply: unknown) => void)({ ok: false, error: 'BOOK_BUSY' });
+  }
+
+  function exhaustAttempts(socket: FakeSocket, clock: ManualClock) {
+    for (const delay of [250, 500, 1000, 2000, 2000]) {
+      refuse(socket);
+      clock.tick(delay);
+    }
+    refuse(socket);
+  }
+
+  it('retries at a bounded rate without a heartbeat and applies deltas during the retry', () => {
+    const { socket, clock, statuses, books, snapshots } = start();
+    socket.fire('connect');
+    exhaustAttempts(socket, clock);
+    assert.equal(socket.subscribes, 6);
+    assert.equal(statuses.at(-1), 'error');
+
+    clock.tick(9999);
+    assert.equal(socket.subscribes, 6);
+    clock.tick(1);
+    assert.equal(socket.subscribes, 7);
+    refuse(socket);
+    assert.equal(statuses.at(-1), 'error');
+
+    clock.tick(10_000);
+    assert.equal(socket.subscribes, 8);
+    socket.fire('book.delta', { instrument: 'ABC', seq: '11', changes: [] });
+    socket.accept(BOOK);
+    assert.equal(statuses.at(-1), 'live');
+    assert.equal(books.at(-1)?.seq, '11');
+    assert.equal(snapshots.length, 1);
+    clock.tick(10_000);
+    assert.equal(socket.subscribes, 8);
+  });
+
+  it('retries on a new connection even when the previous book is still visible', () => {
+    const { socket, clock, statuses, books } = start();
+    socket.fire('connect');
+    socket.accept(BOOK);
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    exhaustAttempts(socket, clock);
+    assert.equal(statuses.at(-1), 'error');
+    assert.equal(books.at(-1)?.seq, '10');
+
+    clock.tick(10_000);
+    assert.equal(socket.subscribes, 8);
+    socket.accept({ ...BOOK, seq: '11' });
+    assert.equal(statuses.at(-1), 'live');
+    assert.equal(books.at(-1)?.seq, '11');
+  });
+
+  it('clears the pending retry when the socket disconnects or the session stops', () => {
+    for (const end of ['disconnect', 'stop']) {
+      const { socket, clock, stop } = start();
+      socket.fire('connect');
+      exhaustAttempts(socket, clock);
+      assert.equal(clock.pending, 1);
+      if (end === 'disconnect') socket.fire('disconnect', 'transport close');
+      else stop();
+      assert.equal(clock.pending, 0);
+      clock.tick(20_000);
+      assert.equal(socket.subscribes, 6);
+    }
+  });
+
+  it('keeps one pending acknowledgement or retry through repeated transport timeouts', () => {
+    const { socket, clock, statuses, books, stop } = start();
+    socket.fire('connect');
+    exhaustAttempts(socket, clock);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const before = socket.subscribes;
+      clock.tick(9999);
+      assert.equal(socket.subscribes, before);
+      clock.tick(1);
+      assert.equal(socket.subscribes, before + 1);
+      assert.equal(clock.pending, 1);
+      clock.tick(SUBSCRIBE_TIMEOUT_MS);
+      assert.equal(statuses.at(-1), 'error');
+      assert.equal(clock.pending, 1);
+      assert.equal(books.length, 0);
+    }
+    stop();
+    assert.equal(clock.pending, 0);
+  });
+
+  it('rejects an older recovery snapshot and keeps retrying until the visible sequence is reached', () => {
+    const { socket, clock, statuses, books } = start();
+    socket.fire('connect');
+    socket.accept(BOOK);
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    exhaustAttempts(socket, clock);
+    clock.tick(10_000);
+    socket.accept({ ...BOOK, seq: '9' });
+    assert.equal(statuses.at(-1), 'error');
+    assert.equal(books.at(-1)?.seq, '10');
+    clock.tick(10_000);
+    socket.accept({ ...BOOK, seq: '11' });
+    assert.equal(statuses.at(-1), 'live');
+    assert.deepEqual(
+      books.map(({ seq }) => seq),
+      ['10', '11'],
+    );
+  });
+
+  it('coalesces resync signals during a slow retry before publishing the recovered book', () => {
+    const { socket, clock, statuses, books, snapshots } = start();
+    socket.fire('connect');
+    exhaustAttempts(socket, clock);
+    clock.tick(10_000);
+    for (let signal = 0; signal < 20; signal++) {
+      socket.fire('book.resync', { instrument: 'ABC' });
+      socket.fire('book.heartbeat', { instrument: 'ABC', seq: '11' });
+    }
+    assert.equal(socket.subscribes, 7);
+    socket.accept(BOOK);
+    assert.equal(socket.subscribes, 8);
+    assert.equal(statuses.at(-1), 'loading');
+    assert.equal(books.length, 0);
+    assert.equal(snapshots.length, 0);
+    socket.accept({ ...BOOK, seq: '11' });
+    assert.equal(statuses.at(-1), 'live');
+    assert.equal(snapshots.length, 1);
+    assert.equal(books.at(-1)?.seq, '11');
+  });
+
+  it('isolates retries and cleanup between simultaneous sessions', () => {
+    const first = start();
+    const second = start();
+    first.socket.fire('connect');
+    second.socket.fire('connect');
+    exhaustAttempts(first.socket, first.clock);
+    exhaustAttempts(second.socket, second.clock);
+    first.stop();
+    second.clock.tick(10_000);
+    second.socket.accept(BOOK);
+    first.clock.tick(20_000);
+    assert.equal(first.socket.subscribes, 6);
+    assert.equal(first.clock.pending, 0);
+    assert.equal(second.socket.subscribes, 7);
+    assert.equal(second.statuses.at(-1), 'live');
+    second.stop();
+    assert.equal(second.clock.pending, 0);
+  });
+
+  it('ignores an in-flight retry acknowledgement after disconnect, reconnect or stop', () => {
+    for (const ending of ['disconnect', 'reconnect', 'stop']) {
+      const { socket, clock, statuses, books, stop } = start();
+      socket.fire('connect');
+      exhaustAttempts(socket, clock);
+      clock.tick(10_000);
+      const late = socket.emitted.at(-1)!.args[1] as (reply: unknown) => void;
+      if (ending === 'stop') stop();
+      else {
+        socket.fire('disconnect', 'transport close');
+        if (ending === 'reconnect') socket.fire('connect');
+      }
+      const pending = clock.pending;
+      late({ ok: true, snapshot: { ...BOOK, seq: '999' } });
+      late({ ok: false, error: 'BOOK_BUSY' });
+      assert.equal(books.length, 0);
+      assert.equal(clock.pending, pending);
+      if (ending === 'reconnect') {
+        socket.accept({ ...BOOK, seq: '11' });
+        assert.equal(statuses.at(-1), 'live');
+        assert.equal(books.at(-1)?.seq, '11');
+      }
+      stop();
+      assert.equal(clock.pending, 0);
+    }
+  });
+
+  it('preserves recovery and cleanup invariants across event orderings', () => {
+    const events = ['advance', 'heartbeat', 'resync', 'delta', 'lateReply', 'end'] as const;
+    type Event = (typeof events)[number];
+    function* permutations(remaining: readonly Event[]): Generator<Event[]> {
+      if (remaining.length === 0) yield [];
+      for (const event of remaining) {
+        for (const rest of permutations(remaining.filter((value) => value !== event))) {
+          yield [event, ...rest];
+        }
+      }
+    }
+
+    let checked = 0;
+    for (const phase of ['waiting', 'subscribing']) {
+      for (const ending of ['stop', 'disconnect', 'reconnect']) {
+        for (const ordering of permutations(events)) {
+          const { socket, clock, statuses, books, stop } = start();
+          socket.fire('connect');
+          exhaustAttempts(socket, clock);
+          const expired = socket.emitted.at(-1)!.args[1] as (reply: unknown) => void;
+          if (phase === 'subscribing') clock.tick(10_000);
+          let ended = false;
+          for (const event of ordering) {
+            const before = socket.subscribes;
+            switch (event) {
+              case 'advance':
+                clock.tick(10_000);
+                break;
+              case 'heartbeat':
+                socket.fire('book.heartbeat', { instrument: 'ABC', seq: '11' });
+                break;
+              case 'resync':
+                socket.fire('book.resync', { instrument: 'ABC' });
+                break;
+              case 'delta':
+                socket.fire('book.delta', { instrument: 'ABC', seq: '11', changes: [] });
+                break;
+              case 'lateReply':
+                expired({ ok: true, snapshot: { ...BOOK, seq: '999' } });
+                expired({ ok: false });
+                break;
+              case 'end':
+                if (ending === 'stop') stop();
+                else {
+                  socket.fire('disconnect', 'transport close');
+                  if (ending === 'reconnect') socket.fire('connect');
+                }
+                ended = true;
+                break;
+            }
+            assert.equal(books.length, 0, ordering.join(','));
+            assert.ok(clock.pending <= 1, ordering.join(','));
+            if (ended && ending !== 'reconnect') {
+              assert.equal(socket.subscribes, before);
+              assert.equal(clock.pending, 0);
+            }
+          }
+          if (ending === 'reconnect') {
+            if (!socket.awaitingAck) clock.tick(RETRY_MAX_MS);
+            assert.equal(socket.awaitingAck, true);
+            const before = socket.subscribes;
+            socket.accept({ ...BOOK, seq: '20' });
+            assert.ok(socket.subscribes <= before + 1, ordering.join(','));
+            if (socket.subscribes === before + 1) {
+              assert.equal(books.length, 0);
+              assert.equal(statuses.at(-1), 'loading');
+              socket.accept({ ...BOOK, seq: '20' });
+            }
+            assert.equal(statuses.at(-1), 'live', ordering.join(','));
+            assert.equal(books.at(-1)?.seq, '20');
+          }
+          stop();
+          assert.equal(clock.pending, 0);
+          checked++;
+        }
+      }
+    }
+    assert.equal(checked, 4320);
   });
 });
 
