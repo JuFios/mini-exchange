@@ -114,17 +114,19 @@ function discrepancy(
 
 /** Порівнює угоду engine з угодою ledger; `undefined` означає повний збіг. */
 export function compareTrade(engine: EngineTrade, ledger: LedgerTrade): Discrepancy | undefined {
-  const expected = expectedPostings(engine).map(key).sort();
-  const actual = ledger.postings.map(key).sort();
-  if (describeTrade(engine).hash !== ledger.payloadHash)
+  // Колонка instrument зберігається поруч із hash, а підсумки звірки групуються саме за нею.
+  if (engine.instrument !== ledger.instrument)
     return discrepancy(
       'payload_conflict',
       engine,
-      { hash: describeTrade(engine).hash },
-      {
-        hash: ledger.payloadHash,
-      },
+      { instrument: engine.instrument },
+      { instrument: ledger.instrument },
     );
+  const { hash } = describeTrade(engine);
+  if (hash !== ledger.payloadHash)
+    return discrepancy('payload_conflict', engine, { hash }, { hash: ledger.payloadHash });
+  const expected = expectedPostings(engine).map(key).sort();
+  const actual = ledger.postings.map(key).sort();
   if (expected.join() === actual.join()) return undefined;
   // Кожна очікувана проводка двічі: запис виконано повторно.
   if (actual.join() === [...expected, ...expected].sort().join())
