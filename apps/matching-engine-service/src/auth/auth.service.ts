@@ -1,7 +1,7 @@
 import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { In, QueryFailedError, Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
@@ -101,6 +101,21 @@ export class AuthService {
 
   isSessionActive(userId: string, sid: string): Promise<boolean> {
     return this.users.existsBy({ id: userId, refreshSessionId: sid });
+  }
+
+  /** Ключі `userId:sid` активних сесій серед переданих; одним запитом для багатьох сокетів. */
+  async activeSessions(sessions: { userId: string; sid: string }[]): Promise<Set<string>> {
+    const ids = [...new Set(sessions.map(({ userId }) => userId.toLowerCase()))];
+    if (ids.length === 0) return new Set();
+    const users = await this.users.find({
+      select: { id: true, refreshSessionId: true },
+      where: { id: In(ids) },
+    });
+    return new Set(
+      users.flatMap(({ id, refreshSessionId }) =>
+        refreshSessionId ? [`${id}:${refreshSessionId}`.toLowerCase()] : [],
+      ),
+    );
   }
 
   private async startSession(user: User): Promise<TokenPair> {

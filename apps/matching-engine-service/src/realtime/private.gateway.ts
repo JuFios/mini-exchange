@@ -13,6 +13,9 @@ import { refuseWhileStale } from './replica-guard';
 
 // setTimeout з більшою затримкою спрацював би одразу.
 const MAX_TIMER_MS = 2 ** 31 - 1;
+// Logout, повторне використання refresh і новий вхід відкликають сесію. Без звірки відкритий
+// сокет отримував би приватні події до `exp`. Кожна репліка перевіряє лише власні сокети.
+export const SESSION_CHECK_MS = 3000;
 
 export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
 
@@ -26,6 +29,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
   private readonly secret: string;
   private readonly logger = new Logger(PrivateGateway.name);
   private readonly detach: (() => void)[] = [];
+  private checking = false;
 
   constructor(
     config: ConfigService,
@@ -49,6 +53,9 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
       }),
       this.monitor.onStale(() => server.disconnectSockets(true)),
     );
+    const sessions = setInterval(() => void this.dropRevoked(), SESSION_CHECK_MS);
+    sessions.unref();
+    this.detach.push(() => clearInterval(sessions));
   }
 
   onModuleDestroy(): void {
@@ -76,13 +83,35 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
         algorithms: ['HS256'],
       });
       const { userId } = await accessPrincipal(payload, this.auth);
-      socket.data = { userId, exp: payload.exp };
+      socket.data = { userId, sid: payload.sid, exp: payload.exp };
       // Перевірка токена асинхронна: репліка могла стати завислою після охорони, а розрив за
       // `onStale` відбувається лише раз, на переході, тож сокет, що прослизнув, лишився б.
       if (!this.monitor.healthy()) return next(new Error('REPLICA_UNAVAILABLE'));
       next();
     } catch {
       next(new Error('UNAUTHORIZED'));
+    }
+  }
+
+  private async dropRevoked(): Promise<void> {
+    const sockets = [...this.server.sockets.values()];
+    if (this.checking || sockets.length === 0) return;
+    this.checking = true;
+    try {
+      const active = await this.auth.activeSessions(sockets.map(({ data }) => data));
+      for (const socket of sockets) {
+        const { userId, sid } = socket.data;
+        if (!active.has(`${userId}:${sid}`.toLowerCase())) socket.disconnect();
+      }
+    } catch (error) {
+      // Без PG сесію не перевірити. Розрив усіх сокетів дав би шторм повторних handshake,
+      // які теж потребують PG; репліку без PG розриває монітор свіжості.
+      this.logger.warn({
+        alert: 'private_session_check_failed',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.checking = false;
     }
   }
 
