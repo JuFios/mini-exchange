@@ -12,6 +12,7 @@ function fixture(t: TestContext, slowObservation: boolean, killFails = false) {
   let confirmed = false;
   let lastOldSeq = 0;
   let observations = 0;
+  let inspections = 0;
   let attempts = 0;
   const failure = new Error('Docker kill failed');
   const appliedAt = new Date();
@@ -97,7 +98,7 @@ function fixture(t: TestContext, slowObservation: boolean, killFails = false) {
     if (args[0] === 'inspect') {
       if (args[2] === '{{.State.Status}}:{{.State.ExitCode}}') {
         // Docker прийняв kill, але inspect ще не підтвердив завершення процесу.
-        if (killed && observations++ > 1) {
+        if (killed && inspections++ >= 16) {
           confirmed = true;
           return 'exited:137';
         }
