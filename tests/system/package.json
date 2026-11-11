@@ -8,6 +8,7 @@
     "node": ">=20.12"
   },
   "scripts": {
+    "test": "node --require ts-node/register --test chaos-workload.test.ts",
     "concurrency": "ts-node concurrency.ts",
     "chaos:kill": "ts-node chaos-kill.ts",
     "chaos:pause": "ts-node chaos-pause.ts",

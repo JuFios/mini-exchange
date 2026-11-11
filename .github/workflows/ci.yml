@@ -224,7 +224,7 @@ jobs:
       - name: Build and check the system runner
         run: |
           docker compose build system-tests
-          docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck'
+          docker compose run --rm --no-deps system-tests sh -ec 'npm run format:check && npm run typecheck && npm test'
       - name: Start isolated system stack with production auth limits
         env:
           SYSTEM_AUTH_RATE_LIMIT: '10'
