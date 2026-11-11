@@ -39,6 +39,7 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
   private readonly pending = new Map<string, NodeJS.Timeout>();
   private readonly reads = new Map<string, Promise<void>>();
   private readonly waiting = new Map<string, Waiting>();
+  private readonly subscribing = new WeakSet<Socket>();
   // Скільки розсилок інструмента поспіль не вдалося; скидається першою вдалою.
   private readonly failures = new Map<string, number>();
   private readonly detach: (() => void)[] = [];
@@ -82,11 +83,16 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
     }
     // Сокет, що вже розірвано, не повинен ні займати читання, ні потрапляти до кімнати.
     if (!client.connected) return;
-    client.join(instrument);
+    // Спільне читання обмежує запити до БД, але кожен виклик лишає окреме очікування.
+    if (this.subscribing.has(client)) return { ok: false, error: 'Підписка вже виконується' };
+    this.subscribing.add(client);
     try {
+      await client.join(instrument);
       await this.requestBook(instrument, client);
     } catch {
       return { ok: false, error: 'Книга тимчасово недоступна' };
+    } finally {
+      this.subscribing.delete(client);
     }
   }
 

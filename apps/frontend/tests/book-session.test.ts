@@ -50,19 +50,36 @@ class FakeSocket implements SocketLike {
   emitted: { event: string; args: unknown[] }[] = [];
   connects = 0;
   disconnects = 0;
+  private cancelAck?: () => void;
+  constructor(private readonly clock: Clock) {}
   on(event: string, handler: (...args: never[]) => void) {
     this.handlers.set(event, handler);
   }
-  emit(event: string, ...args: unknown[]) {
-    this.emitted.push({ event, args });
+  timeout(ms: number) {
+    return {
+      emit: (event: string, ...args: unknown[]) => {
+        const [body, ack] = args as [unknown, (error: Error | null, reply?: unknown) => void];
+        const cancel = () => this.clock.clearTimeout(timer);
+        const complete = (error: Error | null, reply?: unknown) => {
+          cancel();
+          if (this.cancelAck === cancel) this.cancelAck = undefined;
+          ack(error, reply);
+        };
+        const timer = this.clock.setTimeout(() => complete(new Error('Ack timed out')), ms);
+        this.cancelAck = cancel;
+        this.emitted.push({ event, args: [body, (reply: unknown) => complete(null, reply)] });
+      },
+    };
   }
   connect() {
     this.connects++;
   }
   disconnect() {
+    this.cancelAck?.();
     this.disconnects++;
   }
   fire(event: string, ...args: unknown[]) {
+    if (event === 'disconnect' || event === 'connect_error') this.cancelAck?.();
     (this.handlers.get(event) as ((...a: unknown[]) => void) | undefined)?.(...args);
   }
   accept(snapshot: BookState) {
@@ -85,7 +102,7 @@ const BOOK: BookState = {
 
 function start() {
   const clock = new ManualClock();
-  const socket = new FakeSocket();
+  const socket = new FakeSocket(clock);
   const statuses: BookStatus[] = [];
   const books: BookState[] = [];
   const snapshots: BookState[] = [];
@@ -192,6 +209,19 @@ describe('the book page connection', () => {
     } finally {
       stop();
     }
+  });
+
+  it('ignores the previous ack once its deadline has started another attempt', () => {
+    const { socket, clock, statuses, books } = start();
+    socket.fire('connect');
+    const late = socket.emitted[0].args[1] as (reply: unknown) => void;
+    clock.tick(SUBSCRIBE_TIMEOUT_MS + RETRY_MIN_MS);
+    assert.equal(socket.subscribes, 2);
+    late({ ok: true, snapshot: { ...BOOK, seq: '99' } });
+    assert.equal(statuses.at(-1), 'loading');
+    assert.equal(books.length, 0);
+    socket.accept(BOOK);
+    assert.equal(books.at(-1)?.seq, '10');
   });
 
   it('stops retrying the subscription when the connection drops', () => {
@@ -377,7 +407,7 @@ describe('market book synchronization', () => {
     assert.equal(state.statuses.at(-1), 'stale');
   });
 
-  it('retains the visible book after five snapshot retries', () => {
+  it('retains the visible book after five retries and recovers when heartbeat returns', () => {
     const state = market(10, [level(100)]);
     const visible = state.books.at(-1);
     const count = () =>
@@ -396,6 +426,13 @@ describe('market book synchronization', () => {
     assert.equal(count(), 7);
     assert.equal(state.statuses.at(-1), 'error');
     assert.equal(state.books.at(-1), visible);
+
+    state.heartbeat(14);
+    assert.equal(count(), 8);
+    assert.equal(state.statuses.at(-1), 'stale');
+    state.accept(14, [level(101)]);
+    assert.equal(state.statuses.at(-1), 'live');
+    assert.deepEqual(state.books.at(-1)?.asks, [level(101)]);
   });
 
   it('replays buffered deltas after the recovery snapshot', () => {

@@ -86,7 +86,10 @@ it('signals a skipped trade to its market room even when its book delta arrives'
     });
     expect((await api.submit(buyer, { side: 'buy', quantity: 1 })).status).toBe(201);
     await waitFor(
-      async () => events(received, 'book.heartbeat').some(({ seq }) => seq === '2'),
+      async () =>
+        events(received, 'book.heartbeat').some(({ seq }) => seq === '2') &&
+        events(received, 'book.delta').some(({ seq }) => seq === '2') &&
+        events(received, 'book.resync').length > 0,
       6000,
     );
 
