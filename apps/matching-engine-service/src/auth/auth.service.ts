@@ -1,7 +1,9 @@
 import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, QueryFailedError, Repository } from 'typeorm';
+import { QueryFailedError, Repository } from 'typeorm';
+import type { PostgresDriver } from 'typeorm/driver/postgres/PostgresDriver';
+import type { Pool } from 'pg';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'node:crypto';
@@ -103,19 +105,40 @@ export class AuthService {
     return this.users.existsBy({ id: userId, refreshSessionId: sid });
   }
 
-  /** Ключі `userId:sid` активних сесій серед переданих; одним запитом для багатьох сокетів. */
-  async activeSessions(sessions: { userId: string; sid: string }[]): Promise<Set<string>> {
+  /**
+   * Ключі `userId:sid` активних сесій серед переданих; одним запитом для багатьох сокетів.
+   * Завислий TCP PostgreSQL не відповідає й на statement_timeout. Тому скасування `signal`
+   * знищує клієнта пулу: pg розриває сокет активного запиту, і з'єднання не повертається в пул.
+   */
+  async activeSessions(
+    sessions: { userId: string; sid: string }[],
+    signal: AbortSignal,
+  ): Promise<Set<string>> {
     const ids = [...new Set(sessions.map(({ userId }) => userId.toLowerCase()))];
     if (ids.length === 0) return new Set();
-    const users = await this.users.find({
-      select: { id: true, refreshSessionId: true },
-      where: { id: In(ids) },
-    });
-    return new Set(
-      users.flatMap(({ id, refreshSessionId }) =>
-        refreshSessionId ? [`${id}:${refreshSessionId}`.toLowerCase()] : [],
-      ),
-    );
+    const pool = (this.users.manager.connection.driver as PostgresDriver).master as Pool;
+    const client = await pool.connect();
+    if (signal.aborted) {
+      // Пул видав з'єднання вже після дедлайну: воно справне, запит лише не потрібен.
+      client.release();
+      signal.throwIfAborted();
+    }
+    const abandon = () => client.release(true);
+    signal.addEventListener('abort', abandon, { once: true });
+    try {
+      const { rows } = await client.query<{ id: string; refresh_session_id: string | null }>(
+        'SELECT id, refresh_session_id FROM users WHERE id = ANY($1::uuid[])',
+        [ids],
+      );
+      return new Set(
+        rows.flatMap(({ id, refresh_session_id }) =>
+          refresh_session_id ? [`${id}:${refresh_session_id}`.toLowerCase()] : [],
+        ),
+      );
+    } finally {
+      signal.removeEventListener('abort', abandon);
+      if (!signal.aborted) client.release();
+    }
   }
 
   private async startSession(user: User): Promise<TokenPair> {

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import {
   PrivateGateway,
+  SESSION_CHECK_DEADLINE_MS,
   SESSION_CHECK_MS,
   SESSION_UNVERIFIED_MS,
   userRoom,
@@ -162,6 +163,26 @@ describe('private sockets whose session cannot be confirmed', () => {
       expect(socket.disconnect).toHaveBeenCalled();
       env.gateway.onModuleDestroy();
     }
+  });
+
+  it('abandons a stuck check at its deadline so later checks keep confirming sessions', async () => {
+    const signals: AbortSignal[] = [];
+    let calls = 0;
+    const env = sessionsGateway(async (sessions, signal) => {
+      signals.push(signal);
+      // Перший запит висить на мертвому TCP і сигнал скасування ігнорує.
+      if (++calls === 1) return new Promise(() => undefined);
+      return new Set(sessions.map(({ userId, sid }) => `${userId}:${sid}`));
+    });
+    const first = env.connect('6f0b0c5e-1f3c-4c39-9a52-0d1a3bfc2f10');
+    await jest.advanceTimersByTimeAsync(SESSION_CHECK_MS + SESSION_CHECK_DEADLINE_MS);
+    expect(signals[0].aborted).toBe(true);
+    const later = env.connect('0d2f6a4e-7c1b-4a8e-9f3d-5b6c7d8e9f01');
+    await jest.advanceTimersByTimeAsync(10 * SESSION_UNVERIFIED_MS);
+    expect(calls).toBeGreaterThan(1);
+    expect(first.disconnect).not.toHaveBeenCalled();
+    expect(later.disconnect).not.toHaveBeenCalled();
+    env.gateway.onModuleDestroy();
   });
 
   it('keeps a confirmed session open and closes a revoked one at the next check', async () => {

@@ -19,6 +19,7 @@ export const SESSION_CHECK_MS = 3000;
 // Довше сокет не живе без підтвердженої сесії: збій чи зависання PG інакше продовжували б
 // відкликану сесію до `exp`. Межа не залежить від часу запиту, тож разом із тіком дає ≤ 13 с.
 export const SESSION_UNVERIFIED_MS = 10_000;
+export const SESSION_CHECK_DEADLINE_MS = 2000;
 
 export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
 
@@ -106,8 +107,22 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
     const sockets = [...this.server.sockets.values()];
     if (this.checking || sockets.length === 0) return;
     this.checking = true;
+    // Дедлайн менший за тік: завислий запит не блокує наступні звірки й не старить нові сокети.
+    const deadline = new AbortController();
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const active = await this.auth.activeSessions(sockets.map(({ data }) => data));
+      const active = await Promise.race([
+        this.auth.activeSessions(
+          sockets.map(({ data }) => data),
+          deadline.signal,
+        ),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            deadline.abort();
+            reject(new Error('Session check timed out'));
+          }, SESSION_CHECK_DEADLINE_MS);
+        }),
+      ]);
       for (const socket of sockets) {
         const { userId, sid } = socket.data;
         if (active.has(`${userId}:${sid}`.toLowerCase())) socket.data.verifiedAt = now;
@@ -120,6 +135,7 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      clearTimeout(timer);
       this.checking = false;
     }
   }
