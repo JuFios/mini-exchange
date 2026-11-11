@@ -88,8 +88,15 @@ export async function request(
     signal: AbortSignal.timeout(timeoutMs),
   });
 }
-export async function submit(token: string, body: unknown, base = engine): Promise<Response> {
-  const key = randomUUID();
+export async function submit(
+  token: string,
+  body: unknown,
+  base = engine,
+  options?: { key: string; retry?: boolean },
+): Promise<Response> {
+  const key = options?.key ?? randomUUID();
+  const headers = { 'Idempotency-Key': key };
+  if (options?.retry === false) return request('/orders', 'POST', token, body, base, headers);
   const deadline = performance.now() + 30000;
   let attempt = 0;
   let backoff = 250;
@@ -101,12 +108,12 @@ export async function submit(token: string, body: unknown, base = engine): Promi
         token,
         body,
         base,
-        { 'Idempotency-Key': key },
+        headers,
         Math.max(1, Math.min(15000, Math.floor(deadline - performance.now()))),
       );
       if (![502, 503, 504].includes(response.status)) {
         assert(
-          response.status !== 200 || attempt > 0,
+          options !== undefined || response.status !== 200 || attempt > 0,
           'A fresh order key unexpectedly returned a replay',
         );
         return response;
@@ -122,7 +129,7 @@ export async function submit(token: string, body: unknown, base = engine): Promi
     );
     backoff = Math.min(backoff * 2, 2000);
   }
-  throw new Error('Order retry deadline exceeded');
+  throw new Error(`Order retry deadline exceeded for ${key}`);
 }
 
 export async function token(path: string, email: string, password: string) {
@@ -185,4 +192,5 @@ export async function verifyReplay(db: Client) {
     'All accepted commands must be applied',
   );
   console.log(`replay commands=${commands.length} trades=${trades.length} orders=${orders.length}`);
+  return { book: oracle.book(), orders: [...oracle.orders.values()], trades: expected };
 }

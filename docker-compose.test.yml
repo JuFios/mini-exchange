@@ -1,7 +1,10 @@
 x-test-engine: &test-engine
   restart: 'no'
   ports: !reset []
+  volumes: ['./tests/system/fixtures/crash.cjs:/app/system-crash.cjs:ro']
   environment:
+    NODE_OPTIONS: --require=/app/system-crash.cjs
+    SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
     CHAOS_ENABLED: 'true'
     ADMIN_EMAILS: admin@system.test
     ADMIN_PASSWORD: system-test-password-only
@@ -32,7 +35,10 @@ services:
   settlement-service:
     restart: 'no'
     ports: !reset []
+    volumes: ['./tests/system/fixtures/crash.cjs:/app/system-crash.cjs:ro']
     environment:
+      NODE_OPTIONS: --require=/app/system-crash.cjs
+      SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
       # Коротка пауза дає звірці побачити втрачену угоду без очікування 30 с.
       SETTLEMENT_GRACE_MS: '1000'
   frontend:
@@ -49,6 +55,9 @@ services:
       DATABASE_USER: engine
       DATABASE_PASSWORD: engine-local-only
       DATABASE_NAME: exchange
+      LEDGER_DATABASE_USER: ledger
+      LEDGER_DATABASE_PASSWORD: ledger-local-only
+      LEDGER_DATABASE_NAME: ledger
       ENGINE_URL: http://engine-lb:3001
       ADMIN_EMAIL: admin@system.test
       ADMIN_PASSWORD: system-test-password-only

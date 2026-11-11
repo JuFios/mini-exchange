@@ -1,0 +1,17 @@
+diff --git a/apps/matching-engine-service/src/auth/entities/user.entity.ts b/apps/matching-engine-service/src/auth/entities/user.entity.ts
+--- a/apps/matching-engine-service/src/auth/entities/user.entity.ts
++++ b/apps/matching-engine-service/src/auth/entities/user.entity.ts
+@@ -14,3 +14,3 @@ export class User {
+-  @Column({ nullable: true })
++  @Column({ type: 'varchar', nullable: true })
+   refreshTokenHash: string | null;
+ }
+diff --git a/apps/matching-engine-service/tsconfig.build.json b/apps/matching-engine-service/tsconfig.build.json
+new file mode 100644
+--- /dev/null
++++ b/apps/matching-engine-service/tsconfig.build.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./tsconfig.json",
++  "include": ["src/**/*.ts"]
++}
