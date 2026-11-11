@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Repository } from 'typeorm';
@@ -15,7 +16,10 @@ function service(connect: () => Promise<unknown>) {
 }
 
 it('destroys the pool client of a query abandoned at the deadline', async () => {
-  const client = { query: () => new Promise(() => undefined), release: jest.fn() };
+  const client = Object.assign(new EventEmitter(), {
+    query: () => new Promise(() => undefined),
+    release: jest.fn(),
+  });
   const deadline = new AbortController();
   const result = service(async () => client).activeSessions(
     [{ userId: USER, sid: SID }],
@@ -29,7 +33,7 @@ it('destroys the pool client of a query abandoned at the deadline', async () => 
 });
 
 it('returns a late pool client unused and keeps it in the pool', async () => {
-  const client = { query: jest.fn(), release: jest.fn() };
+  const client = Object.assign(new EventEmitter(), { query: jest.fn(), release: jest.fn() });
   let hand!: (value: unknown) => void;
   const deadline = new AbortController();
   const result = service(() => new Promise((resolve) => (hand = resolve))).activeSessions(
@@ -40,11 +44,11 @@ it('returns a late pool client unused and keeps it in the pool', async () => {
   hand(client);
   await expect(result).rejects.toThrow();
   expect(client.query).not.toHaveBeenCalled();
-  expect(client.release).toHaveBeenCalledWith();
+  expect(client.release).toHaveBeenCalledWith(undefined);
 });
 
 it('reads active sessions and releases the client normally', async () => {
-  const client = {
+  const client = Object.assign(new EventEmitter(), {
     query: async () => ({
       rows: [
         { id: USER, refresh_session_id: SID },
@@ -52,11 +56,68 @@ it('reads active sessions and releases the client normally', async () => {
       ],
     }),
     release: jest.fn(),
-  };
+  });
   const active = await service(async () => client).activeSessions(
     [{ userId: USER.toUpperCase(), sid: SID }],
     new AbortController().signal,
   );
   expect([...active]).toEqual([`${USER}:${SID}`]);
-  expect(client.release).toHaveBeenCalledWith();
+  expect(client.release).toHaveBeenCalledWith(undefined);
+});
+
+it('turns a connection error during the query into a failed check and destroys the client', async () => {
+  const client = Object.assign(new EventEmitter(), {
+    query: () =>
+      new Promise((_resolve, reject) =>
+        setImmediate(() => {
+          // pg емітить `error` на клієнті й відхиляє активний запит.
+          const reset = new Error('Connection terminated unexpectedly');
+          client.emit('error', reset);
+          reject(reset);
+        }),
+      ),
+    release: jest.fn(),
+  });
+  const deadline = new AbortController();
+  const check = service(async () => client).activeSessions(
+    [{ userId: USER, sid: SID }],
+    deadline.signal,
+  );
+  await expect(check).rejects.toThrow('Connection terminated unexpectedly');
+  deadline.abort();
+  expect(client.release).toHaveBeenCalledTimes(1);
+  expect(client.release.mock.calls[0][0]).toBeInstanceOf(Error);
+  expect(() => client.emit('error', new Error('late socket error'))).not.toThrow();
+});
+
+it('removes its error listener when the client goes back to the pool', async () => {
+  const client = Object.assign(new EventEmitter(), {
+    query: async () => ({ rows: [] }),
+    release: jest.fn(),
+  });
+  await service(async () => client).activeSessions(
+    [{ userId: USER, sid: SID }],
+    new AbortController().signal,
+  );
+  expect(client.listenerCount('error')).toBe(0);
+  expect(client.release).toHaveBeenCalledWith(undefined);
+});
+
+it('releases a client once when the abandoned query fails afterwards', async () => {
+  let fail!: (error: Error) => void;
+  const client = Object.assign(new EventEmitter(), {
+    query: () => new Promise((_resolve, reject) => (fail = reject)),
+    release: jest.fn(),
+  });
+  const deadline = new AbortController();
+  const check = service(async () => client).activeSessions(
+    [{ userId: USER, sid: SID }],
+    deadline.signal,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  deadline.abort();
+  fail(new Error('Connection terminated'));
+  await expect(check).rejects.toThrow('Connection terminated');
+  expect(client.release).toHaveBeenCalledTimes(1);
+  expect(client.release).toHaveBeenCalledWith(true);
 });

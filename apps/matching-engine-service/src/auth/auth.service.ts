@@ -118,12 +118,27 @@ export class AuthService {
     if (ids.length === 0) return new Set();
     const pool = (this.users.manager.connection.driver as PostgresDriver).master as Pool;
     const client = await pool.connect();
+    // На час видачі пул знімає свій обробник. Без власного розрив з'єднання став би
+    // необробленою подією `error` і зупинив би процес; запит при цьому відхиляється сам.
+    let broken: Error | undefined;
+    const onError = (error: Error) => {
+      broken ??= error;
+    };
+    client.on('error', onError);
+    let released = false;
+    // Зламане чи покинуте з'єднання знищується, і слухач лишається на ньому до кінця.
+    const release = (destroy?: Error | boolean) => {
+      if (released) return;
+      released = true;
+      if (!destroy) client.removeListener('error', onError);
+      client.release(destroy);
+    };
     if (signal.aborted) {
       // Пул видав з'єднання вже після дедлайну: воно справне, запит лише не потрібен.
-      client.release();
+      release();
       signal.throwIfAborted();
     }
-    const abandon = () => client.release(true);
+    const abandon = () => release(true);
     signal.addEventListener('abort', abandon, { once: true });
     try {
       const { rows } = await client.query<{ id: string; refresh_session_id: string | null }>(
@@ -137,7 +152,7 @@ export class AuthService {
       );
     } finally {
       signal.removeEventListener('abort', abandon);
-      if (!signal.aborted) client.release();
+      release(broken);
     }
   }
 
