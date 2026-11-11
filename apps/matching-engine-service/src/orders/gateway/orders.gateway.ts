@@ -96,10 +96,6 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
     }
   }
 
-  async broadcastDepth(instrument: string) {
-    await this.exclusive(instrument, () => this.push(instrument));
-  }
-
   /**
    * Підписники, які чекають на книгу, ділять одне читання: скільки б викликів `subscribe` не
    * надійшло, у черзі інструмента лишається не більше однієї пачки, що ще не почалась. Склад
