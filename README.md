@@ -571,6 +571,9 @@ tombstone, який відхиляє запізнілий reserve. Метрик�
 звільнення й розрахунок угоди записують збалансовані проводки та баланси однією транзакцією.
 Шкали ABC і XYZ — 8 знаків, USD — 10. Початкові демобаланси з
 `DEMO_INITIAL_BALANCES` проводяться один раз при першому зверненні до гаманця.
+Блокування рахунків бере лише звернення, яке створює відсутні рахунки. Далі `GET /wallets`
+читає закомічений стан одним запитом без блокувань і не чекає на розрахунок угоди з тими самими
+рахунками.
 Резерви та звільнення також публікують `wallet.updated` після коміту, коли Redis доступний.
 Для актуального балансу перечитайте `GET /wallets`.
 
@@ -710,7 +713,8 @@ engine й порівнюються з фактичними.
 #### Індекси й плани запитів
 
 На PostgreSQL 16 після `ANALYZE` перевірено по 20 000 синтетичних рядків у
-`settled_trades`, `orders` і `accounts`. Planner використав відповідний індекс у
+`settled_trades`, `orders` і `accounts`, для гаманців — 120 000 рахунків (20 000 користувачів,
+три активи, `available` і `reserved`). Planner використав відповідний індекс у
 кожному запиті. Тип сканування залежить від селективності й розподілу рядків.
 
 | Операція | Вузол `EXPLAIN (ANALYZE, BUFFERS)` | Рядків у відповіді |
@@ -718,7 +722,8 @@ engine й порівнюються з фактичними.
 | Звірка за періодом та інструментом | `Bitmap Index Scan on settled_trades_instrument_executed_idx` | 30 |
 | Звірка за періодом | `Index Scan using settled_trades_executed_idx` | 60 |
 | `GET /orders?status=filled` | `Bitmap Index Scan on orders_owner_status_idx` | 50 |
-| Пошук наявного рахунку для `GET /wallets` | `Index Scan using accounts_user_id_asset_kind_key` | 1 |
+| Пошук наявного рахунку під час запису в ledger | `Index Scan using accounts_user_id_asset_kind_key` | 1 |
+| Гаманці користувача для `GET /wallets` | `Bitmap Index Scan on accounts_user_id_asset_kind_key` | 6 |
 
 У своїй тестовій БД підставте період з угодами та ідентифікатор наявного користувача.
 Запит заявок виконується в `exchange`, решта в `ledger`.
@@ -745,6 +750,15 @@ ORDER BY created_at DESC, id DESC LIMIT 50;
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT id FROM accounts
 WHERE user_id = '7164af7f-c1fc-8f92-2570-cdd3f20ec5e8' AND asset = 'USD' AND kind = 'available';
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT a.user_id, a.asset, a.kind, a.balance, a.version
+FROM accounts a
+JOIN unnest(ARRAY['7164af7f-c1fc-8f92-2570-cdd3f20ec5e8', '7164af7f-c1fc-8f92-2570-cdd3f20ec5e8',
+                  '7164af7f-c1fc-8f92-2570-cdd3f20ec5e8']::uuid[],
+            ARRAY['ABC', 'USD', 'XYZ']::text[]) AS w(user_id, asset)
+  ON a.user_id = w.user_id AND a.asset = w.asset
+WHERE a.kind IN ('available', 'reserved');
 ```
 
 ### Відновлення після втрати stream
