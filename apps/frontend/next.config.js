@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // Термінал не потребує серверної оптимізації зображень.
+  images: { unoptimized: true },
   async headers() {
     return [
       {
