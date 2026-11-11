@@ -1,7 +1,12 @@
 import { AuthService } from '../../src/auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { PrivateGateway, userRoom } from '../../src/realtime/private.gateway';
+import {
+  PrivateGateway,
+  SESSION_CHECK_MS,
+  SESSION_UNVERIFIED_MS,
+  userRoom,
+} from '../../src/realtime/private.gateway';
 import { RealtimeStreamReader } from '../../src/realtime/realtime-stream-reader.service';
 import { ReplicaLagMonitor } from '../../src/realtime/replica-lag.monitor';
 import type { UserEvent } from '../../src/realtime/realtime-events';
@@ -106,5 +111,68 @@ describe('a private handshake that is still verifying when the replica turns sta
 
     expect(errors[0]).toBeUndefined();
     expect(errors[1]?.message).toBe('REPLICA_UNAVAILABLE');
+  });
+});
+
+describe('private sockets whose session cannot be confirmed', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  function sessionsGateway(activeSessions: AuthService['activeSessions']) {
+    const sockets = new Map<string, unknown>();
+    const gateway = new PrivateGateway(
+      { getOrThrow: () => 'secret' } as unknown as ConfigService,
+      {} as JwtService,
+      {
+        onUser: () => () => undefined,
+        onGap: () => () => undefined,
+      } as unknown as RealtimeStreamReader,
+      { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+      { activeSessions } as unknown as AuthService,
+    );
+    gateway.afterInit({ use: jest.fn(), sockets } as never);
+    const connect = (sid: string) => {
+      const socket = {
+        connected: true,
+        data: { userId: USER, sid, exp: 4_102_444_800, verifiedAt: performance.now() },
+        disconnect: jest.fn(() => {
+          socket.connected = false;
+          sockets.delete(sid);
+        }),
+      };
+      sockets.set(sid, socket);
+      return socket;
+    };
+    return { gateway, connect };
+  }
+
+  it('closes them once the database stays unavailable past the bound', async () => {
+    for (const failure of ['error', 'hang'] as const) {
+      const env = sessionsGateway(
+        failure === 'error'
+          ? async () => {
+              throw new Error('database is down');
+            }
+          : () => new Promise(() => undefined),
+      );
+      const socket = env.connect('6f0b0c5e-1f3c-4c39-9a52-0d1a3bfc2f10');
+      await jest.advanceTimersByTimeAsync(SESSION_UNVERIFIED_MS - 1);
+      expect(socket.disconnect).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(SESSION_CHECK_MS + 1);
+      expect(socket.disconnect).toHaveBeenCalled();
+      env.gateway.onModuleDestroy();
+    }
+  });
+
+  it('keeps a confirmed session open and closes a revoked one at the next check', async () => {
+    const kept = '0d2f6a4e-7c1b-4a8e-9f3d-5b6c7d8e9f01';
+    const env = sessionsGateway(async () => new Set([`${USER}:${kept}`]));
+    const confirmed = env.connect(kept);
+    const revoked = env.connect('1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d');
+    await jest.advanceTimersByTimeAsync(SESSION_CHECK_MS);
+    expect(revoked.disconnect).toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(10 * SESSION_UNVERIFIED_MS);
+    expect(confirmed.disconnect).not.toHaveBeenCalled();
+    env.gateway.onModuleDestroy();
   });
 });
