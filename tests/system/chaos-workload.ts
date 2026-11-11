@@ -40,16 +40,33 @@ export async function runChaos(fault: Fault) {
     const redis = container('redis');
     try {
       await arm(fault, admin, service, redis, old);
+      const killed = (async () => {
+        if (fault !== 'external') return;
+        await until(
+          () => owner(db),
+          (state) => Number(state.last_applied_seq) >= 200,
+          20000,
+        );
+        docker('kill', '--signal', 'KILL', victim);
+        await until(
+          async () =>
+            docker('inspect', '--format', '{{.State.Status}}:{{.State.ExitCode}}', victim),
+          (state) => state === 'exited:137',
+          25000,
+        );
+      })();
       const results = await Promise.allSettled([
         Promise.all(
           Array.from({ length: 4 }, async (_, wave) => {
+            // Інакше затримка зовнішнього kill дозволить старому власнику обробити всі 400.
+            if (fault === 'external' && wave >= 2) await killed;
             if (wave) await delay(wave * 200);
             return Promise.all(
               workload.slice(wave * 100, (wave + 1) * 100).map((order) => sendOrder(order, true)),
             );
           }),
         ),
-        recover(db, ledger, fault, old, victim, service, redis),
+        killed.then(() => recover(db, ledger, fault, old, victim, service, redis)),
       ] as const);
       const [load, recovery] = results;
       if (recovery.status === 'rejected') throw recovery.reason;
@@ -140,17 +157,9 @@ async function recover(
   service: string,
   redis: string,
 ) {
-  if (fault === 'external') {
-    await until(
-      () => owner(db),
-      (state) => Number(state.last_applied_seq) >= 200,
-      20000,
-    );
-    docker('kill', '--signal', 'KILL', victim);
-  }
   if (fault === 'pause') {
     await pauseInTransaction(db, victim);
-  } else {
+  } else if (fault !== 'external') {
     await until(
       async () => docker('inspect', '--format', '{{.State.Status}}:{{.State.ExitCode}}', victim),
       (state) => state === 'exited:137',
@@ -310,7 +319,7 @@ async function checkFaultResult(
   redis: string,
 ) {
   if (fault === 'external') {
-    assert(Number(last.seq) >= 200 && Number(last.seq) <= 250, `External crash at seq ${last.seq}`);
+    assert.equal(Number(last.seq), 200, `External crash at seq ${last.seq}`);
     return;
   }
   if (fault === 'relay_after_xadd_before_published') {
