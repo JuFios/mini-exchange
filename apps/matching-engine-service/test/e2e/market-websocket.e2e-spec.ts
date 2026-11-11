@@ -1,10 +1,11 @@
 import { Socket } from 'socket.io-client';
+import { RealtimeStreamReader } from '../../src/realtime/realtime-stream-reader.service';
 import { waitFor } from '../helpers/wait-for';
 import { connect, emitWithAck, payloads, record } from '../helpers/websocket';
 import { engineApp } from './engine-app';
 
 const api = engineApp();
-const EVENTS = ['book.delta', 'trade', 'book.heartbeat'];
+const EVENTS = ['book.delta', 'trade', 'book.heartbeat', 'book.resync'];
 
 let socket: Socket | undefined;
 afterEach(() => socket?.disconnect());
@@ -63,6 +64,44 @@ it('sends one delta per command with the command number, the trade and nothing p
   expect(JSON.stringify(received)).not.toMatch(
     /ownerId|userId|buyerUserId|sellerUserId|buyOrderId|sellOrderId|"id"/,
   );
+});
+
+it('signals a skipped trade to its market room even when its book delta arrives', async () => {
+  const [seller, buyer] = await Promise.all([api.register(), api.register()]);
+  expect((await api.submit(seller, { quantity: 2 })).status).toBe(201);
+  const { received } = await subscribe();
+  const other = await connect(api.url(), '/market');
+  const otherReceived = record(other, EVENTS);
+  const reader = api.app().get(RealtimeStreamReader) as unknown as {
+    dispatch(fields: string[]): boolean;
+  };
+  const dispatch = reader.dispatch.bind(reader);
+  const skipTrade = jest.spyOn(reader, 'dispatch').mockImplementation((fields) => {
+    const typeIndex = fields.findIndex((field, index) => index % 2 === 0 && field === 'type');
+    return fields[typeIndex + 1] === 'trade.public' ? false : dispatch(fields);
+  });
+  try {
+    expect(await emitWithAck(other, 'book.subscribe', { instrument: 'XYZ' })).toMatchObject({
+      ok: true,
+    });
+    expect((await api.submit(buyer, { side: 'buy', quantity: 1 })).status).toBe(201);
+    await waitFor(
+      async () =>
+        events(received, 'book.heartbeat').some(({ seq }) => seq === '2') &&
+        events(received, 'book.delta').some(({ seq }) => seq === '2') &&
+        events(received, 'book.resync').length > 0,
+      6000,
+    );
+
+    expect(events(received, 'book.delta')).toContainEqual(expect.objectContaining({ seq: '2' }));
+    expect(events(received, 'trade')).toEqual([]);
+    expect(events(received, 'book.resync')).toEqual([{ instrument: 'ABC' }]);
+    expect(events(otherReceived, 'book.resync')).toEqual([]);
+    expect(await (await api.request('/instruments/ABC/trades?limit=2')).json()).toHaveLength(1);
+  } finally {
+    skipTrade.mockRestore();
+    other.disconnect();
+  }
 });
 
 it('sends the level that enters the top 50 when the best level of a deeper book is cancelled', async () => {

@@ -59,14 +59,27 @@ void withFreshBook(async (db) => {
         handler(...(args as never[]));
       });
     },
-    emit(event, ...args) {
-      assert.equal(event, 'book.subscribe');
-      subscribes++;
-      const [body, callback] = args as [unknown, (reply: unknown) => void];
-      socket.emit(event, body, (reply: { ok: boolean; instance?: string }) => {
-        if (reply.ok) instance = reply.instance;
-        callback(reply);
-      });
+    timeout(ms) {
+      return {
+        emit(event, ...args) {
+          assert.equal(event, 'book.subscribe');
+          subscribes++;
+          const [body, callback] = args as [
+            unknown,
+            (error: Error | null, reply?: unknown) => void,
+          ];
+          socket
+            .timeout(ms)
+            .emit(
+              event,
+              body,
+              (error: Error | null, reply?: { ok: boolean; instance?: string }) => {
+                if (reply?.ok) instance = reply.instance;
+                callback(error, reply);
+              },
+            );
+        },
+      };
     },
     connect: () => socket.connect(),
     disconnect: () => socket.disconnect(),

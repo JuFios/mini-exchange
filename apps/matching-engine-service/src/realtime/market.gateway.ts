@@ -12,6 +12,7 @@ import {
 import type { Namespace, Socket } from 'socket.io';
 import { CommittedBook } from '../engine/committed-book';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
+import { marketStream } from '../outbox/streams';
 import { MarketEvent, publicDelta, publicTrade } from './realtime-events';
 import { RealtimeStreamReader } from './realtime-stream-reader.service';
 import { ReplicaLagMonitor } from './replica-lag.monitor';
@@ -27,7 +28,7 @@ const TOO_MANY = { ok: false, error: 'TOO_MANY_REQUESTS' } as const;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
-/** Публічний namespace: snapshot, `book.delta` з номером команди, `trade` і `book.heartbeat`. */
+/** Публічний namespace: snapshot, delta, угоди та сигнали свіжості. */
 @WebSocketGateway({ namespace: 'market', transports: ['websocket'] })
 export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   @WebSocketServer()
@@ -55,6 +56,16 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
     server.use(refuseWhileStale(this.monitor));
     this.detach.push(
       this.reader.onMarket((event) => this.publish(event)),
+      this.reader.onGap((stream) => {
+        const instrument = this.instruments
+          .list()
+          .find(({ symbol }) => marketStream(symbol) === stream);
+        if (instrument) {
+          server
+            .to(bookRoom(instrument.symbol))
+            .emit('book.resync', { instrument: instrument.symbol });
+        }
+      }),
       // Heartbeat несе seq з PG, а не останній роздано цією реплікою: інакше завислий
       // читач лишав би клієнтів `live` на застарілій книзі.
       this.monitor.onHeartbeat((instrument, seq) =>

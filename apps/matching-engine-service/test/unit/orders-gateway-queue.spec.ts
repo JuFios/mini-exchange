@@ -82,6 +82,31 @@ describe('legacy subscriptions', () => {
     expect(second.received).toHaveLength(0);
   });
 
+  it('refuses overlap on the same socket before reading and releases the slot after failure', async () => {
+    let fail = true;
+    const env = buildLegacyGateway(() => fail);
+    const socket = env.socket();
+    const peer = env.socket();
+    const first = env.gateway.subscribe(socket as never, 'ABC');
+    const parallel = env.gateway.subscribe(peer as never, 'ABC');
+    const rejected = jest.fn();
+    void env.gateway.subscribe(socket as never, 'XYZ').then(rejected);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(rejected).toHaveBeenCalledWith({ ok: false, error: 'Підписка вже виконується' });
+    expect(env.rooms.has('XYZ')).toBe(false);
+    expect(env.state.reads).toBe(1);
+
+    await jest.advanceTimersByTimeAsync(50);
+    const unavailable = { ok: false, error: 'Книга тимчасово недоступна' };
+    await expect(Promise.all([first, parallel])).resolves.toEqual([unavailable, unavailable]);
+    fail = false;
+    const retry = env.gateway.subscribe(socket as never, 'ABC');
+    await jest.advanceTimersByTimeAsync(50);
+    await expect(retry).resolves.toBeUndefined();
+    expect(socket.received).toHaveLength(1);
+    expect(env.state.reads).toBe(2);
+  });
+
   it('does not accept a subscribe from a socket that has already gone', async () => {
     const env = build();
     const socket = env.socket();

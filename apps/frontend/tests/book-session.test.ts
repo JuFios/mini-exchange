@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { io } from 'socket.io-client';
 import {
   BookState,
   BookStatus,
@@ -7,6 +8,7 @@ import {
   RETRY_MAX_MS,
   RETRY_MIN_MS,
   SocketLike,
+  SUBSCRIBE_TIMEOUT_MS,
   startBookSession,
 } from '../lib/book-session';
 
@@ -48,20 +50,37 @@ class FakeSocket implements SocketLike {
   emitted: { event: string; args: unknown[] }[] = [];
   connects = 0;
   disconnects = 0;
+  private cancelAck?: () => void;
+  constructor(private readonly clock: Clock) {}
   on(event: string, handler: (...args: never[]) => void) {
     this.handlers.set(event, handler);
   }
-  emit(event: string, ...args: unknown[]) {
-    this.emitted.push({ event, args });
+  timeout(ms: number) {
+    return {
+      emit: (event: string, ...args: unknown[]) => {
+        const [body, ack] = args as [unknown, (error: Error | null, reply?: unknown) => void];
+        const cancel = () => this.clock.clearTimeout(timer);
+        const complete = (error: Error | null, reply?: unknown) => {
+          cancel();
+          if (this.cancelAck === cancel) this.cancelAck = undefined;
+          ack(error, reply);
+        };
+        const timer = this.clock.setTimeout(() => complete(new Error('Ack timed out')), ms);
+        this.cancelAck = cancel;
+        this.emitted.push({ event, args: [body, (reply: unknown) => complete(null, reply)] });
+      },
+    };
   }
   connect() {
     this.connects++;
   }
   disconnect() {
+    this.cancelAck?.();
     this.disconnects++;
   }
   fire(event: string, ...args: unknown[]) {
-    (this.handlers.get(event) as (...a: unknown[]) => void)(...args);
+    if (event === 'disconnect' || event === 'connect_error') this.cancelAck?.();
+    (this.handlers.get(event) as ((...a: unknown[]) => void) | undefined)?.(...args);
   }
   accept(snapshot: BookState) {
     const subscription = this.emitted.filter(({ event }) => event === 'book.subscribe').at(-1);
@@ -82,17 +101,22 @@ const BOOK: BookState = {
 };
 
 function start() {
-  const socket = new FakeSocket();
   const clock = new ManualClock();
+  const socket = new FakeSocket(clock);
   const statuses: BookStatus[] = [];
   const books: BookState[] = [];
+  const snapshots: BookState[] = [];
   const stop = startBookSession(
     socket,
     'ABC',
-    { onStatus: (status) => statuses.push(status), onBook: (book) => books.push(book) },
+    {
+      onStatus: (status) => statuses.push(status),
+      onBook: (book) => books.push(book),
+      onSnapshot: () => snapshots.push(books.at(-1)!),
+    },
     clock,
   );
-  return { socket, clock, statuses, books, stop };
+  return { socket, clock, statuses, books, snapshots, stop };
 }
 
 describe('the book page connection', () => {
@@ -170,6 +194,34 @@ describe('the book page connection', () => {
     clock.tick(60_000);
     assert.equal(socket.subscribes, before);
     assert.equal(clock.pending, 0);
+  });
+
+  it('lets Socket.IO release a snapshot ack and its packet at the deadline', ({ mock }) => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const socket = io('http://127.0.0.1/market', { autoConnect: false, forceNew: true });
+    const stop = startBookSession(socket, 'ABC', { onStatus() {}, onBook() {} });
+    try {
+      for (const connected of socket.listeners('connect')) connected();
+      assert.equal(socket.sendBuffer.length, 1);
+      mock.timers.tick(SUBSCRIBE_TIMEOUT_MS);
+      assert.equal(socket.sendBuffer.length, 0);
+      assert.equal(Object.keys((socket as unknown as { acks: object }).acks).length, 0);
+    } finally {
+      stop();
+    }
+  });
+
+  it('ignores the previous ack once its deadline has started another attempt', () => {
+    const { socket, clock, statuses, books } = start();
+    socket.fire('connect');
+    const late = socket.emitted[0].args[1] as (reply: unknown) => void;
+    clock.tick(SUBSCRIBE_TIMEOUT_MS + RETRY_MIN_MS);
+    assert.equal(socket.subscribes, 2);
+    late({ ok: true, snapshot: { ...BOOK, seq: '99' } });
+    assert.equal(statuses.at(-1), 'loading');
+    assert.equal(books.length, 0);
+    socket.accept(BOOK);
+    assert.equal(books.at(-1)?.seq, '10');
   });
 
   it('stops retrying the subscription when the connection drops', () => {
@@ -293,7 +345,69 @@ describe('market book synchronization', () => {
     assert.equal(state.books.at(-1)?.asks[0].price, '13.00');
   });
 
-  it('retains the visible book after five snapshot retries', () => {
+  it('refreshes trade history on a market gap even when the book sequence is current', () => {
+    const state = market(10);
+    state.delta(11);
+    state.heartbeat(11);
+    state.socket.fire('book.resync', { instrument: 'XYZ' });
+    assert.equal(state.socket.subscribes, 1);
+    state.socket.fire('book.resync', { instrument: 'ABC' });
+    assert.equal(state.statuses.at(-1), 'stale');
+    state.accept(11);
+    assert.deepEqual(
+      state.snapshots.map(({ seq }) => seq),
+      ['10', '11'],
+    );
+  });
+
+  it('coalesces gaps during recovery and reads after the last gap', () => {
+    const state = market(10);
+    for (let gap = 0; gap < 3; gap++) state.socket.fire('book.resync', { instrument: 'ABC' });
+    assert.equal(state.socket.subscribes, 2);
+    state.accept(10);
+    assert.equal(state.socket.subscribes, 3);
+    assert.equal(state.statuses.at(-1), 'stale');
+    assert.equal(state.snapshots.length, 1);
+    state.accept(11);
+    assert.equal(state.statuses.at(-1), 'live');
+    assert.deepEqual(
+      state.snapshots.map(({ seq }) => seq),
+      ['10', '11'],
+    );
+  });
+
+  it('marks a silent socket stale and waits for a fresh snapshot after heartbeat returns', () => {
+    const state = market(10);
+    state.clock.tick(7999);
+    assert.equal(state.statuses.at(-1), 'live');
+    state.clock.tick(1);
+    assert.equal(state.statuses.at(-1), 'stale');
+    assert.equal(state.socket.subscribes, 1);
+    state.delta(11, [change(100)]);
+    state.heartbeat(11);
+    state.heartbeat(11);
+    assert.equal(state.statuses.at(-1), 'stale');
+    assert.equal(state.socket.subscribes, 2);
+    state.accept(11, [level(100)]);
+    assert.equal(state.statuses.at(-1), 'live');
+    state.stop();
+    assert.equal(state.clock.pending, 0);
+  });
+
+  it('renews freshness on valid heartbeats for the current instrument', () => {
+    const state = market(10);
+    for (let beat = 0; beat < 5; beat++) {
+      state.clock.tick(2000);
+      state.heartbeat(10);
+    }
+    assert.deepEqual(state.statuses, ['loading', 'live']);
+    state.clock.tick(7999);
+    state.socket.fire('book.heartbeat', { instrument: 'XYZ', seq: '10' });
+    state.clock.tick(1);
+    assert.equal(state.statuses.at(-1), 'stale');
+  });
+
+  it('retains the visible book after five retries and recovers when heartbeat returns', () => {
     const state = market(10, [level(100)]);
     const visible = state.books.at(-1);
     const count = () =>
@@ -312,6 +426,13 @@ describe('market book synchronization', () => {
     assert.equal(count(), 7);
     assert.equal(state.statuses.at(-1), 'error');
     assert.equal(state.books.at(-1), visible);
+
+    state.heartbeat(14);
+    assert.equal(count(), 8);
+    assert.equal(state.statuses.at(-1), 'stale');
+    state.accept(14, [level(101)]);
+    assert.equal(state.statuses.at(-1), 'live');
+    assert.deepEqual(state.books.at(-1)?.asks, [level(101)]);
   });
 
   it('replays buffered deltas after the recovery snapshot', () => {

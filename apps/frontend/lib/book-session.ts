@@ -17,7 +17,7 @@ export type BookStatus = 'loading' | 'live' | 'reconnecting' | 'stale' | 'error'
 export interface SocketLike {
   active: boolean;
   on(event: string, handler: (...args: never[]) => void): unknown;
-  emit(event: string, ...args: unknown[]): unknown;
+  timeout(ms: number): { emit(event: string, ...args: unknown[]): unknown };
   connect(): unknown;
   disconnect(): unknown;
 }
@@ -37,6 +37,8 @@ export const RETRY_MIN_MS = 250;
 export const RETRY_MAX_MS = 2000;
 // Скільки чекати на книгу після `subscribe`, перш ніж підписатися знову.
 export const SUBSCRIBE_TIMEOUT_MS = 3000;
+// Сервер надсилає heartbeat кожні 2 с. Чотири інтервали дають запас на затримки.
+export const HEARTBEAT_TIMEOUT_MS = 8000;
 
 export const realClock: Clock = {
   setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -95,7 +97,7 @@ function apply(book: BookState, seq: bigint, changes: Change[]): BookState {
   };
 }
 
-// Підписка підтверджується snapshot, а пропуск delta виявляється за seq або heartbeat.
+// Snapshot і heartbeat підтверджують свіжість. Після розриву потоку потрібен новий snapshot.
 export function startBookSession(
   socket: SocketLike,
   instrument: string,
@@ -108,6 +110,9 @@ export function startBookSession(
   const buffered = new Map<bigint, Change[]>();
   let retry: unknown;
   let waiting: unknown;
+  let heartbeatTimer: unknown;
+  let awaitingHeartbeat = false;
+  let resyncPending = false;
   let reconnectDelay = RETRY_MIN_MS;
   let failures = 0;
   let requestId = 0;
@@ -119,6 +124,14 @@ export function startBookSession(
     view.onStatus(next);
   }
 
+  function armHeartbeatTimeout() {
+    clock.clearTimeout(heartbeatTimer);
+    heartbeatTimer = clock.setTimeout(() => {
+      awaitingHeartbeat = true;
+      setStatus('stale');
+    }, HEARTBEAT_TIMEOUT_MS);
+  }
+
   function reconnect() {
     clock.clearTimeout(retry);
     retry = clock.setTimeout(() => socket.connect(), reconnectDelay);
@@ -128,6 +141,9 @@ export function startBookSession(
   function failSnapshot() {
     if (failures === 5) {
       buffered.clear();
+      resyncPending = false;
+      // Після вичерпання спроб не опитуємо БД, доки знову не маємо сигналу свіжості.
+      awaitingHeartbeat = true;
       setStatus('error');
       return;
     }
@@ -137,11 +153,10 @@ export function startBookSession(
 
   function subscribe() {
     const id = ++requestId;
-    const finish = (reply?: Reply) => {
+    const finish = (error: Error | null, reply?: Reply) => {
       if (id !== requestId) return;
       requestId++;
-      clock.clearTimeout(waiting);
-      if (!reply?.ok || !validSnapshot(reply.snapshot, instrument)) return failSnapshot();
+      if (error || !reply?.ok || !validSnapshot(reply.snapshot, instrument)) return failSnapshot();
 
       let next = {
         instrument,
@@ -162,16 +177,23 @@ export function startBookSession(
       reconnectDelay = RETRY_MIN_MS;
       failures = 0;
       book = next;
+      // Якщо розрив зафіксовано під час читання, цей snapshot міг його ще не охопити.
+      if (resyncPending) {
+        resyncPending = false;
+        subscribe();
+        return;
+      }
+      armHeartbeatTimeout();
       view.onBook(book);
       setStatus('live');
       view.onSnapshot?.();
     };
 
-    waiting = clock.setTimeout(finish, SUBSCRIBE_TIMEOUT_MS);
-    socket.emit('book.subscribe', { instrument }, finish);
+    socket.timeout(SUBSCRIBE_TIMEOUT_MS).emit('book.subscribe', { instrument }, finish);
   }
 
   function recover() {
+    clock.clearTimeout(heartbeatTimer);
     setStatus('stale');
     subscribe();
   }
@@ -180,6 +202,9 @@ export function startBookSession(
     requestId++;
     clock.clearTimeout(waiting);
     clock.clearTimeout(retry);
+    clock.clearTimeout(heartbeatTimer);
+    awaitingHeartbeat = false;
+    resyncPending = false;
     buffered.clear();
     heartbeat = undefined;
   }
@@ -193,7 +218,7 @@ export function startBookSession(
   });
   socket.on('book.delta', (event: Delta) => {
     if (stopped || event?.instrument !== instrument) return;
-    if (status === 'reconnecting' || status === 'error') return;
+    if (awaitingHeartbeat || status === 'reconnecting' || status === 'error') return;
     if (
       !isSequence(event.seq) ||
       !Array.isArray(event.changes) ||
@@ -214,11 +239,25 @@ export function startBookSession(
     buffered.set(seq, event.changes);
     if (status === 'live') recover();
   });
+  socket.on('book.resync', (event: { instrument: string }) => {
+    if (stopped || awaitingHeartbeat || event?.instrument !== instrument) return;
+    if (status === 'live') recover();
+    else if (status === 'loading' || status === 'stale') resyncPending = true;
+  });
   socket.on('book.heartbeat', (event: { instrument: string; seq: string }) => {
-    if (stopped || status !== 'live' || !book || event?.instrument !== instrument) return;
-    if (!isSequence(event.seq)) return recover();
-    if (heartbeat !== undefined && heartbeat > BigInt(book.seq)) recover();
+    if (stopped || event?.instrument !== instrument) return;
+    if (awaitingHeartbeat) {
+      if (!isSequence(event.seq)) return;
+      awaitingHeartbeat = false;
+      failures = 0;
+      return recover();
+    }
+    if (status !== 'live' || !book) return;
+    if (!isSequence(event.seq) || (heartbeat !== undefined && heartbeat > BigInt(book.seq))) {
+      return recover();
+    }
     heartbeat = BigInt(event.seq);
+    armHeartbeatTimeout();
   });
   socket.on('disconnect', (reason: string) => {
     if (stopped) return;
