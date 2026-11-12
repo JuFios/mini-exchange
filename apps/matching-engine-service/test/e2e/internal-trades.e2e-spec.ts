@@ -200,6 +200,49 @@ describe('outbox redrive', () => {
     await waitFor(async () => (await row(tradeId))?.published_at !== null);
   });
 
+  it('lets owner inserts pass while it waits for a long transaction on the outbox', async () => {
+    await trade(1);
+    const [{ tradeId }] = (await (await internal('', { 'x-internal-token': token() })).json())
+      .trades;
+    await waitFor(async () => (await row(tradeId))?.published_at !== null);
+    const waiting = async () =>
+      (
+        await api.database().query(
+          `SELECT count(*)::int AS n FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+           WHERE d.datname = current_database() AND l.relation = 'outbox'::regclass
+             AND l.mode = 'ShareRowExclusiveLock' AND NOT l.granted`,
+        )
+      )[0].n;
+    const long = api.database().createQueryRunner();
+    const owner = api.database().createQueryRunner();
+    await long.startTransaction();
+    await long.query('LOCK TABLE outbox IN ROW EXCLUSIVE MODE');
+    try {
+      const redrive = api.request('/admin/outbox/redrive', 'POST', await admin(), {
+        tradeIds: [tradeId],
+      });
+      await waitFor(async () => (await waiting()) === 1);
+      // Вставка власника бере те саме блокування таблиці й стає в чергу за redrive.
+      const started = performance.now();
+      await owner.startTransaction();
+      await owner.query('LOCK TABLE outbox IN ROW EXCLUSIVE MODE');
+      const waited = performance.now() - started;
+      await owner.commitTransaction();
+      expect(waited).toBeLessThan(1500);
+
+      await long.commitTransaction();
+      const response = await redrive;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ requeued: 1 });
+    } finally {
+      for (const runner of [owner, long]) {
+        if (runner.isTransactionActive) await runner.rollbackTransaction();
+        await runner.release();
+      }
+    }
+    await waitFor(async () => (await row(tradeId))?.published_at !== null);
+  });
+
   it('validates the list of trade IDs', async () => {
     const token = await admin();
     for (const tradeIds of [
