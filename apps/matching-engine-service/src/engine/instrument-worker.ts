@@ -44,6 +44,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   private readonly owned = new Map<string, OwnedBook>();
   private readonly running = new Map<string, Promise<void>>();
   private readonly loading = new Map<string, Promise<void>>();
+  private readonly again = new Set<string>();
   private readonly gaps = new Map<string, number>();
   private readonly progress = new WeakMap<InstrumentLease, number>();
   private timer?: NodeJS.Timeout;
@@ -211,7 +212,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
   async kick(instrument: string): Promise<void> {
     if (this.stopped || !this.owned.has(instrument)) return;
     const running = this.running.get(instrument);
-    if (running) return running;
+    if (running) {
+      // Команда могла з'явитися після останнього читання цього проходу: без позначки вона
+      // чекала б наступного poll.
+      this.again.add(instrument);
+      return running;
+    }
+    this.again.delete(instrument);
     // Lease цього drain: до завершення запису owned міг змінитися на нову епоху.
     const lease = this.owned.get(instrument)?.lease;
     const task = this.bounded(instrument, lease, this.drain(instrument))
@@ -236,7 +243,10 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         }
       })
       .finally(() => {
-        if (this.running.get(instrument) === task) this.running.delete(instrument);
+        // Resume замінив цей прохід власним завданням: після нього drain запустить poll.
+        if (this.running.get(instrument) !== task) return;
+        this.running.delete(instrument);
+        if (this.again.delete(instrument)) void this.kick(instrument);
       });
     this.running.set(instrument, task);
     return task;
