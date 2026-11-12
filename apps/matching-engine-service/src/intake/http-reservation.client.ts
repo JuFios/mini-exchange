@@ -1,4 +1,9 @@
-import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  InternalServerErrorException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reservation, ReservationClient } from './reservation.client';
 
@@ -6,6 +11,7 @@ const RESERVE_ATTEMPTS = 3;
 const unavailable = () => new ServiceUnavailableException('Сервіс резервування недоступний');
 
 export class HttpReservationClient extends ReservationClient {
+  private readonly logger = new Logger(HttpReservationClient.name);
   private readonly url: string;
   private readonly token: string;
   private readonly timeoutMs: number;
@@ -35,6 +41,18 @@ export class HttpReservationClient extends ReservationClient {
           code: 'REQUEST_EXPIRED',
           message: 'Час прийому заявки вичерпано',
         });
+      }
+      // Повторюємо лише те, що минає саме: збій мережі, 5xx і 429. Інша відповідь (401 через
+      // токен, 400 чи 409 через розбіжність контракту) не зміниться від повтору, тож це не
+      // недоступність сервісу, а помилка конфігурації, яку має бути видно в журналі.
+      if (status < 500 && status !== 429) {
+        this.logger.error({
+          alert: 'reservation_request_refused',
+          status,
+          code: result.code,
+          reservationId: request.reservationId,
+        });
+        throw new InternalServerErrorException('Не вдалося зарезервувати кошти');
       }
     }
     throw unavailable();
