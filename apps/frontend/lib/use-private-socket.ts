@@ -9,7 +9,6 @@ import {
   type Order,
   type OrderUpdate,
   type Wallet,
-  finishAttempt,
   mergeWallet,
   unresolvedOrderIds,
   projectOrder,
@@ -277,7 +276,6 @@ export function usePrivateSocket(url: string | undefined) {
       const previous = orders.get(order.id);
       const next = previous && previous.version >= order.version ? previous : order;
       orders.set(order.id, next);
-      finishAttempt(next);
     }
 
     function applyOrder(update: OrderUpdate, signal: AbortSignal) {

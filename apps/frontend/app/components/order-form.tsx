@@ -1,7 +1,7 @@
 'use client';
 
 import { type FormEvent, useEffect, useState } from 'react';
-import { apiJson, ApiError, errorMessage } from '../../lib/client-api';
+import { errorMessage } from '../../lib/client-api';
 import {
   type AmountErrors,
   type AmountLimits,
@@ -9,13 +9,8 @@ import {
   orderTotal,
   submitValidatedOrder,
 } from '../../lib/decimal';
-import {
-  type Order,
-  type Wallet,
-  acceptedOrder,
-  attemptKey,
-  orderFeedback,
-} from '../../lib/private-state';
+import { sendOrder } from '../../lib/order-attempt';
+import { type Order, type Wallet, orderFeedback } from '../../lib/private-state';
 import { quantityText } from './market-tables';
 
 export interface Instrument extends AmountLimits {
@@ -29,53 +24,6 @@ export interface PickedLevel {
   price: string;
   side: OrderInput['side'];
   nonce: number;
-}
-
-// sessionStorage може бути недоступний (приватний режим, заблоковані дані сайту).
-function readAttempt(key: string) {
-  try {
-    return JSON.parse(sessionStorage.getItem(key) ?? 'null') as {
-      idempotencyKey: string;
-      orderId?: string;
-    } | null;
-  } catch {
-    return null;
-  }
-}
-
-function writeAttempt(key: string, value: { idempotencyKey: string; orderId?: string } | null) {
-  try {
-    if (value) sessionStorage.setItem(key, JSON.stringify(value));
-    else sessionStorage.removeItem(key);
-  } catch {
-    // Без сховища повторна відправка отримає новий ключ — це лише втрата захисту від дубля.
-  }
-}
-
-async function sendOrder(input: OrderInput) {
-  const key = attemptKey(input);
-  const pending = readAttempt(key);
-  const idempotencyKey = pending?.idempotencyKey ?? crypto.randomUUID();
-  writeAttempt(key, { ...pending, idempotencyKey });
-  try {
-    const { order } = await apiJson<{ order: Partial<Order> & { id: string } }>(
-      '/api/engine/orders',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
-        body: JSON.stringify(input),
-      },
-    );
-    const result = acceptedOrder(input, order);
-    writeAttempt(key, result.status === 'pending' ? { idempotencyKey, orderId: result.id } : null);
-    return result;
-  } catch (error) {
-    // Після обриву або відповіді шлюзу наступний запит має знайти ту саму заявку.
-    if (error instanceof ApiError && [400, 409, 422].includes(error.status)) {
-      writeAttempt(key, null);
-    }
-    throw error;
-  }
 }
 
 export function OrderForm({
