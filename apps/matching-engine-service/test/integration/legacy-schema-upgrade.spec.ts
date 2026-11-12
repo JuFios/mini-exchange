@@ -1,4 +1,3 @@
-import { OrderBookService } from '../../src/orders/order-book.service';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 import { ConfigService } from '@nestjs/config';
@@ -7,6 +6,7 @@ import { validateEnv } from '../../src/config/env.validation';
 import { OrdersService } from '../../src/orders/orders.service';
 import { randomUUID } from 'node:crypto';
 import { BookLoader } from '../../src/engine/book-loader';
+import { CommittedBook } from '../../src/engine/committed-book';
 import { migrate } from '../../src/database/migrate';
 import { testDatabase } from '../test-database';
 
@@ -77,9 +77,8 @@ it('quarantines legacy resting orders while preserving deterministic forensic re
     const app = module.createNestApplication({ logger: false });
     try {
       await app.init();
-      expect(() => app.get(OrderBookService).depth('ABC')).toThrow(
-        expect.objectContaining({ status: 503 }),
-      );
+      // Карантинну книгу не віддає жоден шлях читання: усі вони читають підтверджений стан PG.
+      await expect(app.get(CommittedBook).read('ABC')).rejects.toMatchObject({ status: 503 });
       await source.query("UPDATE instrument_state SET status='active' WHERE instrument='ABC'");
       await expect(
         app

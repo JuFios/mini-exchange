@@ -19,17 +19,6 @@ export interface BookSnapshot {
 export const DEFAULT_BOOK_DEPTH = BOOK_DEPTH;
 export const MAX_BOOK_DEPTH = BOOK_DEPTH;
 
-export interface BookLevel {
-  price: string;
-  quantity: string;
-  orders: number;
-}
-
-export interface BookDepth {
-  bids: BookLevel[];
-  asks: BookLevel[];
-}
-
 export interface MatchResult {
   trades: Trade[];
   restingOrder: Order | null; // залишок заявки, що лягає в книгу (якщо є)

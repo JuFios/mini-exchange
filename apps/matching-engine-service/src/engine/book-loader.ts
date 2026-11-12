@@ -27,7 +27,7 @@ export class BookLoader {
     db: EntityManager,
     instrument: string,
     resume = false,
-  ): Promise<{ book: Book; seq: string; halted: boolean; quarantined?: boolean }> {
+  ): Promise<{ book: Book; seq: string; halted: boolean }> {
     const [state] = await db.query(
       'SELECT * FROM instrument_state WHERE instrument=$1 FOR UPDATE',
       [instrument],
@@ -39,7 +39,6 @@ export class BookLoader {
         book: { bids: [], asks: [] },
         seq: state.last_applied_seq,
         halted: true,
-        quarantined: true,
       };
     }
     // Читання й сортування великої книги довше за 5 с і 2 с простою сесії за замовчуванням.
