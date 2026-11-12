@@ -185,6 +185,20 @@ it('never accepts a password whose ending bcrypt would ignore', async () => {
   }
 });
 
+it('does not let an unpaired surrogate stand in for U+FFFD in a password', async () => {
+  const credentials = { email: `${randomUUID()}@example.test`, password: 'password\ufffd' };
+  expect((await post('register', credentials)).status).toBe(201);
+  expect((await post('login', credentials)).status).toBe(201);
+  // bcrypt кодує неспарений surrogate як U+FFFD, тож без перевірки цей вхід пройшов би.
+  expect((await post('login', { ...credentials, password: 'password\ud800' })).status).toBe(401);
+  const response = await post('register', {
+    email: `${randomUUID()}@example.test`,
+    password: 'password\udbff',
+  });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ message: ['Пароль містить некоректні символи'] });
+});
+
 it('creates one account when variants of an address register at the same time', async () => {
   // Кілька пар: обидві реєстрації пари проходять попередню перевірку до вставки будь-якої з них.
   const emails = Array.from({ length: 5 }, () => `Race-${randomUUID()}@Example.test`);

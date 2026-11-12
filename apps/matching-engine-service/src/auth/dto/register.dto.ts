@@ -1,5 +1,5 @@
 import { IsEmail, MinLength } from 'class-validator';
-import { FitsBcrypt } from '../password';
+import { FitsBcrypt, IsWellFormedPassword } from '../password';
 
 export class RegisterDto {
   @IsEmail()
@@ -7,5 +7,6 @@ export class RegisterDto {
 
   @MinLength(8)
   @FitsBcrypt('Пароль задовгий: щонайбільше 72 байти UTF-8')
+  @IsWellFormedPassword('Пароль містить некоректні символи')
   password: string;
 }

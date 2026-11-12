@@ -54,3 +54,19 @@ it('refuses a login password longer than bcrypt reads, even if its prefix matche
   // Порівняння все одно виконується: час відповіді не залежить від довжини пароля.
   expect(compare).toHaveBeenCalledTimes(1);
 });
+
+it('rejects a registration password with an unpaired UTF-16 surrogate', async () => {
+  expect(await registerErrors('password\ud800')).toEqual(['Пароль містить некоректні символи']);
+  expect(await registerErrors('password\udc00x')).toEqual(['Пароль містить некоректні символи']);
+  // Справжній U+FFFD і пари surrogate (emoji) — звичайні символи.
+  expect(await registerErrors('password�')).toEqual([]);
+  expect(await registerErrors('password' + emoji)).toEqual([]);
+});
+
+it('refuses a login password with an unpaired surrogate, even if bcrypt matches it', async () => {
+  compare.mockClear();
+  await expect(
+    service().login({ email: 'user@example.test', password: 'password\ud800' }),
+  ).rejects.toBeInstanceOf(UnauthorizedException);
+  expect(compare).toHaveBeenCalledTimes(1);
+});

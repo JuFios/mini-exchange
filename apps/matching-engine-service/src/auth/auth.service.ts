@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { User } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
-import { passwordFitsBcrypt } from './password';
+import { passwordFitsBcrypt, passwordIsWellFormed } from './password';
 import {
   hashRefreshToken,
   matchesRefreshHash,
@@ -67,9 +67,14 @@ export class AuthService {
     // Невідомий email теж платить за bcrypt: час відповіді не розкриває, чи є акаунт.
     const hash = user?.passwordHash ?? (await this.absentPasswordHash);
     const valid = await bcrypt.compare(dto.password, hash);
-    // Довший пароль збігся б із коротшим за спільним префіксом; порівняння вже витрачено,
-    // тож час відповіді від довжини не залежить.
-    if (!user || !valid || !passwordFitsBcrypt(dto.password)) {
+    // Довший пароль збігся б із коротшим за спільним префіксом, а неспарений surrogate — із
+    // U+FFFD. Порівняння вже витрачено, тож час відповіді від вмісту пароля не залежить.
+    if (
+      !user ||
+      !valid ||
+      !passwordFitsBcrypt(dto.password) ||
+      !passwordIsWellFormed(dto.password)
+    ) {
       throw new UnauthorizedException('Невірний email або пароль');
     }
     return this.startSession(user);
