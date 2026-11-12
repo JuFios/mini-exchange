@@ -31,6 +31,14 @@ export class OrdersService {
     MAX_ORDER_WAIT_MS,
     'ORDERS_BUSY',
   );
+  // Прийом ходить до settlement по HTTP. Його межа окрема, тож завислий settlement займає
+  // лише її, а слоти PG лишаються скасуванням і читанням.
+  private readonly submissions = new ConcurrencyLimit(
+    MAX_CONCURRENT_ORDERS,
+    MAX_WAITING_ORDERS,
+    MAX_ORDER_WAIT_MS,
+    'ORDERS_BUSY',
+  );
 
   constructor(
     private readonly source: DataSource,
@@ -57,7 +65,9 @@ export class OrdersService {
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string, key?: string, traceparent?: string) {
     // NOTIFY міг прийти до встановлення waiter: applied_at закриває це вікно.
-    const accepted = await this.limit.run(() => this.intake.submit(dto, ownerId, key, traceparent));
+    const accepted = await this.submissions.run(() =>
+      this.intake.submit(dto, ownerId, key, traceparent, (work) => this.limit.run(work)),
+    );
     const wait = this.notifications.wait(
       accepted.orderId,
       accepted.seq,

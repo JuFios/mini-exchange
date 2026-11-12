@@ -32,6 +32,8 @@ export interface Acceptance {
   seq: string;
   replay: boolean;
 }
+/** Виконує крок, що займає з'єднання PG: викликач обмежує такі кроки своїм лімітом. */
+export type PgStep = <T>(work: () => Promise<T>) => Promise<T>;
 
 @Injectable()
 export class IntakeService {
@@ -79,6 +81,7 @@ export class IntakeService {
     userId: string,
     key?: string,
     traceparent?: string,
+    pg: PgStep = (work) => work(),
   ): Promise<Acceptance> {
     const payload = this.normalize(dto);
     if (key !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
@@ -86,44 +89,44 @@ export class IntakeService {
     }
     const idempotencyKey = key ?? randomUUID();
     const requestHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-    if (key !== undefined) {
-      const [previous]: RequestRow[] = await this.source.query(
-        'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
-        [userId, key],
-      );
-      if (previous) {
-        if (previous.request_hash !== requestHash) {
-          throw new ConflictException({
-            code: 'IDEMPOTENCY_KEY_REUSED',
-            message: 'Ключ уже використано з іншими даними',
-          });
-        }
-        const completed = await this.existing(previous);
-        if (completed) return completed;
-      }
-    }
-    await this.limits.order(userId);
-    await this.assertActive(this.source.manager, dto.instrument);
-    const [row]: RequestRow[] = await this.source.transaction(async (db) => {
-      await db.query(
-        `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
-        VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING`,
-        [userId, idempotencyKey, requestHash, randomUUID()],
-      );
-      return db.query('SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2', [
-        userId,
-        idempotencyKey,
-      ]);
-    });
-    if (row.request_hash !== requestHash) {
-      throw new ConflictException({
+    const reused = () =>
+      new ConflictException({
         code: 'IDEMPOTENCY_KEY_REUSED',
         message: 'Ключ уже використано з іншими даними',
       });
+    if (key !== undefined) {
+      const completed = await pg(async () => {
+        const [previous]: RequestRow[] = await this.source.query(
+          'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
+          [userId, key],
+        );
+        if (!previous) return undefined;
+        if (previous.request_hash !== requestHash) throw reused();
+        return this.existing(previous);
+      });
+      if (completed) return completed;
     }
-    const existing = await this.existing(row);
-    if (existing) return existing;
+    await this.limits.order(userId);
+    const claimed = await pg(async () => {
+      await this.assertActive(this.source.manager, dto.instrument);
+      const [row]: RequestRow[] = await this.source.transaction(async (db) => {
+        await db.query(
+          `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
+        VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING`,
+          [userId, idempotencyKey, requestHash, randomUUID()],
+        );
+        return db.query('SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2', [
+          userId,
+          idempotencyKey,
+        ]);
+      });
+      if (row.request_hash !== requestHash) throw reused();
+      return (await this.existing(row)) ?? row;
+    });
+    if ('seq' in claimed) return claimed;
+    const row = claimed;
     const instrument = this.catalog.list().find(({ symbol }) => symbol === dto.instrument)!;
+    // Слот PG на час HTTP до settlement не тримаємо: повільний settlement зупиняв би скасування.
     const accepted = await this.reservations.reserve({
       reservationId: row.order_id,
       userId,
@@ -135,53 +138,55 @@ export class IntakeService {
         : parseQuantity(payload.quantity)
       ).toString(),
     });
-    const result = await this.source.transaction(async (db) => {
-      await db.query("SET LOCAL lock_timeout='3s'");
-      const [rows] = await db.query(
-        `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
+    return pg(async () => {
+      const result = await this.source.transaction(async (db) => {
+        await db.query("SET LOCAL lock_timeout='3s'");
+        const [rows] = await db.query(
+          `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
         WHERE user_id=$1 AND idempotency_key=$2 AND status='reserving' RETURNING order_id`,
-        [
+          [
+            userId,
+            idempotencyKey,
+            accepted === 'accepted' ? 'accepted' : 'rejected',
+            accepted === 'accepted'
+              ? null
+              : new UnprocessableEntityException('Недостатньо коштів').getResponse(),
+            accepted === 'accepted' && this.config.getOrThrow('RESERVATIONS_ENABLED'),
+          ],
+        );
+        if (!rows.length) return undefined;
+        if (accepted === 'rejected') return null;
+        const command = await this.sequence(
+          db,
+          dto.instrument,
+          'submit',
+          row.order_id,
           userId,
-          idempotencyKey,
-          accepted === 'accepted' ? 'accepted' : 'rejected',
-          accepted === 'accepted'
-            ? null
-            : new UnprocessableEntityException('Недостатньо коштів').getResponse(),
-          accepted === 'accepted' && this.config.getOrThrow('RESERVATIONS_ENABLED'),
-        ],
-      );
-      if (!rows.length) return undefined;
-      if (accepted === 'rejected') return null;
-      const command = await this.sequence(
-        db,
-        dto.instrument,
-        'submit',
-        row.order_id,
-        userId,
-        payload,
-        traceparent,
-      );
-      await this.assertActive(db, dto.instrument);
-      await db.getRepository(Order).insert({
-        id: row.order_id,
-        ownerId: userId,
-        ...payload,
-        remainingQuantity: payload.quantity,
-        filledQuantity: '0.00000000',
-        prioritySeq: command.seq,
-        version: 0,
-        status: 'pending',
-        createdAt: command.accepted_at,
+          payload,
+          traceparent,
+        );
+        await this.assertActive(db, dto.instrument);
+        await db.getRepository(Order).insert({
+          id: row.order_id,
+          ownerId: userId,
+          ...payload,
+          remainingQuantity: payload.quantity,
+          filledQuantity: '0.00000000',
+          prioritySeq: command.seq,
+          version: 0,
+          status: 'pending',
+          createdAt: command.accepted_at,
+        });
+        return { orderId: row.order_id, seq: command.seq, replay: false };
       });
-      return { orderId: row.order_id, seq: command.seq, replay: false };
+      if (result === null) throw new UnprocessableEntityException('Недостатньо коштів');
+      if (result) return result;
+      const [latest] = await this.source.query(
+        'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
+        [userId, idempotencyKey],
+      );
+      return (await this.existing(latest))!;
     });
-    if (result === null) throw new UnprocessableEntityException('Недостатньо коштів');
-    if (result) return result;
-    const [latest] = await this.source.query(
-      'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
-      [userId, idempotencyKey],
-    );
-    return (await this.existing(latest))!;
   }
 
   private async existing(row: RequestRow): Promise<Acceptance | undefined> {
