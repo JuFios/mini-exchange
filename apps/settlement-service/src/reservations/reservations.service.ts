@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
+import { Asset, MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
-import { PostingBuilder } from '../ledger/posting-builder';
+import { PostingBuilder, Wallet } from '../ledger/posting-builder';
 import { WalletPublisher } from '../wallets/wallet-publisher';
 import { consumeReservation, lockReservations } from './reservation-record';
 import { ReserveDto } from './reserve.dto';
@@ -78,7 +78,12 @@ export class ReservationsService {
     return { status: result.status };
   }
 
-  async release(id: string, releaseAmount?: bigint): Promise<{ status: 'released' }> {
+  /** `notify: false` — для викликача, який сам публікує гаманець і повторює публікацію після збою. */
+  async release(
+    id: string,
+    releaseAmount?: bigint,
+    notify = true,
+  ): Promise<{ status: 'released' }> {
     const reservationId = id.toLowerCase();
     const update = await this.source.transaction(async (db) => {
       // Tombstone відсікає запізнілий reserve, навіть якщо engine змінив режим.
@@ -116,8 +121,19 @@ export class ReservationsService {
       await consumeReservation(db, reservationId, amount);
       return { ...accounts.wallet(wallet), entryId };
     });
-    if (update) await this.publisher.publishBestEffort(update);
+    if (update && notify) await this.publisher.publishBestEffort(update);
     return { status: 'released' };
+  }
+
+  /** Гаманець і проводка release закритої заявки; порожньо, якщо release не рухав кошти. */
+  async closedRelease(id: string): Promise<{ wallet: Wallet; entryId: string } | undefined> {
+    const [row]: { user_id: string; asset: Asset; id: string }[] = await this.source.query(
+      `SELECT r.user_id, r.asset, j.id FROM journal_entries j
+       JOIN reservations r ON r.reservation_id = j.reservation_id
+       WHERE j.operation_id = $1`,
+      [`release:${id.toLowerCase()}`],
+    );
+    return row && { wallet: { userId: row.user_id, asset: row.asset }, entryId: row.id };
   }
 }
 
