@@ -24,13 +24,18 @@ export async function middleware(request: NextRequest) {
   const expired = !token?.sid || token.exp * 1000 <= now;
   const nearExpiry = !token?.sid || token.exp * 1000 - EXPIRY_MARGIN_MS <= now;
 
-  if (refresh && nearExpiry && !deferred) {
+  // Сторінка сама до backend не ходить, тож запас перед `exp` їй не потрібен. Навігацію браузер
+  // обриває частіше за fetch, а обрив після ротації лишає старий refresh у cookie, і наступне
+  // оновлення після grace відкликає сесію. Тому сторінка оновлює лише вже прострочений токен.
+  if (refresh && (protectedPage ? expired : nearExpiry) && !deferred) {
     // Для мутацій Origin перевіряється також до можливого refresh.
     if (request.method === 'GET' || request.method === 'HEAD' || sameOrigin(request)) {
       try {
         update = await refreshSession(request);
-        // Токен із запасу ще чинний: збій refresh не має його відбирати.
-        if (update.failure && !protectedPage && expired) return update.failure;
+        // Токен із запасу ще чинний: збій refresh не має його відбирати. Без чинного токена
+        // тимчасовий збій (503, 429) віддається як є і на сторінці: перехід на /login
+        // змусив би увійти знову, а новий вхід відкликає сесію в інших вкладках і пристроях.
+        if (update.failure && expired) return update.failure;
         if (expired || update.tokens) {
           token = undefined;
           if (update.tokens) {
@@ -39,10 +44,7 @@ export async function middleware(request: NextRequest) {
           }
         }
       } catch {
-        if (expired) {
-          if (!protectedPage) return unavailable();
-          token = undefined;
-        }
+        if (expired) return unavailable();
       }
     }
   }
