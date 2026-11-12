@@ -167,6 +167,28 @@ it('treats addresses that differ only in letter case as one account', async () =
   ).toEqual([{ n: 1 }]);
 });
 
+it('creates one account when variants of an address register at the same time', async () => {
+  // Кілька пар: обидві реєстрації пари проходять попередню перевірку до вставки будь-якої з них.
+  const emails = Array.from({ length: 5 }, () => `Race-${randomUUID()}@Example.test`);
+  const statuses = await Promise.all(
+    emails.flatMap((email) =>
+      [email, email.toLowerCase()].map(
+        async (variant) =>
+          (await post('register', { email: variant, password: 'ordinary-account-password' }))
+            .status,
+      ),
+    ),
+  );
+  for (let pair = 0; pair < emails.length; pair++)
+    expect(statuses.slice(pair * 2, pair * 2 + 2).sort()).toEqual([201, 409]);
+  expect(
+    await database().query(
+      'SELECT count(*)::int AS n FROM users WHERE LOWER(email) = ANY($1::text[])',
+      [emails.map((email) => email.toLowerCase())],
+    ),
+  ).toEqual([{ n: emails.length }]);
+});
+
 it('rejects startup when an admin address belongs to a regular account', async () => {
   const email = `Existing-${randomUUID()}@example.test`;
   const { credentials } = await registerAccount(email);

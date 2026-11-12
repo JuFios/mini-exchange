@@ -24,6 +24,9 @@ interface TokenPair {
 
 const BCRYPT_COST = 10;
 
+// Те саме, що `LOWER(... COLLATE "C")` у пошуку й індексі: змінюється лише латиниця ASCII.
+const asciiLowerCase = (email: string) => email.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
 @Injectable()
 export class AuthService {
   // Хеш випадкового пароля з тією самою вартістю, що й у реєстрації. Рахується у фоні при створенні сервісу.
@@ -36,20 +39,22 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<TokenPair> {
-    if (this.isAdminEmail(dto.email) || (await this.byEmail(dto.email).getExists())) {
-      throw new ConflictException('Email вже зареєстровано');
-    }
+    // Варіанти адреси, що відрізняються регістром, — один акаунт. Нова адреса зберігається
+    // нормалізованою, тож дві одночасні реєстрації варіантів упираються в `users_email_key`.
+    const email = asciiLowerCase(dto.email);
+    const taken = () => new ConflictException('Email вже зареєстровано');
+    if (this.isAdminEmail(email) || (await this.byEmail(email).getExists())) throw taken();
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
     let user: User;
     try {
-      user = await this.users.save(this.users.create({ email: dto.email, passwordHash }));
+      user = await this.users.save(this.users.create({ email, passwordHash }));
     } catch (error) {
       if (
         error instanceof QueryFailedError &&
         error.driverError.code === '23505' &&
         error.driverError.constraint === 'users_email_key'
       ) {
-        throw new ConflictException('Email вже зареєстровано');
+        throw taken();
       }
       throw error;
     }
