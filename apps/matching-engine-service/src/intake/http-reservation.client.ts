@@ -25,14 +25,21 @@ export class HttpReservationClient extends ReservationClient {
 
   async reserve(request: Reservation): Promise<'accepted' | 'rejected'> {
     for (let attempt = 0; attempt < RESERVE_ATTEMPTS; attempt++) {
-      let result: { status?: string; code?: string };
-      let status: number;
+      let response: Response;
       try {
-        const response = await this.post('/internal/reservations', request);
-        status = response.status;
-        result = (await response.json()) ?? {};
+        response = await this.post('/internal/reservations', request);
       } catch {
         continue;
+      }
+      const { status } = response;
+      // Відповідь класифікується за статусом: 401 від проксі текстом — така сама відмова.
+      // Нерозібране тіло успішної відповіді — обрив, результат невідомий, а повтор ідемпотентний.
+      let result: { status?: string; code?: string };
+      try {
+        result = (await response.json()) ?? {};
+      } catch {
+        if (response.ok) continue;
+        result = {};
       }
       if (status === 201 && result.status === 'accepted') return 'accepted';
       if (status === 422 && result.code === 'INSUFFICIENT_FUNDS') return 'rejected';

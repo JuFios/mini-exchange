@@ -75,6 +75,27 @@ it.each([
   expect(fetch).toHaveBeenCalledTimes(3);
 });
 
+const text = (status: number, body: string) => async () => new Response(body, { status });
+
+it('classifies a refusal by its status even when the body is not JSON', async () => {
+  fetch.mockImplementation(text(401, 'Unauthorized'));
+  expect(await statusOf(client().reserve(request))).toBe(500);
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(Logger.prototype.error).toHaveBeenCalledWith(
+    expect.objectContaining({ alert: 'reservation_request_refused', status: 401 }),
+  );
+});
+
+it.each([
+  ['a server error page', text(502, '<html>Bad Gateway</html>')],
+  // Тіло успішної відповіді обірвалось: результат невідомий, а повтор резерву ідемпотентний.
+  ['a success whose body was cut off', text(201, '{"status":"acc')],
+])('repeats %s that is not JSON and then reports an outage', async (_name, answer) => {
+  fetch.mockImplementation(answer);
+  expect(await statusOf(client().reserve(request))).toBe(503);
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+
 it('keeps the expired-request answer for a reservation that was already released', async () => {
   fetch.mockImplementation(reply(409, { code: 'ALREADY_RELEASED' }));
   expect(await statusOf(client().reserve(request))).toBe(409);
