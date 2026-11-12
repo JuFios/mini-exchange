@@ -286,6 +286,48 @@ it('rejects a failed reservation without issuing a sequence number', async () =>
   ]);
 });
 
+it('cancels a resting order while settlement holds every reservation request', async () => {
+  let hang = false;
+  const held: ((result: 'accepted') => void)[] = [];
+  await restart({}, (builder) =>
+    builder.overrideProvider(ReservationClient).useValue({
+      reserve: () =>
+        hang ? new Promise((resolve) => held.push(resolve)) : Promise.resolve('accepted'),
+    }),
+  );
+  const owner = await register();
+  const { order } = await (await submit(owner)).json();
+  hang = true;
+  const stuck = Array.from({ length: 8 }, (_, index) =>
+    request(
+      '/orders',
+      'POST',
+      owner,
+      { instrument: 'ABC', side: 'sell', price: 101, quantity: 1 },
+      {
+        'Idempotency-Key': `stuck-${index}`,
+      },
+    ),
+  );
+  await waitFor(async () => held.length === 5);
+
+  const started = performance.now();
+  const cancelled = await request(`/orders/${order.id}`, 'DELETE', owner);
+  expect(cancelled.status).toBe(200);
+  expect((await cancelled.json()).order.status).toBe('cancelled');
+  expect(performance.now() - started).toBeLessThan(2000);
+  // Межа прийому не зросла: до settlement дійшло не більше п'яти запитів.
+  expect(held).toHaveLength(5);
+
+  hang = false;
+  for (const release of held) release('accepted');
+  const statuses = await Promise.all(stuck.map(async (response) => (await response).status));
+  expect(statuses.every((status) => status === 201 || status === 202)).toBe(true);
+  expect(await database().query('SELECT count(*)::int AS n FROM orders WHERE price=101')).toEqual([
+    { n: 8 },
+  ]);
+});
+
 it('returns service unavailable for Redis failure while allowing cancellation', async () => {
   const owner = await register();
   const { order } = await (await submit(owner)).json();

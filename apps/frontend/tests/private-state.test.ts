@@ -464,3 +464,118 @@ it('retries only failures that can pass on their own', () => {
   assert.equal(transient(new TypeError('Failed to fetch')), true);
   assert.equal(transient(new Error('Invalid wallet snapshot')), false);
 });
+
+function orderReads(statuses: number[]) {
+  const { readOrder } = require('../lib/use-private-socket');
+  const order = {
+    id: 'order-1',
+    instrument: 'ABC',
+    side: 'buy',
+    price: '100.00',
+    quantity: '1.00000000',
+    createdAt: '2026-11-10T00:00:00.000Z',
+    status: 'open',
+    version: 1,
+    remainingQuantity: '1.00000000',
+    filledQuantity: '0.00000000',
+  };
+  const gets: string[] = [];
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    gets.push(path);
+    const status = statuses[gets.length - 1] ?? 200;
+    return status === 200 ? Response.json(order) : new Response('{}', { status });
+  });
+  const timers = new Map<number, { callback: () => void; ms: number }>();
+  let next = 0;
+  const clock = {
+    setTimeout: (callback: () => void, ms: number) => (timers.set(++next, { callback, ms }), next),
+    clearTimeout: (handle: number) => void timers.delete(handle),
+  };
+  const events: string[] = [];
+  const session = new AbortController();
+  let settled!: () => void;
+  const done = new Promise<void>((resolve) => (settled = resolve));
+  readOrder(
+    'order-1',
+    session.signal,
+    {
+      onOrder: (value: { id: string }) => events.push('order:' + value.id),
+      onError: (error: { status: number }) => events.push('error:' + error.status),
+      onSettled() {
+        events.push('settled');
+        settled();
+      },
+    },
+    clock,
+  );
+  const idle = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  /** Запускає відкладений повтор і повертає його затримку. */
+  const fire = async () => {
+    await idle();
+    const [[handle, timer]] = [...timers];
+    timers.delete(handle);
+    timer.callback();
+    return timer.ms;
+  };
+  return { gets, timers, events, session, done, idle, fire };
+}
+
+it('retries reading an unknown order after a transient failure until it appears', async () => {
+  const reads = orderReads([503, 502]);
+  assert.deepEqual([await reads.fire(), await reads.fire()], [250, 500]);
+  await reads.done;
+  assert.equal(reads.gets.length, 3);
+  assert.deepEqual(reads.events, ['error:503', 'error:502', 'order:order-1', 'settled']);
+  assert.equal(reads.timers.size, 0);
+});
+
+it('stops reading an unknown order after a final failure', async () => {
+  const reads = orderReads([404]);
+  await reads.done;
+  await reads.idle();
+  assert.equal(reads.gets.length, 1);
+  assert.deepEqual(reads.events, ['error:404', 'settled']);
+  assert.equal(reads.timers.size, 0);
+});
+
+it('delivers any order exactly once and leaves no timer however many reads fail first', async () => {
+  for (const failures of [0, 1, 2, 3, 6]) {
+    for (const abortAfter of [undefined, 0, 1, 2]) {
+      mock.restoreAll();
+      const reads = orderReads(Array(failures).fill(503));
+      let fired = 0;
+      while (fired < failures) {
+        if (fired === abortAfter) {
+          await reads.idle();
+          reads.session.abort();
+          break;
+        }
+        await reads.fire();
+        fired++;
+      }
+      await reads.done;
+      await reads.idle();
+      const aborted = abortAfter !== undefined && abortAfter < failures;
+      const label = `failures=${failures} abortAfter=${abortAfter}`;
+      assert.equal(reads.gets.length, aborted ? abortAfter + 1 : failures + 1, label);
+      assert.equal(reads.events.filter((event) => event === 'settled').length, 1, label);
+      assert.equal(
+        reads.events.filter((event) => event.startsWith('order:')).length,
+        aborted ? 0 : 1,
+        label,
+      );
+      assert.equal(reads.timers.size, 0, label);
+    }
+  }
+});
+
+it('settles once without an order when the session closes during the read', async () => {
+  const reads = orderReads([503]);
+  reads.session.abort();
+  await reads.done;
+  await reads.idle();
+  assert.deepEqual(reads.events, ['settled']);
+  assert.equal(reads.timers.size, 0);
+});

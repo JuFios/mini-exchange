@@ -24,7 +24,13 @@ export class SettlementEventHandler {
     const event = parseSettlementEvent(envelope);
     if (event.type === 'order.closed') {
       const { orderId, releasedAmount } = event.closed;
-      await this.reservations.release(orderId, BigInt(releasedAmount));
+      await this.reservations.release(orderId, BigInt(releasedAmount), false);
+      // Як і для угоди, повторна доставка теж публікує стан: без цього збій XADD після COMMIT
+      // лишав би клієнту старий резерв до перепідключення.
+      const released = await this.reservations.closedRelease(orderId);
+      if (!released) return;
+      for (const balance of await this.wallets.read([released.wallet]))
+        await this.publisher.publish({ ...balance, entryId: released.entryId });
       return;
     }
     const { trade } = event;

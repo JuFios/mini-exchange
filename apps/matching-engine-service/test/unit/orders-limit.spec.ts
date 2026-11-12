@@ -95,3 +95,47 @@ it('answers pending when a read fails after the cancel was accepted', async () =
     body: { orderId: 'order-1', cancelSeq: '7' },
   });
 });
+
+it('cancels an order while every submission waits for settlement', async () => {
+  jest.useFakeTimers();
+  const target = { id: 'order-1', instrument: 'ABC', status: 'open' };
+  const source = {
+    getRepository: () => ({ findOneBy: async () => target }),
+    manager: {},
+    query: async () => [{ applied_at: new Date(0), result: { status: 'cancelled' } }],
+  };
+  // Прийом завис на HTTP до settlement: кроків із БД він у цей час не виконує.
+  const orders = setup(jest.fn(never), source, {
+    assertActive: async () => undefined,
+    cancel: async () => accepted,
+  });
+  for (let index = 0; index < 8; index++) void orders.submitOrder(dto, 'u').catch(() => undefined);
+
+  await expect(orders.cancelOrder('order-1', 'u')).resolves.toEqual({
+    status: 200,
+    body: { order: target },
+  });
+});
+
+it('limits the database steps of a submission together with cancels and reads', async () => {
+  jest.useFakeTimers();
+  let steps = 0;
+  const submit = jest.fn(
+    async (_dto, _owner, _key, _trace, pg: (work: () => Promise<void>) => Promise<void>) => {
+      await pg(async () => {
+        steps++;
+        await never();
+      });
+    },
+  );
+  const orders = setup(submit as never, {
+    getRepository: () => ({ findOneBy: never }),
+  });
+  for (let index = 0; index < 3; index++) void orders.cancelOrder('order-1', 'u').catch(() => 0);
+  for (let index = 0; index < 5; index++) void orders.submitOrder(dto, 'u').catch(() => undefined);
+  await jest.advanceTimersByTimeAsync(0);
+
+  // Три слоти з п'яти зайняли скасування, тож до БД дійшли лише два прийоми.
+  expect(submit).toHaveBeenCalledTimes(5);
+  expect(steps).toBe(2);
+});

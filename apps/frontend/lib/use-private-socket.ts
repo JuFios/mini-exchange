@@ -9,7 +9,6 @@ import {
   type Order,
   type OrderUpdate,
   type Wallet,
-  finishAttempt,
   mergeWallet,
   unresolvedOrderIds,
   projectOrder,
@@ -66,6 +65,60 @@ async function readActiveOrders(signal: AbortSignal) {
     if (next === cursor) throw new Error('Order cursor did not advance');
     cursor = next;
   }
+}
+
+interface OrderRead {
+  onOrder(order: Order): void;
+  onError(error: unknown): void;
+  /** Читання завершене: заявку отримано, помилка остаточна або сесію закрито. */
+  onSettled(): void;
+}
+
+/**
+ * Дочитує заявку за ID. Тимчасову помилку повторює на тому ж з'єднанні: інакше відкрита
+ * заявка без нових подій не з'явиться до перепідключення.
+ */
+export function readOrder(
+  id: string,
+  signal: AbortSignal,
+  read: OrderRead,
+  clock: Clock = realClock,
+) {
+  let timer: unknown;
+  let delay = RETRY_MIN_MS;
+  const abort = () => {
+    clock.clearTimeout(timer);
+    read.onSettled();
+  };
+  if (signal.aborted) return read.onSettled();
+  signal.addEventListener('abort', abort, { once: true });
+  const settle = () => {
+    signal.removeEventListener('abort', abort);
+    read.onSettled();
+  };
+
+  function attempt() {
+    void apiJson<Order>('/api/engine/orders/' + encodeURIComponent(id), { signal }).then(
+      (order) => {
+        if (signal.aborted) return;
+        try {
+          read.onOrder(order);
+        } catch (error) {
+          read.onError(error);
+        } finally {
+          settle();
+        }
+      },
+      (error: unknown) => {
+        if (signal.aborted) return;
+        read.onError(error);
+        if (!transient(error)) return settle();
+        timer = clock.setTimeout(attempt, delay);
+        delay = Math.min(delay * 2, RETRY_MAX_MS);
+      },
+    );
+  }
+  attempt();
 }
 
 export function startPrivateSocket(
@@ -209,8 +262,11 @@ export function usePrivateSocket(url: string | undefined) {
     const pendingWallets = new Map<string, Wallet>();
     const reads = new Map<string, AbortSignal>();
 
+    let shown: unknown;
+
     const publish = () => setData({ orders: [...orders.values()], wallets: [...wallets.values()] });
     const onError = (error: unknown) => {
+      shown = error;
       setError(errorMessage(error));
       setStatus('error');
     };
@@ -220,7 +276,6 @@ export function usePrivateSocket(url: string | undefined) {
       const previous = orders.get(order.id);
       const next = previous && previous.version >= order.version ? previous : order;
       orders.set(order.id, next);
-      finishAttempt(next);
     }
 
     function applyOrder(update: OrderUpdate, signal: AbortSignal) {
@@ -242,22 +297,29 @@ export function usePrivateSocket(url: string | undefined) {
       if (reads.get(update.orderId) === signal) return;
       reads.set(update.orderId, signal);
       // Подія не несе ціну й сторону нової заявки, тому дочитуємо її за ID.
-      void apiJson<Order>('/api/engine/orders/' + encodeURIComponent(update.orderId), { signal })
-        .then((order) => {
-          if (signal.aborted) return;
+      let failure: unknown;
+      readOrder(update.orderId, signal, {
+        onOrder(order) {
           storeOrder(order);
           const newest = pendingOrders.get(update.orderId);
           if (newest) applyOrder(newest, signal);
+          // Банер тимчасового збою цього читання знімаємо, чужу помилку лишаємо.
+          if (failure !== undefined && shown === failure) {
+            setError('');
+            setStatus('live');
+          }
           publish();
-        })
-        .catch((error: unknown) => {
-          if (!signal.aborted) onError(error);
-        })
-        .finally(() => {
+        },
+        onError(error) {
+          failure = error;
+          onError(error);
+        },
+        onSettled() {
           if (reads.get(update.orderId) !== signal) return;
           reads.delete(update.orderId);
           pendingOrders.delete(update.orderId);
-        });
+        },
+      });
     }
 
     receiveOrder.current = (order) => {
@@ -308,6 +370,7 @@ export function usePrivateSocket(url: string | undefined) {
           if (!reads.has(id)) pendingOrders.delete(id);
         }
         pendingWallets.clear();
+        shown = undefined;
         setError('');
         setStatus('live');
         publish();

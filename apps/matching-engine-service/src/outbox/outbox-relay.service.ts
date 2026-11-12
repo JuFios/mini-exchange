@@ -91,6 +91,10 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
       );
       if (!locked) return false;
 
+      // UPDATE нижче однаково бере ROW EXCLUSIVE. Беремо його до row lock: redrive тримає
+      // SHARE ROW EXCLUSIVE і чекає на рядок, тож зворотний порядок дає deadlock.
+      await db.query('LOCK TABLE outbox IN ROW EXCLUSIVE MODE');
+
       // Один рядок на COMMIT: повтор не повертає stream до попереднього seq.
       const [row]: OutboxRow[] = await db.query(
         `SELECT id, event_id, stream, type, version, instrument, seq, payload, traceparent, created_at
@@ -113,7 +117,18 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
         this.maxLen,
         ...outboxStreamFields(row),
       );
-      if (typeof streamId !== 'string') throw new Error('Redis rejected a stale outbox append');
+      if (typeof streamId !== 'string') {
+        // Поодинокий випадок — гонка реплік. Повтор для того самого рядка означає, що позиції
+        // в Redis попереду outbox (PostgreSQL відновлено з копії): публікація стоїть, доки
+        // hash позицій не видалять.
+        this.logger.error({
+          alert: 'outbox_position_rejected',
+          stream: row.stream,
+          instrument: row.instrument,
+          id: row.id,
+        });
+        throw new Error('Redis rejected a stale outbox append');
+      }
 
       const [, marked] = await db.query(
         'UPDATE outbox SET published_at = clock_timestamp() WHERE id = $1 AND published_at IS NULL',

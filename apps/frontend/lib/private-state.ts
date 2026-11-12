@@ -181,15 +181,3 @@ export function attemptKey({ instrument, side, price, quantity }: OrderInput) {
     JSON.stringify([instrument, side, fixedAmount(price, 2), fixedAmount(quantity, 8)])
   );
 }
-
-export function finishAttempt(order: Order) {
-  if (order.status === 'pending') return;
-  const key = attemptKey(order);
-  try {
-    if (JSON.parse(sessionStorage.getItem(key) ?? 'null')?.orderId === order.id) {
-      sessionStorage.removeItem(key);
-    }
-  } catch {
-    // Відображення підтвердженої заявки не залежить від доступу до sessionStorage.
-  }
-}

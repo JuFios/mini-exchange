@@ -12,6 +12,7 @@ import { EngineOrdersClient } from '../../src/reconciliation/engine-orders.clien
 import { EngineTradesClient } from '../../src/reconciliation/engine-trades.client';
 import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
 import type { EngineTrade } from '../../src/reconciliation/trade-comparison';
+import { WalletPublisher } from '../../src/wallets/wallet-publisher';
 import { ledgerApp, tradeFixture } from '../ledger-app';
 import {
   abcStream,
@@ -182,6 +183,68 @@ it('releases the unfilled remainder from an order close event exactly once', asy
     { kind: 'available', balance: '99970000000' },
     { kind: 'reserved', balance: '30000000' },
   ]);
+});
+
+const closeFields = (trade: Trade) =>
+  streamFields('order.closed', {
+    orderId: trade.sellOrderId,
+    userId: trade.sellerUserId,
+    instrument: 'ABC',
+    side: 'sell',
+    reason: 'cancelled',
+    releasedAsset: 'ABC',
+    releasedAmount: '20000000',
+    seq: '1',
+  });
+const releaseEntries = (trade: Trade) =>
+  source().query('SELECT id::text AS id FROM journal_entries WHERE operation_id=$1', [
+    `release:${trade.sellOrderId}`,
+  ]);
+
+it('pushes the released wallet for an order close and again for its redelivery', async () => {
+  const trade = tradeFixture();
+  await reserveTrade(ledger.app(), trade);
+  consumer = startConsumer(ledger.app());
+  await redis.xadd(abcStream, '*', ...closeFields(trade));
+  const [first] = await until(walletEvents, (events) => events.length === 1);
+  const [{ id: entryId }] = await releaseEntries(trade);
+  expect(first).toMatchObject({
+    userId: trade.sellerUserId,
+    asset: 'ABC',
+    available: '999.70000000',
+    reserved: '0.30000000',
+    entryId,
+  });
+
+  await redis.xadd(abcStream, '*', ...closeFields(trade));
+  const pushed = await until(walletEvents, (events) => events.length === 2);
+
+  expect(pushed[1]).toEqual(first);
+  expect(await releaseEntries(trade)).toHaveLength(1);
+});
+
+it('keeps an order close pending until its wallet push reaches the stream', async () => {
+  const trade = tradeFixture();
+  await reserveTrade(ledger.app(), trade);
+  const append = jest
+    .spyOn(ledger.app().get(WalletPublisher) as never, 'append')
+    .mockRejectedValueOnce(new Error('Connection is closed.') as never);
+  try {
+    consumer = startConsumer(ledger.app());
+    await redis.xadd(abcStream, '*', ...closeFields(trade));
+
+    const pushed = await until(walletEvents, (events) => events.length >= 1);
+    expect(pushed).toHaveLength(1);
+    expect(pushed[0]).toMatchObject({ userId: trade.sellerUserId, reserved: '0.30000000' });
+    await until(
+      () => pendingCount(redis),
+      (pending) => pending === 0,
+    );
+    expect(await releaseEntries(trade)).toHaveLength(1);
+    expect(append).toHaveBeenCalledTimes(2);
+  } finally {
+    append.mockRestore();
+  }
 });
 
 it('dead-letters an invalid record at once and a conflicting trade without moving funds', async () => {
