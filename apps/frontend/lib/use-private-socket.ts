@@ -221,8 +221,11 @@ export function startPrivateSocket(
     walletRefresh = startWalletRefresh(
       (readSignal) => apiJson<Wallet[]>('/api/settlement/wallets', { signal: readSignal }),
       (wallets) => {
-        if (!Array.isArray(wallets)) return view.onError(new Error('Invalid wallet snapshot'));
-        for (const wallet of wallets) view.onWallet(wallet);
+        // Хибна фонова відповідь не ставить банер, якого жодне вдале читання вже не зняло б.
+        // Хибні записи відкидаємо, валідні гаманці незалежні й застосовуються; наступна звірка
+        // читає знову. Snapshot після перепідключення таку відповідь показує.
+        if (!Array.isArray(wallets)) return;
+        for (const wallet of wallets) if (validWallet(wallet)) view.onWallet(wallet);
       },
       clock,
     );

@@ -183,6 +183,7 @@ it('coalesces a burst of order events into one read and is not starved by later 
 it('reads again after an in-flight read when an order event arrived meanwhile', async () => {
   const { WALLET_EVENT_DELAY_MS, WALLET_REFRESH_MS } = require('../lib/wallet-refresh');
   const { refresh, time, reads, seen } = refresher();
+  refresh.start();
   refresh.changed();
   await time.advance(WALLET_EVENT_DELAY_MS);
   assert.equal(reads.length, 1);
@@ -235,6 +236,7 @@ it('schedules nothing after stop, even from a read that settles later', async ()
   refresh.changed();
   refresh.stop();
   assert.equal(reads[0].signal.aborted, true);
+  assert.equal(time.timers.size, 0, 'stop also clears the deadline of the read in flight');
   reads[0].resolve('late');
   await time.advance(0);
   refresh.changed();
@@ -243,4 +245,70 @@ it('schedules nothing after stop, even from a read that settles later', async ()
   assert.equal(reads.length, 1);
   assert.deepEqual(seen, []);
   assert.equal(time.timers.size, 0);
+});
+
+it('waits for the first snapshot before the periodic reads start', async () => {
+  const { WALLET_EVENT_DELAY_MS, WALLET_REFRESH_MS } = require('../lib/wallet-refresh');
+  const { refresh, time, reads } = refresher();
+  refresh.changed();
+  await time.advance(WALLET_EVENT_DELAY_MS);
+  reads[0].resolve('during loading');
+  await time.advance(0);
+  await time.advance(WALLET_REFRESH_MS * 3);
+  assert.equal(reads.length, 1, 'no periodic read before start');
+  refresh.start();
+  await time.advance(WALLET_REFRESH_MS);
+  assert.equal(reads.length, 2);
+  refresh.stop();
+});
+
+it('keeps the deadline of the next read when an aborted read settles late', async () => {
+  const { WALLET_EVENT_DELAY_MS, WALLET_TIMEOUT_MS } = require('../lib/wallet-refresh');
+  const { refresh, time, reads, seen } = refresher();
+  refresh.start();
+  refresh.changed();
+  await time.advance(WALLET_EVENT_DELAY_MS);
+  await time.advance(WALLET_TIMEOUT_MS);
+  assert.equal(reads[0].signal.aborted, true);
+  refresh.changed();
+  await time.advance(WALLET_EVENT_DELAY_MS);
+  assert.equal(reads.length, 2);
+  // Перше читання завершується вже під час другого.
+  reads[0].resolve('late');
+  await time.advance(0);
+  await time.advance(WALLET_TIMEOUT_MS);
+  assert.equal(reads[1].signal.aborted, true, 'the second read still has its deadline');
+  refresh.stop();
+  assert.deepEqual(seen, []);
+});
+
+it('stops the previous reconciliation when a connect arrives without a disconnect', async () => {
+  const run = privateSocket([
+    async () => Response.json([wallet('1.0000000000', '0.0000000000', '1')]),
+    async () => Response.json([wallet('1.0000000000', '0.0000000000', '1')]),
+  ]);
+  await flush();
+  assert.equal(run.time.timers.size, 1, 'the first connection plans its reconciliation');
+  run.socket.emit('connect');
+  await flush();
+  assert.equal(run.time.timers.size, 1, 'only the new connection keeps a timer');
+  run.stop();
+  assert.equal(run.time.timers.size, 0);
+});
+
+it('drops a malformed background read without an error and applies the next one', async () => {
+  const fresh = wallet('5.0000000000', '0.0000000000', '5');
+  const abc = { asset: 'ABC', available: '1.00000000', reserved: '0.00000000', version: '4' };
+  const run = privateSocket([
+    async () => Response.json([wallet('1.0000000000', '0.0000000000', '1')]),
+    async () => Response.json({ not: 'a list' }),
+    async () => Response.json([{ asset: 'USD', available: 'x', reserved: '0', version: '9' }, abc]),
+    async () => Response.json([fresh]),
+  ]);
+  await flush();
+  for (let i = 0; i < 3; i++) await run.time.advance(10_000);
+  run.stop();
+  assert.deepEqual(run.errors, []);
+  // Хибний USD відкинуто, валідний ABC із тієї ж відповіді застосовано.
+  assert.deepEqual(run.wallets, [abc, fresh]);
 });

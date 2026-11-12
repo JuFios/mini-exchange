@@ -18,6 +18,7 @@ export function startWalletRefresh<T>(
   clock: Clock = realClock,
 ) {
   let stopped = false;
+  let started = false;
   let timer: unknown;
   let planned: 'soon' | 'later' | undefined;
   let request: AbortController | undefined;
@@ -25,7 +26,8 @@ export function startWalletRefresh<T>(
   let again = false;
 
   function plan(soon: boolean) {
-    if (stopped) return;
+    // Період іде лише після першого snapshot: до нього гаманці читає саме snapshot.
+    if (stopped || (!soon && !started)) return;
     // Читання, що вже йде, могло початися до коміту, про який повідомила подія.
     if (request) {
       again ||= soon;
@@ -44,17 +46,19 @@ export function startWalletRefresh<T>(
     const current = new AbortController();
     request = current;
     // Дедлайн звільняє чергу сам: читання, що не завершилось після abort, не зупинить звірку.
-    deadline = clock.setTimeout(() => {
+    // Кожне читання знімає лише свій таймер: запізніле не зачепить дедлайн наступного.
+    const timeout = clock.setTimeout(() => {
       current.abort();
       finish(current);
     }, WALLET_TIMEOUT_MS);
+    deadline = timeout;
     try {
       const wallets = await read(current.signal);
       if (!current.signal.aborted) onWallets(wallets);
     } catch {
       // Тимчасовий збій не показуємо: наступна звірка повторить читання.
     } finally {
-      clock.clearTimeout(deadline);
+      clock.clearTimeout(timeout);
       finish(current);
     }
   }
@@ -69,7 +73,10 @@ export function startWalletRefresh<T>(
 
   return {
     /** Запускає періодичну звірку; кожне завершене читання планує наступне. */
-    start: () => plan(false),
+    start() {
+      started = true;
+      plan(false);
+    },
     /** Подія заявки приходить після коміту резерву, тож читання після неї бачить новий баланс. */
     changed: () => plan(true),
     stop() {
