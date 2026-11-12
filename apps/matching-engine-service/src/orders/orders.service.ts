@@ -213,10 +213,15 @@ export class OrdersService {
         };
         if (!isUUID(decoded.id) || new Date(decoded.createdAt).toISOString() !== decoded.createdAt)
           throw new Error();
-        builder.andWhere('(o.created_at,o.id)<(:createdAt,:id)', {
-          createdAt: decoded.createdAt,
-          id: decoded.id,
-        });
+        // Курсор несе мілісекунди, а імпортовані заявки starter можуть мати мікросекунди. Без
+        // точного часу рядка курсора заявка з тієї самої мілісекунди, але старша, випала б між
+        // сторінками. Час із курсора лишається межею, якщо рядок не знайдено або він не збігається.
+        builder.andWhere(
+          `(o.created_at,o.id)<(COALESCE((SELECT c.created_at FROM orders c
+            WHERE c.id=:id AND c.owner_id=:ownerId
+              AND date_trunc('milliseconds',c.created_at)=:createdAt),:createdAt),:id)`,
+          { createdAt: decoded.createdAt, id: decoded.id },
+        );
       } catch {
         throw new BadRequestException('Некоректний курсор');
       }

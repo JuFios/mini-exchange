@@ -5,6 +5,7 @@ import { io } from 'socket.io-client';
 import { type Clock, type SocketLike, realClock, RETRY_MIN_MS, RETRY_MAX_MS } from './book-session';
 import { apiJson, ApiError, errorMessage } from './client-api';
 import { bindSession } from './session-binding';
+import { startWalletRefresh } from './wallet-refresh';
 import {
   type Order,
   type OrderUpdate,
@@ -134,6 +135,7 @@ export function startPrivateSocket(
   let signedOut = false;
   let loadRetry: unknown;
   let loadDelay = RETRY_MIN_MS;
+  let walletRefresh: ReturnType<typeof startWalletRefresh<Wallet[]>> | undefined;
 
   const socket = connect(url + '/private', {
     autoConnect: false,
@@ -189,7 +191,9 @@ export function startPrivateSocket(
             ),
           )),
         );
-        if (!signal.aborted) view.onSnapshot({ orders, wallets }, signal);
+        if (signal.aborted) return;
+        view.onSnapshot({ orders, wallets }, signal);
+        walletRefresh?.start();
         loadDelay = RETRY_MIN_MS;
       })
       .catch((error: unknown) => {
@@ -213,12 +217,26 @@ export function startPrivateSocket(
     clock.clearTimeout(loadRetry);
     delay = RETRY_MIN_MS;
     loadDelay = RETRY_MIN_MS;
+    walletRefresh?.stop();
+    walletRefresh = startWalletRefresh(
+      (readSignal) => apiJson<Wallet[]>('/api/settlement/wallets', { signal: readSignal }),
+      (wallets) => {
+        // Хибна фонова відповідь не ставить банер, якого жодне вдале читання вже не зняло б.
+        // Хибні записи відкидаємо, валідні гаманці незалежні й застосовуються; наступна звірка
+        // читає знову. Snapshot після перепідключення таку відповідь показує.
+        if (!Array.isArray(wallets)) return;
+        for (const wallet of wallets) if (validWallet(wallet)) view.onWallet(wallet);
+      },
+      clock,
+    );
     view.onLoading();
     load(signal);
   });
   socket.on('disconnect', (reason: string) => {
     session?.abort();
     clock.clearTimeout(loadRetry);
+    walletRefresh?.stop();
+    walletRefresh = undefined;
     if (lifetime.signal.aborted) return;
     view.onDisconnected?.();
     if (reason === 'io server disconnect') reconnect();
@@ -231,7 +249,9 @@ export function startPrivateSocket(
     if (session && !session.signal.aborted) view.onWallet(wallet);
   });
   socket.on('order.updated', (order: OrderUpdate) => {
-    if (session && !session.signal.aborted) view.onOrder(order, session.signal);
+    if (!session || session.signal.aborted) return;
+    view.onOrder(order, session.signal);
+    walletRefresh?.changed();
   });
   socket.connect();
 
@@ -240,6 +260,7 @@ export function startPrivateSocket(
     session?.abort();
     clock.clearTimeout(retry);
     clock.clearTimeout(loadRetry);
+    walletRefresh?.stop();
     socket.disconnect();
   };
 }
