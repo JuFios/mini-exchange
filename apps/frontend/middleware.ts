@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requestOrigin, sameOrigin, unavailable } from './lib/api';
 import { publicWsUrl } from './lib/public-ws';
 import { ACCESS_COOKIE, claims, clearTokens, refreshSession, setTokens } from './lib/session';
+import { DEFER_REFRESH_HEADER } from './lib/session-binding';
 
 // Токен оновлюється із запасом: до backend запит доходить пізніше, ніж його бачить middleware.
 const EXPIRY_MARGIN_MS = 30_000;
@@ -10,7 +11,12 @@ export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const protectedPage = path.startsWith('/exchange/') || path === '/admin/status';
   const refresh =
-    protectedPage || /^\/api\/(?:orders|engine|settlement|auth\/ws-token)(?:\/|$)/.test(path);
+    protectedPage ||
+    /^\/api\/(?:orders|engine|settlement|auth\/(?:ws-token|refresh))(?:\/|$)/.test(path);
+  // Refresh ротує токен, а нові cookie приходять із відповіддю. Обірваний клієнтом запит їх
+  // втратив би, і наступне оновлення відкликало б сесію. Такий запит оновлення не запускає:
+  // після 401 клієнт оновлює сесію окремим запитом `/api/auth/refresh`.
+  const deferred = request.headers.has(DEFER_REFRESH_HEADER);
   let token = claims(request.cookies.get(ACCESS_COOKIE)?.value);
   let update: Awaited<ReturnType<typeof refreshSession>> | undefined;
 
@@ -18,7 +24,7 @@ export async function middleware(request: NextRequest) {
   const expired = !token?.sid || token.exp * 1000 <= now;
   const nearExpiry = !token?.sid || token.exp * 1000 - EXPIRY_MARGIN_MS <= now;
 
-  if (refresh && nearExpiry) {
+  if (refresh && nearExpiry && !deferred) {
     // Для мутацій Origin перевіряється також до можливого refresh.
     if (request.method === 'GET' || request.method === 'HEAD' || sameOrigin(request)) {
       try {

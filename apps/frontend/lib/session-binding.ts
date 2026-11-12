@@ -4,6 +4,8 @@ const SIGNAL_KEY = 'exchange.session';
 let user: string | undefined;
 
 export const SESSION_HEADER = 'x-session-user';
+// Запит, який клієнт може обірвати, просить middleware не оновлювати сесію під час нього.
+export const DEFER_REFRESH_HEADER = 'x-defer-refresh';
 export const bindSession = (id: string | undefined) => {
   user = id;
 };
