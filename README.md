@@ -596,7 +596,9 @@ curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: appl
 передайте `{"orderIds":["<orderId>"]}`; можна поєднати з `tradeIds`. Поле можна пропустити,
 а `null` відхиляється з HTTP 400. Engine повертає події
 `trade.executed` і `order.closed` у хвіст outbox із новою позицією (до 1000 ID кожного списку за запит),
-relay публікує їх знову, а settlement ідемпотентно обробляє. Зайвий redrive безпечний. Для `failed`
+relay публікує їх знову, а settlement ідемпотентно обробляє. Зайвий redrive безпечний. Redrive чекає
+на COMMIT поточної транзакції relay, а не завершується deadlock. Після 3 с очікування lock він
+повертає помилку, і запит можна повторити. Для `failed`
 спершу виправте причину з `settlement_failures`, потім повторіть redrive. `stuck_reservation` називає
 `reservationId`, він дорівнює `orderId`. Що передати, залежить від стану заявки в engine:
 

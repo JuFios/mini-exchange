@@ -91,6 +91,10 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
       );
       if (!locked) return false;
 
+      // UPDATE нижче однаково бере ROW EXCLUSIVE. Беремо його до row lock: redrive тримає
+      // SHARE ROW EXCLUSIVE і чекає на рядок, тож зворотний порядок дає deadlock.
+      await db.query('LOCK TABLE outbox IN ROW EXCLUSIVE MODE');
+
       // Один рядок на COMMIT: повтор не повертає stream до попереднього seq.
       const [row]: OutboxRow[] = await db.query(
         `SELECT id, event_id, stream, type, version, instrument, seq, payload, traceparent, created_at

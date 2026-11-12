@@ -421,3 +421,134 @@ it('serializes two competing relays and delivers all events for 1000 applied com
     }
   }
 }, 65000);
+
+describe('redrive while the relay publishes', () => {
+  const settlement = settlementStream('ABC');
+  const config = () =>
+    new ConfigService({
+      DATABASE_NAME: process.env.DATABASE_NAME,
+      REDIS_HOST: process.env.REDIS_HOST,
+      REDIS_PORT: Number(process.env.REDIS_PORT),
+      REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
+      OUTBOX_POLL_INTERVAL_MS: 5,
+      STREAM_MAXLEN: 1000000,
+    });
+
+  async function admin(): Promise<string> {
+    const response = await api.request('/auth/login', 'POST', undefined, {
+      email: 'admin@demo.local',
+      password: 'demo-admin-local-only',
+    });
+    return (await response.json()).accessToken;
+  }
+
+  async function trades(count: number): Promise<string[]> {
+    const [seller, buyer] = await Promise.all([api.register(), api.register()]);
+    for (let i = 0; i < count; i++) {
+      expect((await api.submit(seller)).status).toBe(201);
+      expect((await api.submit(buyer, { side: 'buy', price: 101 })).status).toBe(201);
+    }
+    const ids: { id: string }[] = await api
+      .database()
+      .query(
+        "SELECT payload->>'tradeId' AS id FROM outbox WHERE type='trade.executed' ORDER BY id",
+      );
+    return ids.map(({ id }) => id);
+  }
+
+  const appendsOf = async (tradeId: string) =>
+    (await entriesFor(await rows())).filter(
+      ({ envelope }) => envelope.type === 'trade.executed' && envelope.payload.tradeId === tradeId,
+    ).length;
+
+  it('requeues a row whose publication holds its lock', async () => {
+    await stopAutomaticRelay();
+    await redis.del(settlement);
+    const [tradeId] = await trades(1);
+    const relay = new OutboxRelay(api.database(), config());
+    const failures = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const original = Redis.prototype.eval;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    const appends = jest.spyOn(Redis.prototype, 'eval').mockImplementation(async function (
+      this: Redis,
+      ...args: unknown[]
+    ) {
+      if (args[3] === settlement && !held) {
+        held = true;
+        await gate;
+      }
+      return Reflect.apply(original, this, args);
+    } as Redis['eval']);
+    try {
+      relay.onApplicationBootstrap();
+      await waitFor(async () => held, 5000, 2);
+      const redrive = api.request('/admin/outbox/redrive', 'POST', await admin(), {
+        tradeIds: [tradeId],
+      });
+      // Redrive має стати в чергу на lock, поки relay тримає рядок.
+      await waitFor(
+        async () =>
+          (
+            await api.database().query(
+              `SELECT count(*)::int AS count FROM pg_stat_activity
+                 WHERE datname = current_database() AND pid <> pg_backend_pid()
+                   AND wait_event_type = 'Lock'
+                   AND (query LIKE 'LOCK TABLE outbox%' OR query LIKE 'UPDATE outbox SET id = nextval%')`,
+            )
+          )[0].count === 1,
+        2000,
+        5,
+      );
+      release();
+      const response = await redrive;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ requeued: 1 });
+      await waitFor(async () => (await rows()).every(({ published_at }) => published_at !== null));
+      await waitFor(async () => (await appendsOf(tradeId)) === 2);
+      expect(failures).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await relay.onModuleDestroy();
+      appends.mockRestore();
+      failures.mockRestore();
+    }
+  }, 20000);
+
+  it('finishes every redrive and publication when both run continuously', async () => {
+    await stopAutomaticRelay();
+    await redis.del(settlement);
+    const ids = await trades(5);
+    const relay = new OutboxRelay(api.database(), config());
+    const failures = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const token = await admin();
+    const rounds = 20;
+    try {
+      relay.onApplicationBootstrap();
+      await waitFor(async () => (await rows()).every(({ published_at }) => published_at !== null));
+      const statuses: number[] = [];
+      for (let round = 0; round < rounds; round++) {
+        const responses = await Promise.all(
+          [ids, ids.slice(0, 2), ids.slice(2)].map((tradeIds) =>
+            api.request('/admin/outbox/redrive', 'POST', token, { tradeIds }),
+          ),
+        );
+        statuses.push(...responses.map(({ status }) => status));
+      }
+      expect(statuses).toEqual(Array(rounds * 3).fill(200));
+      await waitFor(
+        async () => (await rows()).every(({ published_at }) => published_at !== null),
+        10000,
+      );
+      // Кожен requeue публікується знову, а relay не падає.
+      for (const id of ids) expect(await appendsOf(id)).toBeGreaterThanOrEqual(2);
+      expect(failures).not.toHaveBeenCalled();
+    } finally {
+      await relay.onModuleDestroy();
+      failures.mockRestore();
+    }
+  }, 60000);
+});

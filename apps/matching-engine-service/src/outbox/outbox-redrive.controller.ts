@@ -40,7 +40,8 @@ export class OutboxRedriveController {
     const lower = (ids: string[]) => ids.map((id) => id.toLowerCase());
     // Нова позиція має бути більшою за позиції рядків, які власник інструмента ще не закомітив:
     // relay відхиляє меншу позицію для пари stream/інструмент і зупинився б на такому рядку.
-    // SHARE ROW EXCLUSIVE чекає на відкриті вставки власника й не блокує вибірку relay.
+    // SHARE ROW EXCLUSIVE чекає на відкриті вставки власника й на транзакцію relay. Relay бере
+    // ROW EXCLUSIVE до row lock, тож обидві сторони блокують у тому самому порядку.
     const [rows]: [unknown[]] = await this.source.transaction(async (db) => {
       await db.query("SET LOCAL lock_timeout = '3s'");
       await db.query('LOCK TABLE outbox IN SHARE ROW EXCLUSIVE MODE');
