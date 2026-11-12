@@ -4,9 +4,9 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
+import { OUTBOX_RELAY_LOCK } from '../database/advisory-lock';
 import { outboxStreamFields, OutboxStreamRow } from './streams';
 
-const RELAY_LOCK = 0x6f757462;
 const REDIS_TIMEOUT_MS = 1000;
 const RELAY_IDLE_TIMEOUT_MS = 5000;
 const PUBLISH_SCRIPT = readFileSync(join(__dirname, 'publish.lua'), 'utf8');
@@ -87,7 +87,7 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
     return this.source.transaction(async (db) => {
       const [{ locked }]: { locked: boolean }[] = await db.query(
         'SELECT pg_try_advisory_xact_lock($1) AS locked',
-        [RELAY_LOCK],
+        [OUTBOX_RELAY_LOCK],
       );
       if (!locked) return false;
 

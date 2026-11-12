@@ -8,6 +8,7 @@ export PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=10
 
 # CREATE DATABASE не можна помістити в TX. Session lock тримає весь bootstrap разом,
 # а кожен уже закомічений крок можна безпечно повторити після обриву.
+# Пара (734021, 3) зарезервована в apps/matching-engine-service/src/database/advisory-lock.ts.
 psql --no-psqlrc -v ON_ERROR_STOP=1 -h exchange-db -U exchange -d postgres <<'SQL'
 \getenv engine_password ENGINE_DB_PASSWORD
 \getenv ledger_password LEDGER_DB_PASSWORD
