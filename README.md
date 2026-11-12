@@ -479,8 +479,10 @@ docker compose exec -T redis redis-cli XRANGE 'exchange:market:{ABC}' - + COUNT 
 
 Settlement читає `exchange:settlement:{ABC}` і `exchange:settlement:{XYZ}` через consumer group
 `settlement` з ім'ям `CONSUMER_NAME`. Група створюється з початку stream, тож consumer бачить
-усю історію. Цикл спершу забирає прострочені записи через `XAUTOCLAIM` (`CONSUMER_CLAIM_IDLE_MS`),
-потім читає нові через `XREADGROUP`.
+усю історію. Цикл забирає прострочені записи через `XAUTOCLAIM` (`CONSUMER_CLAIM_IDLE_MS`) і
+читає нові через `XREADGROUP`. Запис стає доступним для reclaim лише після цього простою, тож PEL
+сканується одразу на старті й далі не частіше ніж раз на половину `CONSUMER_CLAIM_IDLE_MS`, а не
+перед кожною пачкою. Збій запису повторюється через `CONSUMER_CLAIM_IDLE_MS`–1,5 × `CONSUMER_CLAIM_IDLE_MS`.
 
 Запис підтверджується (`XACK`) лише після коміту транзакції ledger і публікації `wallet.updated`
 для покупця й продавця в обох активах. Повторна доставка (шлях `duplicate`) теж публікує

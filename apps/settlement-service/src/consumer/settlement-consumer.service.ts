@@ -32,6 +32,8 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
   private readonly maxDeliveries: number;
   private readonly maxLength: number;
   private readonly cursors = new Map(SETTLEMENT_STREAMS.map((stream) => [stream, '0-0']));
+  // Монотонний час наступного проходу reclaim; 0 — пройти одразу (старт або незавершений прохід PEL).
+  private reclaimAt = 0;
   private running?: Promise<void>;
   private stopped = false;
 
@@ -112,7 +114,7 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
       try {
         await this.ensureGroups();
         while (!this.stopped) {
-          for (const stream of SETTLEMENT_STREAMS) await this.reclaim(stream);
+          await this.reclaimDue();
           const read = (await this.reader.xreadgroup(
             'GROUP',
             GROUP,
@@ -151,7 +153,21 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
     }
   }
 
-  private async reclaim(stream: string): Promise<void> {
+  /**
+   * Запис стає доступним для reclaim лише після `claimIdleMs` простою, тож частіше сканувати PEL
+   * марно: під backlog це був би XAUTOCLAIM на кожен stream перед кожною пачкою. Прохід PEL, що
+   * не дійшов до кінця, продовжується на наступній ітерації.
+   */
+  private async reclaimDue(): Promise<void> {
+    if (performance.now() < this.reclaimAt) return;
+    let unfinished = false;
+    for (const stream of SETTLEMENT_STREAMS)
+      unfinished = (await this.reclaim(stream)) || unfinished;
+    this.reclaimAt = unfinished ? 0 : performance.now() + this.claimIdleMs / 2;
+  }
+
+  /** `true`, якщо в PEL лишилися записи за курсором. */
+  private async reclaim(stream: string): Promise<boolean> {
     const [cursor, entries, deleted] = (await this.redis.xautoclaim(
       stream,
       GROUP,
@@ -168,9 +184,10 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
       this.logger.error({ alert: 'settlement_trimmed_pending', stream, count: deleted.length });
     }
     for (const entry of entries) {
-      if (this.stopped) return;
+      if (this.stopped) return false;
       await this.process(stream, entry);
     }
+    return cursor !== '0-0';
   }
 
   private async process(stream: string, [id, fields]: Entry): Promise<void> {
