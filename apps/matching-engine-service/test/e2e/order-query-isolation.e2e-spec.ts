@@ -21,6 +21,31 @@ it('does not let cursor parameters replace the authenticated owner or instrument
   expect((await response.json()).map((order: { id: string }) => order.id)).toEqual([own.id]);
 });
 
+it("does not take a page boundary from another user's order in the cursor", async () => {
+  const alice = await register();
+  const bob = await register();
+  const sub = (token: string) =>
+    JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
+  // Мікросекунди мають лише імпортовані заявки, тож обидві вставлено напряму.
+  const [{ id: own }] = await database().query(
+    `INSERT INTO orders(owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+    VALUES ($1,'ABC','sell',100,1,1,'open','2026-11-01T00:00:00.123100Z') RETURNING id`,
+    [sub(alice)],
+  );
+  const [{ id: foreign }] = await database().query(
+    `INSERT INTO orders(owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+    VALUES ($1,'ABC','sell',100,1,1,'open','2026-11-01T00:00:00.123500Z') RETURNING id`,
+    [sub(bob)],
+  );
+  const cursor = Buffer.from(
+    JSON.stringify({ createdAt: '2026-11-01T00:00:00.123Z', id: foreign }),
+  ).toString('base64url');
+  const response = await request(`/orders?cursor=${cursor}`, 'GET', alice);
+  expect(response.status).toBe(200);
+  // Межа — час із курсора (.123000), а не точний час чужої заявки (.123500).
+  expect((await response.json()).map((order: { id: string }) => order.id)).not.toContain(own);
+});
+
 it.each([true, false])(
   'publishes the actual level after a failed cancellation (another order: %s)',
   async (keepSecond) => {

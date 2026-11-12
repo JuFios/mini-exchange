@@ -70,6 +70,39 @@ it('paginates one hundred twenty orders in descending timestamp and UUID order w
   expect(duplicateTimes.every(({ n }: { n: number }) => n === 10)).toBe(true);
 });
 
+it('pages imported orders whose timestamps differ only in microseconds', async () => {
+  const owner = await register();
+  const userId = JSON.parse(Buffer.from(owner.split('.')[1], 'base64url').toString()).sub;
+  // Заявки starter імпортуються з created_at у мікросекундах; курсор несе лише мілісекунди.
+  await database().query(
+    `INSERT INTO orders(owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+    SELECT $1,'ABC','sell',100,1,1,'open',TIMESTAMPTZ '2026-11-01T00:00:00.123000Z'+i*INTERVAL '150 microseconds'
+    FROM generate_series(0,5) i`,
+    [userId],
+  );
+  const expected = await database().query(
+    'SELECT id FROM orders WHERE owner_id=$1 ORDER BY created_at DESC,id DESC',
+    [userId],
+  );
+  const received: string[] = [];
+  let cursor = '';
+  for (let page = 0; page < 7; page++) {
+    const response = await request(
+      `/orders?status=all&limit=1${cursor ? `&cursor=${cursor}` : ''}`,
+      'GET',
+      owner,
+    );
+    expect(response.status).toBe(200);
+    const orders = await response.json();
+    if (!orders.length) break;
+    received.push(orders[0].id);
+    cursor = Buffer.from(
+      JSON.stringify({ createdAt: orders[0].createdAt, id: orders[0].id }),
+    ).toString('base64url');
+  }
+  expect(received).toEqual(expected.map(({ id }: { id: string }) => id));
+});
+
 it.each(['status=bad', 'limit=0', 'limit=101', 'cursor=bad', 'instrument=UNKNOWN', 'userId=other'])(
   'rejects invalid order queries %s',
   async (query) => {
