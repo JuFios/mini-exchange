@@ -1,4 +1,5 @@
 import { isEmail } from 'class-validator';
+import { passwordFitsBcrypt } from '../auth/password';
 
 function required(value: unknown, key: string): string {
   if (typeof value !== 'string' || !value.trim()) {
@@ -46,7 +47,7 @@ function adminEmails(value: unknown, key: string): string[] {
 
 function adminPassword(value: unknown, key: string): string {
   const password = required(value, key);
-  if (password.trim().length < 12 || Buffer.byteLength(password) > 72) {
+  if (password.trim().length < 12 || !passwordFitsBcrypt(password)) {
     throw new Error(`${key} must contain at least 12 characters and at most 72 bytes`);
   }
   return password;

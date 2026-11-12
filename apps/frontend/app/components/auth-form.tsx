@@ -61,7 +61,11 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
             minLength={registering ? 8 : undefined}
             required
           />
-          {registering && <p className="field-hint">Щонайменше 8 символів</p>}
+          {registering && (
+            <p className="field-hint">
+              Від 8 символів, до 72 байтів (кирилична літера займає 2 байти)
+            </p>
+          )}
           {error && (
             <p className="message error" role="alert">
               {error}

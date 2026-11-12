@@ -167,6 +167,24 @@ it('treats addresses that differ only in letter case as one account', async () =
   ).toEqual([{ n: 1 }]);
 });
 
+it('never accepts a password whose ending bcrypt would ignore', async () => {
+  const emoji = '\u{1F600}';
+  for (const password of ['a'.repeat(72), emoji.repeat(18)]) {
+    const credentials = { email: `${randomUUID()}@example.test`, password };
+    expect((await post('register', credentials)).status).toBe(201);
+    expect((await post('login', credentials)).status).toBe(201);
+    expect((await post('login', { ...credentials, password: password + 'x' })).status).toBe(401);
+    expect((await post('login', { ...credentials, password: password + emoji })).status).toBe(401);
+  }
+  for (const password of ['a'.repeat(73), emoji.repeat(19)]) {
+    const response = await post('register', { email: `${randomUUID()}@example.test`, password });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      message: ['Пароль задовгий: щонайбільше 72 байти UTF-8'],
+    });
+  }
+});
+
 it('creates one account when variants of an address register at the same time', async () => {
   // Кілька пар: обидві реєстрації пари проходять попередню перевірку до вставки будь-якої з них.
   const emails = Array.from({ length: 5 }, () => `Race-${randomUUID()}@Example.test`);
