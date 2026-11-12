@@ -117,7 +117,18 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
         this.maxLen,
         ...outboxStreamFields(row),
       );
-      if (typeof streamId !== 'string') throw new Error('Redis rejected a stale outbox append');
+      if (typeof streamId !== 'string') {
+        // Поодинокий випадок — гонка реплік. Повтор для того самого рядка означає, що позиції
+        // в Redis попереду outbox (PostgreSQL відновлено з копії): публікація стоїть, доки
+        // hash позицій не видалять.
+        this.logger.error({
+          alert: 'outbox_position_rejected',
+          stream: row.stream,
+          instrument: row.instrument,
+          id: row.id,
+        });
+        throw new Error('Redis rejected a stale outbox append');
+      }
 
       const [, marked] = await db.query(
         'UPDATE outbox SET published_at = clock_timestamp() WHERE id = $1 AND published_at IS NULL',

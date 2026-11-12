@@ -302,6 +302,37 @@ it('keeps a row pending when Redis rejects XADD and publishes it after recovery'
   }
 });
 
+it('names the stream whose Redis position is ahead of the outbox and publishes once the positions are removed', async () => {
+  const stream = `exchange:outbox-test:${randomUUID()}`;
+  const eventId = randomUUID();
+  const positions = `exchange:outbox:positions:${api.app().get(ConfigService).getOrThrow('DATABASE_NAME')}`;
+  const error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  try {
+    // Так виглядає PostgreSQL, відновлений із копії: рядки outbox отримують менші id.
+    await redis.hset(positions, JSON.stringify([stream, 'ABC']), '9000000000000000000');
+    const [{ id }] = await api.database().query(
+      `INSERT INTO outbox (event_id, stream, type, version, instrument, seq, payload)
+       VALUES ($1, $2, 'book.delta', 1, 'ABC', 1, '{"instrument":"ABC","seq":"1","changes":[]}')
+       RETURNING id`,
+      [eventId, stream],
+    );
+    const rejected = { alert: 'outbox_position_rejected', stream, instrument: 'ABC', id };
+    await waitFor(
+      async () => error.mock.calls.filter(([entry]) => entry?.alert === rejected.alert).length >= 3,
+    );
+    expect(error.mock.calls.map(([entry]) => entry)).toContainEqual(rejected);
+    expect(await rows()).toMatchObject([{ event_id: eventId, published_at: null }]);
+    expect(await redis.xlen(stream)).toBe(0);
+
+    await redis.del(positions);
+    await waitFor(async () => (await rows())[0].published_at !== null);
+    expect(await redis.xlen(stream)).toBe(1);
+  } finally {
+    error.mockRestore();
+    await redis.del(stream, positions);
+  }
+});
+
 it('serializes two competing relays and delivers all events for 1000 applied commands', async () => {
   await stopAutomaticRelay();
   await Promise.all([api.register(), api.register()]);
