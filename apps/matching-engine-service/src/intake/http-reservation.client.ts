@@ -1,4 +1,9 @@
-import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ConflictException,
+  InternalServerErrorException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reservation, ReservationClient } from './reservation.client';
 
@@ -6,6 +11,7 @@ const RESERVE_ATTEMPTS = 3;
 const unavailable = () => new ServiceUnavailableException('Сервіс резервування недоступний');
 
 export class HttpReservationClient extends ReservationClient {
+  private readonly logger = new Logger(HttpReservationClient.name);
   private readonly url: string;
   private readonly token: string;
   private readonly timeoutMs: number;
@@ -19,14 +25,21 @@ export class HttpReservationClient extends ReservationClient {
 
   async reserve(request: Reservation): Promise<'accepted' | 'rejected'> {
     for (let attempt = 0; attempt < RESERVE_ATTEMPTS; attempt++) {
-      let result: { status?: string; code?: string };
-      let status: number;
+      let response: Response;
       try {
-        const response = await this.post('/internal/reservations', request);
-        status = response.status;
-        result = (await response.json()) ?? {};
+        response = await this.post('/internal/reservations', request);
       } catch {
         continue;
+      }
+      const { status } = response;
+      // Відповідь класифікується за статусом: 401 від проксі текстом — така сама відмова.
+      // Нерозібране тіло успішної відповіді — обрив, результат невідомий, а повтор ідемпотентний.
+      let result: { status?: string; code?: string };
+      try {
+        result = (await response.json()) ?? {};
+      } catch {
+        if (response.ok) continue;
+        result = {};
       }
       if (status === 201 && result.status === 'accepted') return 'accepted';
       if (status === 422 && result.code === 'INSUFFICIENT_FUNDS') return 'rejected';
@@ -35,6 +48,18 @@ export class HttpReservationClient extends ReservationClient {
           code: 'REQUEST_EXPIRED',
           message: 'Час прийому заявки вичерпано',
         });
+      }
+      // Повторюємо лише те, що минає саме: збій мережі, 5xx і 429. Інша відповідь (401 через
+      // токен, 400 чи 409 через розбіжність контракту) не зміниться від повтору, тож це не
+      // недоступність сервісу, а помилка конфігурації, яку має бути видно в журналі.
+      if (status < 500 && status !== 429) {
+        this.logger.error({
+          alert: 'reservation_request_refused',
+          status,
+          code: result.code,
+          reservationId: request.reservationId,
+        });
+        throw new InternalServerErrorException('Не вдалося зарезервувати кошти');
       }
     }
     throw unavailable();

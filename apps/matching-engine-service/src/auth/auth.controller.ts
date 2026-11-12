@@ -23,8 +23,10 @@ export class AuthController {
     return this.auth.login(dto);
   }
 
+  // Без IP-ліміту входу: користувачі за одним NAT вичерпували б його звичайними оновленнями,
+  // а 429 на refresh завершує сесію в браузері. Підібрати підписаний токен неможливо, повтор старого
+  // refresh відкликає сесію, тож ліміт тут нічого не захищав.
   @Post('refresh')
-  @UseGuards(AuthRateGuard)
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   refresh(@Body() dto: RefreshTokenDto) {

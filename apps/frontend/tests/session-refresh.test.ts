@@ -69,6 +69,64 @@ describe('refresh away from requests the client may abort', () => {
   });
 });
 
+describe('session refresh on protected pages', () => {
+  afterEach(() => mock.restoreAll());
+  const middleware = () =>
+    (require('../middleware') as { middleware: (request: NextRequest) => Promise<Response> })
+      .middleware;
+  const page = (access: number) => request('/exchange/ABC', 'GET', access);
+
+  it('does not rotate the refresh token while the page token is still valid', async () => {
+    const fetch = mock.method(globalThis, 'fetch', async () =>
+      Response.json({ accessToken: token(inSeconds(900)), refreshToken: 'rotated' }),
+    );
+    const response = await middleware()(page(10));
+    assert.ok(passes(response));
+    assert.equal(fetch.mock.callCount(), 0);
+    assert.equal(response.headers.get('set-cookie'), null);
+  });
+
+  it('rotates once the page token has expired', async () => {
+    const fetch = mock.method(globalThis, 'fetch', async () =>
+      Response.json({ accessToken: token(inSeconds(900)), refreshToken: 'rotated' }),
+    );
+    const response = await middleware()(page(-5));
+    assert.ok(passes(response));
+    assert.equal(fetch.mock.callCount(), 1);
+    assert.match(response.headers.get('set-cookie') ?? '', /exchange_refresh=rotated/);
+  });
+
+  for (const [name, answer] of [
+    ['a refresh outage', async () => Response.json({ message: 'busy' }, { status: 503 })],
+    [
+      'a rate limit',
+      async () =>
+        Response.json({ message: 'busy' }, { status: 429, headers: { 'retry-after': '5' } }),
+    ],
+    [
+      'a network failure',
+      async () => {
+        throw new TypeError('fetch failed');
+      },
+    ],
+  ] as const) {
+    it(`keeps the session instead of sending the page to sign-in on ${name}`, async () => {
+      mock.method(globalThis, 'fetch', answer);
+      const response = await middleware()(page(-5));
+      assert.ok([429, 503].includes(response.status), String(response.status));
+      assert.equal(response.headers.get('location'), null);
+      assert.equal(response.headers.get('set-cookie'), null);
+    });
+  }
+
+  it('sends the page to sign-in when the session is gone', async () => {
+    mock.method(globalThis, 'fetch', async () => new Response(null, { status: 401 }));
+    const response = await middleware()(page(-5));
+    assert.equal(new URL(response.headers.get('location') ?? '').pathname, '/login');
+    assert.match(response.headers.get('set-cookie') ?? '', /exchange_refresh=;/);
+  });
+});
+
 describe('client session refresh', () => {
   afterEach(() => {
     mock.restoreAll();

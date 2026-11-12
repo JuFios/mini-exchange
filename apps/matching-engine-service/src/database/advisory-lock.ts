@@ -2,7 +2,13 @@
 export const advisoryLocks = {
   migrations: { name: 'migrations', key: [734021, 1] },
   adminSeed: { name: 'admin seed', key: [734021, 2] },
+  // Бере docker/postgres/init/01-init.sh у базі `exchange`; тут номер лише зарезервовано.
+  postgresBootstrap: { name: 'postgres bootstrap', key: [734021, 3] },
 } as const;
+
+// Relay бере lock одним bigint: PG тримає такі ключі окремо від пар, тож з ними вони не перетинаються.
+// Значення не змінюється: репліки різних версій під час оновлення мають брати той самий lock.
+export const OUTBOX_RELAY_LOCK = 0x6f757462;
 
 export type AdvisoryLock = (typeof advisoryLocks)[keyof typeof advisoryLocks];
 

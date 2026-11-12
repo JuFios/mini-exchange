@@ -7,7 +7,7 @@ import Redis from 'ioredis';
 import request from 'supertest';
 import { SettlementConsumer } from '../../src/consumer/settlement-consumer.service';
 import { SettlementStats } from '../../src/consumer/settlement-stats';
-import { DEAD_LETTER_STREAM } from '../../src/consumer/streams';
+import { DEAD_LETTER_STREAM, SETTLEMENT_STREAMS } from '../../src/consumer/streams';
 import { EngineOrdersClient } from '../../src/reconciliation/engine-orders.client';
 import { EngineTradesClient } from '../../src/reconciliation/engine-trades.client';
 import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
@@ -83,6 +83,22 @@ afterEach(async () => {
 afterAll(async () => {
   await resetStreams(redis);
   redis.disconnect();
+});
+
+it('scans the pending list once per idle window rather than before every batch', async () => {
+  // 120 записів — щонайменше три пачки XREADGROUP по 50; невідомий тип одразу йде в DLQ.
+  for (let index = 0; index < 120; index++)
+    await redis.xadd(abcStream, '*', ...streamFields('unknown.event', {}));
+  consumer = startConsumer(ledger.app(), { claimIdleMs: 60_000 });
+  const claims = jest.spyOn(consumer['redis'], 'xautoclaim');
+
+  await until(
+    () => consumer!.queue(),
+    ({ streams, deadLetters }) =>
+      deadLetters === 120 && streams.every(({ lag, pending }) => lag === 0 && pending === 0),
+  );
+  // Один прохід на старті для кожного stream; наступний настане лише через 30 с.
+  expect(claims).toHaveBeenCalledTimes(SETTLEMENT_STREAMS.length);
 });
 
 it('returns in GET /wallets the same version that the pushed wallet.updated carries', async () => {

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { Header } from '../../components/header';
-import { apiJson, ApiError, errorMessage } from '../../../lib/client-api';
+import { apiJson, errorMessage } from '../../../lib/client-api';
+import { type ReconciliationNotice, reconciliationNotice } from '../../../lib/reconciliation';
 import { SESSION_HEADER, watchSessionChange } from '../../../lib/session-binding';
 
 interface Instrument {
@@ -35,7 +36,7 @@ export function AdminStatus({ user }: { user: string }) {
   const [status, setStatus] = useState<{ instruments: Instrument[]; queue: Queue }>();
   const [report, setReport] = useState<Report>();
   const [error, setError] = useState('');
-  const [reportError, setReportError] = useState('');
+  const [reportError, setReportError] = useState<ReconciliationNotice>();
 
   useEffect(() => {
     document.title = 'Стан системи · Mini Exchange';
@@ -76,13 +77,7 @@ export function AdminStatus({ user }: { user: string }) {
         if (!signal.aborted) setReport(value);
       })
       .catch((error: unknown) => {
-        if (signal.aborted) return;
-        // 502–504 означають обрив довгої звірки або недоступний сервіс, а не відмову за правами.
-        setReportError(
-          error instanceof ApiError && [502, 503, 504].includes(error.status)
-            ? 'Звірка триває довше за очікуване або сервіс недоступний. Оновіть сторінку пізніше.'
-            : errorMessage(error),
-        );
+        if (!signal.aborted) setReportError(reconciliationNotice(error));
       });
     return () => {
       controller.abort();
@@ -201,8 +196,11 @@ export function AdminStatus({ user }: { user: string }) {
               )}
             </div>
             {reportError && (
-              <p className="message error" role="alert">
-                {reportError}
+              <p
+                className={`message ${reportError.failed ? 'error' : 'pending'}`}
+                role={reportError.failed ? 'alert' : 'status'}
+              >
+                {reportError.message}
               </p>
             )}
             {report ? (

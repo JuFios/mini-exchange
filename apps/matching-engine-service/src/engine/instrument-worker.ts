@@ -8,7 +8,6 @@ import { Book } from '../matching/book';
 import { Command } from '../matching/engine';
 import { formatPrice, formatQuantity } from '../matching/decimal';
 import { Order } from '../orders/entities/order.entity';
-import { OrderBookService } from '../orders/order-book.service';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { counters } from './book-loader';
 import { bookOrder, CommandRow } from './command';
@@ -57,7 +56,6 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     private readonly source: DataSource,
     private readonly config: ConfigService,
     private readonly catalog: InstrumentCatalog,
-    private readonly books: OrderBookService,
     private readonly ownership: OwnershipCoordinator,
     private readonly chaos: ChaosHooks,
     private readonly notifications: PgNotifications,
@@ -66,10 +64,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
 
   async onApplicationBootstrap(): Promise<void> {
     this.ownership.leases.beforeShutdown.add(() => this.onModuleDestroy());
-    this.ownership.leases.lost.add((instrument) => {
-      this.owned.delete(instrument);
-      this.books.forget(instrument);
-    });
+    this.ownership.leases.lost.add((instrument) => this.owned.delete(instrument));
     if (!this.config.getOrThrow<boolean>('ENGINE_WORKER_ENABLED')) return;
     this.notifications.resumeListeners.add(this.resume);
     this.notifications.commandListeners.add(this.wake);
@@ -107,8 +102,6 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         this.ownership.recover(instrument, lease, resume),
       );
       this.owned.set(instrument, owned);
-      if (owned.quarantined) this.books.quarantine(instrument);
-      else this.books.commit(instrument, owned.book, owned.seq);
       return owned;
     } catch (error) {
       // Після збою автоматичного recovery даємо резерву час узяти lease.
@@ -319,7 +312,6 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       this.ownership.leases.assert(owned.lease);
       owned.book = result.book;
       owned.seq = row.seq;
-      this.books.commit(instrument, result.book, row.seq);
     }
   }
 

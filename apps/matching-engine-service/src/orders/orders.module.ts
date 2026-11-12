@@ -28,7 +28,6 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
-import { OrderBookService } from './order-book.service';
 import { OrdersGateway } from './gateway/orders.gateway';
 import { Order } from './entities/order.entity';
 import { Instrument } from './entities/instrument.entity';
@@ -76,7 +75,6 @@ import { TerminusModule } from '@nestjs/terminus';
     },
     BookLoader,
     OrdersService,
-    OrderBookService,
     OrdersGateway,
     RealtimeStreamReader,
     ReplicaLagMonitor,
@@ -84,7 +82,6 @@ import { TerminusModule } from '@nestjs/terminus';
     PrivateGateway,
     InstrumentCatalog,
   ],
-  exports: [OrderBookService],
 })
 export class OrdersModule {
   static async register(): Promise<DynamicModule> {

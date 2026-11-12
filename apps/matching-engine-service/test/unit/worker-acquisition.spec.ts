@@ -23,7 +23,6 @@ function setup() {
     {} as never,
     config as never,
     { list: () => [{ symbol: 'ABC' }, { symbol: 'XYZ' }] } as never,
-    {} as never,
     ownership as never,
     {} as never,
     notifications as never,

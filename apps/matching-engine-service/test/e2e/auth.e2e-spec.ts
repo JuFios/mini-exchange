@@ -153,6 +153,42 @@ it('seeds an admin, reserves the address and preserves its password on restart',
   expect((await post('refresh', { refreshToken: ordinary.tokens.accessToken })).status).toBe(401);
 });
 
+it('treats addresses that differ only in letter case as one account', async () => {
+  const email = `Case-${randomUUID()}@Example.test`;
+  const { credentials } = await registerAccount(email);
+  const variant = { ...credentials, email: email.toLowerCase() };
+  expect((await post('register', variant)).status).toBe(409);
+  expect((await post('login', variant)).status).toBe(201);
+  expect((await post('login', credentials)).status).toBe(201);
+  expect(
+    await database().query('SELECT count(*)::int AS n FROM users WHERE LOWER(email) = $1', [
+      variant.email,
+    ]),
+  ).toEqual([{ n: 1 }]);
+});
+
+it('creates one account when variants of an address register at the same time', async () => {
+  // Кілька пар: обидві реєстрації пари проходять попередню перевірку до вставки будь-якої з них.
+  const emails = Array.from({ length: 5 }, () => `Race-${randomUUID()}@Example.test`);
+  const statuses = await Promise.all(
+    emails.flatMap((email) =>
+      [email, email.toLowerCase()].map(
+        async (variant) =>
+          (await post('register', { email: variant, password: 'ordinary-account-password' }))
+            .status,
+      ),
+    ),
+  );
+  for (let pair = 0; pair < emails.length; pair++)
+    expect(statuses.slice(pair * 2, pair * 2 + 2).sort()).toEqual([201, 409]);
+  expect(
+    await database().query(
+      'SELECT count(*)::int AS n FROM users WHERE LOWER(email) = ANY($1::text[])',
+      [emails.map((email) => email.toLowerCase())],
+    ),
+  ).toEqual([{ n: emails.length }]);
+});
+
 it('rejects startup when an admin address belongs to a regular account', async () => {
   const email = `Existing-${randomUUID()}@example.test`;
   const { credentials } = await registerAccount(email);
