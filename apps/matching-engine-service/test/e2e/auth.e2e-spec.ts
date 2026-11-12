@@ -153,6 +153,20 @@ it('seeds an admin, reserves the address and preserves its password on restart',
   expect((await post('refresh', { refreshToken: ordinary.tokens.accessToken })).status).toBe(401);
 });
 
+it('treats addresses that differ only in letter case as one account', async () => {
+  const email = `Case-${randomUUID()}@Example.test`;
+  const { credentials } = await registerAccount(email);
+  const variant = { ...credentials, email: email.toLowerCase() };
+  expect((await post('register', variant)).status).toBe(409);
+  expect((await post('login', variant)).status).toBe(201);
+  expect((await post('login', credentials)).status).toBe(201);
+  expect(
+    await database().query('SELECT count(*)::int AS n FROM users WHERE LOWER(email) = $1', [
+      variant.email,
+    ]),
+  ).toEqual([{ n: 1 }]);
+});
+
 it('rejects startup when an admin address belongs to a regular account', async () => {
   const email = `Existing-${randomUUID()}@example.test`;
   const { credentials } = await registerAccount(email);

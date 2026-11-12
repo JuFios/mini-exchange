@@ -36,7 +36,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<TokenPair> {
-    if (this.isAdminEmail(dto.email) || (await this.users.existsBy({ email: dto.email }))) {
+    if (this.isAdminEmail(dto.email) || (await this.byEmail(dto.email).getExists())) {
       throw new ConflictException('Email вже зареєстровано');
     }
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
@@ -57,8 +57,7 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<TokenPair> {
-    const email = this.isAdminEmail(dto.email) ? dto.email.toLowerCase() : dto.email;
-    const user = await this.users.findOneBy({ email });
+    const user = await this.findByEmail(dto.email);
     // Невідомий email теж платить за bcrypt: час відповіді не розкриває, чи є акаунт.
     const hash = user?.passwordHash ?? (await this.absentPasswordHash);
     const valid = await bcrypt.compare(dto.password, hash);
@@ -220,6 +219,21 @@ export class AuthService {
         refreshRotatedAt: null,
       },
     );
+  }
+
+  // Людина вводить адресу в різному регістрі, а `users_email_key` його розрізняє. Пошук іде тим
+  // самим виразом, що й індекс `users_email_lower_idx` і сідування адміна.
+  private byEmail(email: string) {
+    return this.users
+      .createQueryBuilder('account')
+      .where('LOWER(account.email COLLATE "C") = LOWER(:email COLLATE "C")', { email });
+  }
+
+  // Акаунти, що вже відрізняються лише регістром, лишаються: точний збіг має перевагу, а вхід без
+  // нього до кількох акаунтів відхиляється, бо невідомо, чий це пароль.
+  private async findByEmail(email: string): Promise<User | null> {
+    const users = await this.byEmail(email).getMany();
+    return users.find((user) => user.email === email) ?? (users.length === 1 ? users[0] : null);
   }
 
   private isAdminEmail(email: string): boolean {
