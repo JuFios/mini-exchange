@@ -50,13 +50,22 @@ it('shows clients on different replicas the same gap-free sequence of deltas and
   expect(results.every(({ status }) => status === 201 || status === 202)).toBe(true);
 
   await waitFor(async () => seqs(first).length === 30 && seqs(second).length === 30, 15000);
+  // Delta й угода однієї команди можуть бути окремими записами stream, тож угода приходить
+  // після своєї delta. Угоди комітяться разом із командою: після 30 delta REST знає їх усі.
+  const committed = (await (await api.request('/instruments/ABC/trades?limit=100')).json()).length;
+  await waitFor(
+    async () =>
+      only(first, 'trade').length === committed && only(second, 'trade').length === committed,
+    15000,
+  );
   const expected = Array.from({ length: 30 }, (_, i) => String(i + 1));
   expect(seqs(first)).toEqual(expected);
   expect(seqs(second)).toEqual(expected);
   expect(only(second, 'book.delta')).toEqual(only(first, 'book.delta'));
   expect(only(first, 'trade').length).toBeGreaterThan(0);
   expect(only(second, 'trade')).toEqual(only(first, 'trade'));
-}, 30000);
+  // Два очікування по 15 с: тайм-аут тесту не має обірвати їх раніше за власне повідомлення.
+}, 45000);
 
 type Level = { price: string; quantity: string; orders: number };
 type Change = { side: 'bid' | 'ask'; price: string; quantity: string; orders: number };
