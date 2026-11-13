@@ -218,6 +218,31 @@ async function recover(
   const logs = docker('logs', container(`matching-${current.owner_instance}`));
   assert(logs.includes(`lease acquired instrument=ABC epoch=${current.owner_epoch}`));
   assert(logs.includes(`book recovered instrument=ABC lastAppliedSeq=${last.seq}`));
+  // `recovered_at` фіксує відновлену книгу, а не першу застосовану заявку. Тому окремо міряємо,
+  // коли новий власник застосував першу команду, що вже чекала під час перехоплення.
+  const {
+    rows: [waiting],
+  } = await db.query(
+    "SELECT seq FROM order_commands WHERE instrument='ABC' AND seq>$1 AND accepted_at<=$2 ORDER BY seq LIMIT 1",
+    [last.seq, current.recovered_at],
+  );
+  let resumeMs: number | undefined;
+  if (waiting) {
+    const first = await until(
+      async () =>
+        (
+          await db.query(
+            "SELECT applied_at, result FROM order_commands WHERE instrument='ABC' AND seq=$1",
+            [waiting.seq],
+          )
+        ).rows[0],
+      (row) => Boolean(row.applied_at),
+      15000,
+    );
+    assert.equal(first.result.epoch, current.owner_epoch);
+    resumeMs = first.applied_at.getTime() - last.applied_at.getTime();
+    assert(resumeMs >= takeoverMs && resumeMs <= 10000, `resumeMs=${resumeMs}`);
+  }
 
   await checkFaultResult(db, fault, last, old, victim, redis);
   if (fault === 'pause') docker('unpause', victim);
@@ -240,7 +265,7 @@ async function recover(
     0,
   );
   console.log(
-    `fault=${fault} oldOwner=${old.owner_instance} owner=${current.owner_instance} lastOldSeq=${last.seq} takeoverMs=${takeoverMs}`,
+    `fault=${fault} oldOwner=${old.owner_instance} owner=${current.owner_instance} lastOldSeq=${last.seq} takeoverMs=${takeoverMs} resumeMs=${resumeMs ?? 'n/a'}`,
   );
 }
 
