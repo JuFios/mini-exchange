@@ -72,7 +72,7 @@ export async function runChaos(fault: Fault) {
       if (recovery.status === 'rejected') throw recovery.reason;
       if (load.status === 'rejected') throw load.reason;
       const receipts = load.value.flat();
-      await verifyWorkload(db, ledger, admin, receipts);
+      await verifyWorkload(db, ledger, admin, receipts, workload);
       const retries = await Promise.all(workload.map((order) => sendOrder(order, true)));
       assertAccepted(retries);
       assert(retries.every(({ status }) => status === 200));

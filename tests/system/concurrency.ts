@@ -25,7 +25,7 @@ void withFreshBook(async (db, ledger) => {
   const receipts = await Promise.all(
     workload.map((order, i) => (retried.has(order.key) ? sendOrder(order, true) : first[i])),
   );
-  await verifyWorkload(db, ledger, admin, receipts);
+  await verifyWorkload(db, ledger, admin, receipts, workload);
 }).catch((error) => {
   console.error(error);
   process.exitCode = 1;

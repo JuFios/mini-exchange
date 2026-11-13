@@ -137,7 +137,7 @@ export async function token(path: string, email: string, password: string) {
   assert.equal(response.status, 201, await response.clone().text());
   return ((await response.json()) as { accessToken: string }).accessToken;
 }
-const units = (text: string, scale: number) => {
+export const units = (text: string, scale: number) => {
   const [whole, fraction = ''] = text.split('.');
   return BigInt(whole + fraction.padEnd(scale, '0'));
 };
