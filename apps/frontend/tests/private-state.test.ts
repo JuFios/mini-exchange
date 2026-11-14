@@ -197,7 +197,7 @@ it('restores private state with a fresh handshake after server expiry', async ()
     'POST /api/auth/ws-token',
     'GET /api/engine/orders?status=active&limit=100',
     'GET /api/engine/orders?status=filled&limit=100',
-    'GET /api/engine/orders?status=all&limit=100',
+    'GET /api/engine/orders?status=cancelled&limit=100',
     'GET /api/settlement/wallets',
   ]) {
     assert.equal(requests.filter((entry) => entry === request).length, 2, request);
@@ -256,7 +256,7 @@ it('sends the user to the sign-in page when the session is gone', async () => {
   }
 });
 
-it('merges active, filled and recent orders by the highest version', async () => {
+it('merges active, filled and cancelled orders by the highest version', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
   const row = (id: string, status: string, version: number) => ({
     id,
@@ -274,9 +274,8 @@ it('merges active, filled and recent orders by the highest version', async () =>
     if (path.includes('status=filled')) {
       return Response.json([row('a', 'filled', 2), row('old-filled', 'filled', 2)]);
     }
-    if (path.includes('status=all')) {
-      // `old-filled` випав зі сторінки `all`, бо новіших скасованих понад ліміт.
-      return Response.json([row('c', 'cancelled', 4), row('tie', 'open', 3)]);
+    if (path.includes('status=cancelled')) {
+      return Response.json([row('c', 'cancelled', 4)]);
     }
     return Response.json([]);
   });

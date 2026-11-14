@@ -156,14 +156,15 @@ export function startPrivateSocket(
     void Promise.all([
       readActive(signal),
       apiJson<Order[]>('/api/engine/orders?status=filled&limit=100', { signal }),
-      apiJson<Order[]>('/api/engine/orders?status=all&limit=100', { signal }),
+      // Окремий фільтр: серед останніх 100 будь-якого статусу скасованих могло й не бути.
+      apiJson<Order[]>('/api/engine/orders?status=cancelled&limit=100', { signal }),
       apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
     ])
-      .then(async ([active, filled, recent, wallets]) => {
+      .then(async ([active, filled, cancelled, wallets]) => {
         if (signal.aborted) return;
         // Запити виконуються паралельно, тож для однієї заявки береться новіша версія.
         const byId = new Map<string, Order>();
-        for (const order of [...filled, ...recent, ...active]) {
+        for (const order of [...filled, ...cancelled, ...active]) {
           const known = byId.get(order.id);
           if (!known || order.version >= known.version) byId.set(order.id, order);
         }
