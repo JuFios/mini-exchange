@@ -164,7 +164,11 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         });
       })
       .finally(() => {
-        if (this.running.get(request.instrument) === task) this.running.delete(request.instrument);
+        if (this.running.get(request.instrument) !== task) return;
+        this.running.delete(request.instrument);
+        // Команди часу halt і ті, що прийшли під час resume (`kick` лише позначив їх), не чекають
+        // наступного poll. Drain сам перевіряє lease і halted, як і в poll.
+        void this.kick(request.instrument);
       });
     this.running.set(request.instrument, task);
   };
