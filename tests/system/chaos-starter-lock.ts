@@ -5,6 +5,8 @@ import { docker, request, until } from './helpers';
 const [project, starterImage, fixedImage] = process.argv.slice(2);
 const network = `${project}_default`;
 const TTL_MS = 5000;
+// Як `LEASE_RENEW_INTERVAL_MS` engine: власник поновлює lease, поки живий.
+const RENEW_MS = 1500;
 const redis = `${project}-redis-1`;
 
 // Обидва образи запускають справжній RedisLockService зі свого dist.
@@ -12,7 +14,7 @@ const child = String.raw`
   const { once } = require('node:events');
   const { setTimeout: delay } = require('node:timers/promises');
   const { RedisLockService } = require('/app/dist/locks/redis-lock.service');
-  const [mode, variant, key, ttl] = process.argv.slice(1);
+  const [mode, variant, key, ttl, renew] = process.argv.slice(1);
   const lock = new RedisLockService({
     getOrThrow: (name) => ({ REDIS_HOST: 'redis', REDIS_PORT: 6379, LEASE_TTL_MS: Number(ttl) })[name],
   });
@@ -20,18 +22,24 @@ const child = String.raw`
     if (lock.client.status !== 'ready') await once(lock.client, 'ready');
     if (mode === 'owner') {
       if (!await lock.acquire(key, 'owner')) throw new Error('First owner failed to acquire');
+      // У starter lease без TTL і без renew; виправлений поновлює його, як engine.
+      const renewal = variant === 'fixed'
+        ? setInterval(() => void lock.renew(key, 'owner').catch(() => undefined), Number(renew))
+        : undefined;
       console.log('ready');
       await delay(90000);
+      clearInterval(renewal);
     } else {
       const start = Date.now();
       let attempts = 0;
-      const duration = variant === 'starter' ? 60000 : Number(ttl);
+      const duration = variant === 'starter' ? 60000 : 20000;
       do {
         attempts++;
         if (await lock.acquire(key, 'contender')) {
           console.log(JSON.stringify({ acquiredAt: Date.now(), attempts }));
           return;
         }
+        if (attempts === 1) console.log('polling');
         await delay(50);
       } while (Date.now() - start < duration);
       console.log(JSON.stringify({ acquiredAt: null, attempts, observedMs: Date.now() - start }));
@@ -45,6 +53,7 @@ const child = String.raw`
 async function lockScenario(image: string, variant: 'starter' | 'fixed') {
   const key = `system-test:lease:${randomUUID()}`;
   const owner = `${project}-${variant}-owner`;
+  const contender = `${project}-${variant}-contender`;
   const args = [
     '--network',
     network,
@@ -69,6 +78,7 @@ async function lockScenario(image: string, variant: 'starter' | 'fixed') {
     variant,
     key,
     String(TTL_MS),
+    String(RENEW_MS),
   );
   try {
     await until(
@@ -78,12 +88,38 @@ async function lockScenario(image: string, variant: 'starter' | 'fixed') {
     );
     const ttl = Number(docker('exec', redis, 'redis-cli', 'PTTL', key));
     if (variant === 'starter') assert.equal(ttl, -1);
-    else assert(ttl > 0 && ttl <= TTL_MS);
+    else {
+      assert(ttl > 0 && ttl <= TTL_MS);
+      // Живий власник тримає lease довше за TTL: передача після kill — наслідок kill, а не TTL.
+      await new Promise((resolve) => setTimeout(resolve, TTL_MS + 1000));
+      assert.equal(docker('exec', redis, 'redis-cli', 'GET', key), 'owner');
+    }
 
+    // Претендент уже опитує lock до kill: його старт не з'їдає вікно TTL.
+    docker(
+      'run',
+      '-d',
+      '--name',
+      contender,
+      ...args,
+      image,
+      '-e',
+      child,
+      'contender',
+      variant,
+      key,
+      String(TTL_MS),
+    );
+    await until(
+      async () => docker('logs', contender),
+      (logs) => logs.includes('polling'),
+      15000,
+    );
     const failedAt = Date.now();
     docker('kill', '--signal', 'KILL', owner);
+    docker('wait', contender);
     const { acquiredAt, attempts, observedMs } = JSON.parse(
-      docker('run', '--rm', ...args, image, '-e', child, 'contender', variant, key, String(TTL_MS)),
+      docker('logs', contender).trim().split('\n').at(-1)!,
     ) as { acquiredAt: number | null; attempts: number; observedMs?: number };
     if (variant === 'starter') {
       assert.equal(acquiredAt, null, 'Starter lease must remain orphaned');
@@ -93,12 +129,22 @@ async function lockScenario(image: string, variant: 'starter' | 'fixed') {
     } else {
       assert(acquiredAt !== null);
       const takeoverMs = acquiredAt - failedAt;
-      assert(takeoverMs >= 0 && takeoverMs <= TTL_MS, `Fixed lock takeover took ${takeoverMs}ms`);
+      // Поки власник живий, претендент не бере lease; після kill — не пізніше ніж за TTL від
+      // останнього renew. Запас 1 с покриває `docker kill` і опитування раз на 50 мс.
+      assert(
+        takeoverMs > 0 && takeoverMs <= TTL_MS + 1000,
+        `Fixed lock takeover took ${takeoverMs}ms`,
+      );
       console.log(
         `baseline=fixed-lock attempts=${attempts} takeoverMs=${takeoverMs} ttlMs=${TTL_MS}`,
       );
     }
   } finally {
+    try {
+      docker('rm', '-f', contender);
+    } catch {
+      // Претендента ще не створено.
+    }
     docker('exec', redis, 'redis-cli', 'DEL', key);
   }
 }
