@@ -111,7 +111,8 @@ services:
       frontend:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/nginx-health']
+      # Через upstream: nginx без жодної живої репліки engine не вважається здоровим.
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3001/health']
       interval: 5s
       timeout: 3s
       retries: 10
