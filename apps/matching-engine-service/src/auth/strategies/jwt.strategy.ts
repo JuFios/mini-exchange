@@ -58,7 +58,13 @@ export async function accessPrincipal(payload: JwtPayload, auth: AuthService) {
   if (!(await auth.isSessionActive(payload.sub, payload.sid))) {
     throw new UnauthorizedException('Сесію оновлення відкликано');
   }
+  // Роль у claims лише показує, що токен видано адміну. Без звірки з ADMIN_EMAILS прибрана
+  // адреса лишалася б адміном до `exp`.
   const roles: Role[] | undefined =
-    Array.isArray(payload.roles) && payload.roles.includes('admin') ? ['admin'] : undefined;
+    Array.isArray(payload.roles) &&
+    payload.roles.includes('admin') &&
+    auth.isAdminEmail(payload.email)
+      ? ['admin']
+      : undefined;
   return { userId: payload.sub, email: payload.email, roles };
 }
