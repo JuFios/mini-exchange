@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { ChildProcess, fork } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { cancelOrder, cleanup, engine, request, submit, token, waitReady } from './helpers';
+import { cancelOrder, cleanup, engine, request, submit, token, until, waitReady } from './helpers';
 
 const internal = 'http://engine-lb:8080';
 const instrument = 'XYZ';
@@ -132,6 +132,11 @@ async function main() {
 
     let probes: Record<string, number> = {};
     let cors: Record<string, unknown> = {};
+    // Заголовок із комою чи `|` не має збігтися сам із собою в map nginx.
+    const forgedOrigins = [
+      'https://not-allowed.example,https://not-allowed.example',
+      'https://not-allowed.example|,https://not-allowed.example',
+    ];
     const counts = await underFlood('token', async () => {
       // Ліміт стосується лише читань: власна заявка й скасування того, хто читає, проходять.
       await sell(flooder);
@@ -146,15 +151,30 @@ async function main() {
       };
       // Відмова nginx має ті самі CORS-заголовки, що й відповідь engine для того ж origin:
       // інакше браузерний клієнт бачить мережеву помилку замість 429.
-      for (const origin of ['http://localhost:3000', 'https://not-allowed.example']) {
+      const origins = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'https://not-allowed.example',
+        ...forgedOrigins,
+      ];
+      for (const origin of origins) {
         const headers = { origin };
-        const limited = await request(
-          '/orders?limit=1',
-          'GET',
-          flooder,
-          undefined,
-          engine,
-          headers,
+        // Квота поповнюється й під потоком, тож окремий запит інколи проходить: беремо відмову.
+        const limited = await until(
+          async () => {
+            const response = await request(
+              '/orders?limit=1',
+              'GET',
+              flooder,
+              undefined,
+              engine,
+              headers,
+            );
+            if (response.status !== 429) await response.arrayBuffer();
+            return response;
+          },
+          (response) => response.status === 429,
+          3000,
         );
         const served = await request('/instruments', 'GET', undefined, undefined, engine, headers);
         await Promise.all([limited.arrayBuffer(), served.arrayBuffer()]);
@@ -162,17 +182,28 @@ async function main() {
           status: limited.status,
           limited: limited.headers.get('access-control-allow-origin'),
           engine: served.headers.get('access-control-allow-origin'),
+          vary: limited.headers.get('vary'),
+          expose: limited.headers.get('access-control-expose-headers'),
         };
       }
     });
     assert.deepEqual(probes, { health: 200, book: 200, session: 401 });
+    const allowed = (origin: string) => ({
+      status: 429,
+      limited: origin,
+      engine: origin,
+      vary: 'Origin',
+      expose: 'Retry-After',
+    });
     assert.deepEqual(cors, {
-      'http://localhost:3000': {
-        status: 429,
-        limited: 'http://localhost:3000',
-        engine: 'http://localhost:3000',
-      },
-      'https://not-allowed.example': { status: 429, limited: null, engine: null },
+      'http://localhost:3000': allowed('http://localhost:3000'),
+      'http://127.0.0.1:3000': allowed('http://127.0.0.1:3000'),
+      ...Object.fromEntries(
+        ['https://not-allowed.example', ...forgedOrigins].map((origin) => [
+          origin,
+          { status: 429, limited: null, engine: null, vary: 'Origin', expose: 'Retry-After' },
+        ]),
+      ),
     });
     assert((counts['200'] ?? 0) + (counts['404'] ?? 0) > 0, 'No read with the token passed');
 
