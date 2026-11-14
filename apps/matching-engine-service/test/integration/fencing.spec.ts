@@ -5,7 +5,7 @@ import { engineApp } from '../e2e/engine-app';
 import { InstrumentWorker } from '../../src/engine/instrument-worker';
 import { OwnershipCoordinator } from '../../src/ownership/ownership-coordinator';
 import { LeaseManager } from '../../src/ownership/lease-manager';
-import { FencedOutError } from '../../src/ownership/fencing';
+import { FencedOutError, haltInstrument, lockEpoch } from '../../src/ownership/fencing';
 import { waitFor } from '../helpers/wait-for';
 import type { CommandRow } from '../../src/engine/command';
 
@@ -130,4 +130,30 @@ it('timestamps recovery completion rather than the beginning of its transaction'
   } finally {
     delayed.mockRestore();
   }
+});
+
+// Halt і resume захищає лише `lockEpoch`: у них немає фінального UPDATE з умовою на епоху.
+it('refuses a write under a stale epoch and leaves the instrument state unchanged', async () => {
+  await api.restart({ ENGINE_WORKER_ENABLED: false });
+  const source = api.database();
+  const state = async () =>
+    (
+      await source.query("SELECT status,owner_epoch FROM instrument_state WHERE instrument='ABC'")
+    )[0];
+  const old = (await state()).owner_epoch;
+  const current = await source.transaction((db) => lockEpoch(db, 'ABC', old));
+  expect(current.owner_epoch).toBe(old);
+
+  // Новий власник уже підняв епоху; старий ще вважає себе власником.
+  await source.query(
+    "UPDATE instrument_state SET owner_epoch=owner_epoch+1,owner_instance='new-owner' WHERE instrument='ABC'",
+  );
+  const before = await state();
+  const stale = source.transaction(async (db) => {
+    await lockEpoch(db, 'ABC', old);
+    await haltInstrument(db, 'ABC');
+  });
+  await expect(stale).rejects.toBeInstanceOf(FencedOutError);
+  expect(await state()).toEqual(before);
+  expect(before.status).toBe('active');
 });

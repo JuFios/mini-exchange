@@ -196,6 +196,11 @@ jobs:
             test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q "$service")")" = 0
           done
           curl -fsS http://127.0.0.1:3000/api/config | jq -e --arg url "$ENGINE_PUBLIC_WS_URL" '.wsUrl == $url'
+          # Заголовки безпеки frontend: відсутній заголовок інакше ніхто не помітить.
+          headers=$(curl -fsSI http://127.0.0.1:3000/login)
+          for header in 'x-content-type-options: nosniff' 'x-frame-options: deny' 'referrer-policy: strict-origin-when-cross-origin'; do
+            printf '%s' "$headers" | tr -d '\r' | grep -qix "$header" || { echo "Missing header: $header"; exit 1; }
+          done
           docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q redis)" |
             jq -e '(. // {}) == {}'
           docker compose exec -T redis sh -ec 'test "$(awk "/^Uid:/ { print \$2 }" /proc/1/status)" -ne 0'

@@ -207,6 +207,31 @@ void withFreshBook(async (db) => {
         `ws=frozen-reader seq=71 from=${old} to=${instance} staleMs=${Math.round(stale.at - anchor)}`,
       );
     }
+    {
+      // Попередні фази звіряють книгу одразу після snapshot. Тут вона зібрана лише з delta:
+      // нові рівні й зміна наявного рівня 90.
+      await until(async () => status === 'live' && book?.seq === '71', Boolean, 15000);
+      const before = snapshots;
+      const attempts = subscribes;
+      await Promise.all(
+        Array.from({ length: 20 }, async (_, i) => {
+          const response = await submit(trader, {
+            instrument: 'ABC',
+            side: 'buy',
+            price: i < 10 ? String(80 + i) : '90',
+            quantity: '0.1',
+          });
+          assert(response.ok, await response.clone().text());
+        }),
+      );
+      await waitApplied('91');
+      await until(async () => book?.seq === '91', Boolean, 15000);
+      assert.equal(status, 'live');
+      assert.equal(snapshots, before, 'Live deltas must not need a new snapshot');
+      assert.equal(subscribes, attempts);
+      assert.deepEqual(book, await restBook());
+      console.log(`ws=live-deltas seq=91 snapshots=0 levels=${book?.bids.length}`);
+    }
   } finally {
     stop();
     if (frozenService) await chaos(frozenService, 'unfreeze_stream_reader');

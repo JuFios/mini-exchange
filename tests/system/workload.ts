@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { database, request, submit, token, until, verifyReplay, waitReady } from './helpers';
+import { database, request, submit, token, units, until, verifyReplay, waitReady } from './helpers';
 
 export const SEED = 20261105;
 export const ORDER_COUNT = 400;
 export const REPLICAS = ['matching-engine-1', 'matching-engine-2'];
 export const SETTLEMENT = 'http://settlement-service:3002';
 
-type Order = { auth: string; key: string; price: string; quantity: string; side: 'buy' | 'sell' };
+export type Order = {
+  auth: string;
+  key: string;
+  price: string;
+  quantity: string;
+  side: 'buy' | 'sell';
+};
 
 function mulberry32(seed: number) {
   return () => {
@@ -126,6 +132,7 @@ export async function verifyWorkload(
   ledger: Client,
   admin: string,
   receipts: Receipt[],
+  workload: Order[],
 ) {
   assert.equal(receipts.length, ORDER_COUNT);
   assertAccepted(receipts);
@@ -156,13 +163,39 @@ export async function verifyWorkload(
   );
 
   const journal = await db.query(
-    `SELECT seq::int, order_id, type, applied_at FROM order_commands WHERE instrument='ABC' ORDER BY seq`,
+    `SELECT seq::int, order_id, type, applied_at, user_id, payload FROM order_commands
+     WHERE instrument='ABC' ORDER BY seq`,
   );
   assert.deepEqual(
     journal.rows.map(({ seq }) => seq),
     Array.from({ length: ORDER_COUNT }, (_, i) => i + 1),
   );
   assert(journal.rows.every(({ type, applied_at }) => type === 'submit' && applied_at));
+  // Replay бере вхід із журналу, тож журнал звіряємо з тим, що надіслав клієнт.
+  const sent = new Map(workload.map((order) => [order.key, order]));
+  const commands = new Map(journal.rows.map((row) => [row.order_id as string, row]));
+  for (const { key, body } of receipts) {
+    const order = sent.get(key);
+    const command = commands.get(body.order!.id);
+    assert(order && command, `Journal has no command for ${key}`);
+    assert.deepEqual(
+      {
+        userId: command.user_id,
+        instrument: command.payload.instrument,
+        side: command.payload.side,
+        price: units(command.payload.price, 2),
+        quantity: units(command.payload.quantity, 8),
+      },
+      {
+        userId: subject(order.auth),
+        instrument: 'ABC',
+        side: order.side,
+        price: units(order.price, 2),
+        quantity: units(order.quantity, 8),
+      },
+      `Journal differs from the order sent with ${key}`,
+    );
+  }
   const accepted = await db.query(
     'SELECT idempotency_key, order_id, status FROM order_requests ORDER BY idempotency_key',
   );
@@ -235,6 +268,10 @@ export async function verifyWorkload(
   console.log(
     `accepted=${receipts.length} trades=${replay.trades.length} bids=${bids.length} asks=${asks.length} lag=0 reconciliation=ok`,
   );
+}
+
+function subject(auth: string): string {
+  return JSON.parse(Buffer.from(auth.split('.')[1], 'base64url').toString()).sub;
 }
 
 function decimal(units: bigint, scale: number) {

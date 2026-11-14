@@ -37,6 +37,8 @@ function fixture(t: TestContext, slowObservation: boolean, killFails = false) {
         };
       }
       if (sql.includes('count(*)::int AS stale')) return { rows: [{ stale: 0 }] };
+      // Тест перевіряє бар'єр, а не `resumeMs`: команди, що чекала б під час перехоплення, немає.
+      if (sql.includes('accepted_at<=$2')) return { rows: [] };
       assert(sql.includes('SELECT next_seq'));
       return { rows: [{ next_seq: String(sent.size) }] };
     },
