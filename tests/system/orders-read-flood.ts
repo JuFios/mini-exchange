@@ -131,6 +131,7 @@ async function main() {
     console.log(`orders read flood baselineP50=${percentile(baseline, 0.5).toFixed(0)}ms`);
 
     let probes: Record<string, number> = {};
+    let cors: Record<string, unknown> = {};
     const counts = await underFlood('token', async () => {
       // Ліміт стосується лише читань: власна заявка й скасування того, хто читає, проходять.
       await sell(flooder);
@@ -143,8 +144,36 @@ async function main() {
         session: (await request('/internal/auth/session', 'GET', flooder, undefined, internal))
           .status,
       };
+      // Відмова nginx має ті самі CORS-заголовки, що й відповідь engine для того ж origin:
+      // інакше браузерний клієнт бачить мережеву помилку замість 429.
+      for (const origin of ['http://localhost:3000', 'https://not-allowed.example']) {
+        const headers = { origin };
+        const limited = await request(
+          '/orders?limit=1',
+          'GET',
+          flooder,
+          undefined,
+          engine,
+          headers,
+        );
+        const served = await request('/instruments', 'GET', undefined, undefined, engine, headers);
+        await Promise.all([limited.arrayBuffer(), served.arrayBuffer()]);
+        cors[origin] = {
+          status: limited.status,
+          limited: limited.headers.get('access-control-allow-origin'),
+          engine: served.headers.get('access-control-allow-origin'),
+        };
+      }
     });
     assert.deepEqual(probes, { health: 200, book: 200, session: 401 });
+    assert.deepEqual(cors, {
+      'http://localhost:3000': {
+        status: 429,
+        limited: 'http://localhost:3000',
+        engine: 'http://localhost:3000',
+      },
+      'https://not-allowed.example': { status: 429, limited: null, engine: null },
+    });
     assert((counts['200'] ?? 0) + (counts['404'] ?? 0) > 0, 'No read with the token passed');
 
     // Після потоку квота відновлюється.
