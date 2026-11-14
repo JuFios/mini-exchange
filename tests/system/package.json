@@ -27,6 +27,7 @@
     "orders:sync": "ts-node private-sync.ts",
     "trace": "ts-node trace.ts",
     "rate-limit": "ts-node rate-limit-frontend.ts",
+    "orders:read-flood": "ts-node orders-read-flood.ts",
     "session:revocation": "ts-node session-revocation.ts"
   },
   "dependencies": {
