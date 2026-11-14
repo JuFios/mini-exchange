@@ -1,3 +1,4 @@
+import fs = require('node:fs');
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
@@ -28,6 +29,7 @@ it.each(['after_writes_before_commit', 'after_commit_before_memory'])(
       .compile();
     const app: INestApplication = module.createNestApplication({ logger: false });
     const kill = jest.spyOn(process, 'kill').mockReturnValue(true);
+    const marker = jest.spyOn(fs, 'writeSync').mockReturnValue(0);
     try {
       configureApp(app);
       await app.listen(0, '127.0.0.1');
@@ -44,12 +46,18 @@ it.each(['after_writes_before_commit', 'after_commit_before_memory'])(
       await hooks.reach(point, '4', 1);
       await hooks.reach(point, '5', 0);
       expect(kill).not.toHaveBeenCalled();
+      expect(marker).not.toHaveBeenCalled();
       await hooks.reach(point, '5', 1);
       expect(kill).toHaveBeenCalledWith(process.pid, 'SIGKILL');
+      // Маркер записано синхронно й до kill: інакше журнал контейнера його не мав би.
+      expect(marker).toHaveBeenCalledWith(1, `chaos hook reached point=${point} seq=5\n`);
+      expect(marker.mock.invocationCallOrder[0]).toBeLessThan(kill.mock.invocationCallOrder[0]);
       await hooks.reach(point, '6', 1);
       expect(kill).toHaveBeenCalledTimes(1);
+      expect(marker).toHaveBeenCalledTimes(1);
     } finally {
       kill.mockRestore();
+      marker.mockRestore();
       await app.close();
     }
   },
@@ -62,6 +70,7 @@ it('stalls once at stall_before_commit without killing the process', async () =>
   };
   const hooks = new ChaosHooks({ getOrThrow: (key: string) => values[key] } as ConfigService);
   const kill = jest.spyOn(process, 'kill').mockReturnValue(true);
+  const marker = jest.spyOn(fs, 'writeSync').mockReturnValue(0);
   try {
     hooks.arm({ point: 'stall_before_commit', fromSeq: 2 });
     const early = performance.now();
@@ -74,8 +83,12 @@ it('stalls once at stall_before_commit without killing the process', async () =>
     await hooks.reach('stall_before_commit', '3', 0);
     expect(performance.now() - again).toBeLessThan(25);
     expect(kill).not.toHaveBeenCalled();
+    expect(marker.mock.calls).toEqual([
+      [1, 'chaos hook reached point=stall_before_commit seq=2\n'],
+    ]);
   } finally {
     kill.mockRestore();
+    marker.mockRestore();
   }
 });
 

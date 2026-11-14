@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IsBoolean, IsIn, IsInt, IsOptional, Min } from 'class-validator';
@@ -45,6 +46,9 @@ export class ChaosHooks {
     )
       return;
     this.armed = undefined;
+    // Синхронний запис доходить до журналу контейнера до SIGKILL: system-тест за ним бачить,
+    // що спрацював саме цей хук на цьому seq, а не інший збій.
+    writeSync(1, `chaos hook reached point=${point} seq=${seq}\n`);
     if (point === 'stall_before_commit') {
       await new Promise((resolve) =>
         setTimeout(resolve, this.config.getOrThrow<number>('CHAOS_STALL_BEFORE_COMMIT_MS')),
