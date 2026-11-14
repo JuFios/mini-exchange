@@ -50,8 +50,64 @@ export function transient(error: unknown) {
   return error instanceof TypeError;
 }
 
-function readActive(signal: AbortSignal) {
-  return readActiveOrders((query) => apiJson<Order[]>('/api/engine/orders?' + query, { signal }));
+interface SnapshotRead {
+  signal: AbortSignal;
+  clock: Clock;
+  onLimited(error: unknown): void;
+}
+
+// Ingress обмежує читання заявок на токен і повертає квоту щосекунди.
+const READ_LIMIT_RETRY_MS = 1000;
+const PARALLEL_ORDER_READS = 8;
+
+/**
+ * Читання заявки для знімка. На 429 повторює лише цей запит, коли квота відновиться: повтор
+ * усього знімка знову витратив би квоту на вже прочитане і не завершився б, якщо знімок
+ * потребує більше читань, ніж вміщує квота.
+ */
+async function readOrders<T>(path: string, read: SnapshotRead): Promise<T> {
+  const { signal, clock } = read;
+  for (;;) {
+    try {
+      return await apiJson<T>(path, { signal });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 429) || signal.aborted) throw error;
+      // Банер показує, чому знімок затримується; вдалий знімок його знімає.
+      read.onLimited(error);
+      await new Promise<void>((resolve) => {
+        const timer = clock.setTimeout(done, READ_LIMIT_RETRY_MS);
+        function done() {
+          signal.removeEventListener('abort', cancel);
+          resolve();
+        }
+        function cancel() {
+          clock.clearTimeout(timer);
+          resolve();
+        }
+        signal.addEventListener('abort', cancel, { once: true });
+      });
+      if (signal.aborted) throw error;
+    }
+  }
+}
+
+/** Заявки за ID не більше ніж по кілька одночасно, щоб не вичерпати квоту одним сплеском. */
+async function readOrdersById(ids: string[], read: SnapshotRead) {
+  const orders: Order[] = [];
+  let next = 0;
+  async function worker() {
+    // Спроба, що вже впала, скасовує свій signal: решта воркерів не витрачає квоту даремно.
+    while (next < ids.length && !read.signal.aborted) {
+      const id = ids[next++];
+      orders.push(await readOrders<Order>('/api/engine/orders/' + encodeURIComponent(id), read));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PARALLEL_ORDER_READS, ids.length) }, worker));
+  return orders;
+}
+
+function readActive(read: SnapshotRead) {
+  return readActiveOrders((query) => readOrders<Order[]>('/api/engine/orders?' + query, read));
 }
 
 interface OrderRead {
@@ -152,12 +208,29 @@ export function startPrivateSocket(
     delay = Math.min(delay * 2, RETRY_MAX_MS);
   }
 
-  function load(signal: AbortSignal) {
+  function load(session: AbortSignal) {
+    // Своя спроба на кожне читання знімка: після збою її запити зупиняються, а не конкурують
+    // за квоту читань із наступною спробою.
+    const attempt = new AbortController();
+    const abort = () => attempt.abort();
+    session.addEventListener('abort', abort, { once: true });
+    let limited = false;
+    const read: SnapshotRead = {
+      signal: attempt.signal,
+      clock,
+      // Один банер на спробу, а не на кожну секунду очікування кожного воркера.
+      onLimited: (error) => {
+        if (limited) return;
+        limited = true;
+        view.onError(error);
+      },
+    };
+    const signal = attempt.signal;
     void Promise.all([
-      readActive(signal),
-      apiJson<Order[]>('/api/engine/orders?status=filled&limit=100', { signal }),
+      readActive(read),
+      readOrders<Order[]>('/api/engine/orders?status=filled&limit=100', read),
       // Окремий фільтр: серед останніх 100 будь-якого статусу скасованих могло й не бути.
-      apiJson<Order[]>('/api/engine/orders?status=cancelled&limit=100', { signal }),
+      readOrders<Order[]>('/api/engine/orders?status=cancelled&limit=100', read),
       apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
     ])
       .then(async ([active, filled, cancelled, wallets]) => {
@@ -171,29 +244,25 @@ export function startPrivateSocket(
         const orders = [...byId.values()];
         // Заявка, відсутня у списку, могла завершитися між з'єднаннями.
         const missing = [...view.knownOrderIds()].filter((id) => !byId.has(id));
-        orders.push(
-          ...(await Promise.all(
-            missing.map((id) =>
-              apiJson<Order>('/api/engine/orders/' + encodeURIComponent(id), { signal }),
-            ),
-          )),
-        );
+        orders.push(...(await readOrdersById(missing, read)));
         if (signal.aborted) return;
-        view.onSnapshot({ orders, wallets }, signal);
+        view.onSnapshot({ orders, wallets }, session);
         walletRefresh?.start();
         loadDelay = RETRY_MIN_MS;
       })
       .catch((error: unknown) => {
-        if (signal.aborted) return;
+        attempt.abort();
+        if (session.aborted) return;
         view.onError(error);
         // Сокет лишається підключеним, тож подій не буде, доки читання не вдасться.
         if (!transient(error)) return;
         clock.clearTimeout(loadRetry);
         loadRetry = clock.setTimeout(() => {
-          if (!signal.aborted) load(signal);
+          if (!session.aborted) load(session);
         }, loadDelay);
         loadDelay = Math.min(loadDelay * 2, RETRY_MAX_MS);
-      });
+      })
+      .finally(() => session.removeEventListener('abort', abort));
   }
 
   socket.on('connect', () => {
