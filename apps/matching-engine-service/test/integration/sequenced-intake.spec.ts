@@ -53,6 +53,9 @@ it('sequences two intake instances and matches all two hundred HTTP commands aga
       Array.from({ length: 200 }, (_, i) => String(i + 1)),
     );
     expect(new Set(commands.map((row: { order_id: string }) => row.order_id)).size).toBe(200);
+    // Час прийому йде в порядку seq: угода не може мати час раніший за свого maker.
+    const times = commands.map((row: { accepted_at: Date }) => row.accepted_at.getTime());
+    expect(times.every((time: number, i: number) => i === 0 || time >= times[i - 1])).toBe(true);
     const reference = new ReferenceMatcher();
     const expected = [];
     for (const row of commands) {
