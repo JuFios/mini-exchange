@@ -99,6 +99,9 @@ async function main() {
         10000,
       );
       assert(command.result.tradeIds.length > 0);
+      const marker = `chaos hook reached point=${point} seq=${command.seq}`;
+      const logs = docker('logs', '--tail', '500', victim);
+      assert(logs.split('\n').includes(marker), `Missing marker: ${marker}`);
       if (point === 'after_writes_before_commit')
         assert(BigInt(command.result.epoch) > BigInt(old.owner_epoch));
       else assert.equal(command.result.epoch, old.owner_epoch);

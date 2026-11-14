@@ -92,11 +92,19 @@ export async function submit(
   token: string,
   body: unknown,
   base = engine,
-  options?: { key: string; retry?: boolean },
+  options?: { key: string; retry?: boolean; fresh?: boolean },
 ): Promise<Response> {
   const key = options?.key ?? randomUUID();
   const headers = { 'Idempotency-Key': key };
-  if (options?.retry === false) return request('/orders', 'POST', token, body, base, headers);
+  // Новий ключ не може отримати повтор (200) з першої спроби. Повтор свідомо надсилає лише
+  // перевірка ідемпотентності, яка передає `fresh: false`.
+  const fresh = options?.fresh ?? true;
+  const replayMessage = `A fresh order key unexpectedly returned a replay: ${key}`;
+  if (options?.retry === false) {
+    const response = await request('/orders', 'POST', token, body, base, headers);
+    assert(!fresh || response.status !== 200, replayMessage);
+    return response;
+  }
   const deadline = performance.now() + 30000;
   let attempt = 0;
   let backoff = 250;
@@ -112,10 +120,7 @@ export async function submit(
         Math.max(1, Math.min(15000, Math.floor(deadline - performance.now()))),
       );
       if (![502, 503, 504].includes(response.status)) {
-        assert(
-          options !== undefined || response.status !== 200 || attempt > 0,
-          'A fresh order key unexpectedly returned a replay',
-        );
+        assert(!fresh || response.status !== 200 || attempt > 0, replayMessage);
         return response;
       }
       await response.text();
@@ -143,10 +148,15 @@ export const units = (text: string, scale: number) => {
 };
 export async function verifyReplay(db: Client) {
   const commands = (await db.query('SELECT * FROM order_commands ORDER BY instrument,seq')).rows;
-  const oracle = new ReferenceMatcher();
+  // У кожного інструмента своя книга: інакше команди XYZ зіставлялися б із заявками ABC.
+  const oracles = new Map<string, ReferenceMatcher>();
+  const oracle = (instrument: string) => {
+    if (!oracles.has(instrument)) oracles.set(instrument, new ReferenceMatcher());
+    return oracles.get(instrument)!;
+  };
   const expected = [];
   for (const row of commands) {
-    const result = oracle.apply(
+    const result = oracle(row.instrument).apply(
       row.type === 'submit'
         ? {
             type: 'submit',
@@ -180,9 +190,10 @@ export async function verifyReplay(db: Client) {
     expected,
   );
   const orders = (await db.query('SELECT * FROM orders ORDER BY id')).rows;
+  const replayed = [...oracles.values()].flatMap((matcher) => [...matcher.orders.values()]);
   assert.deepEqual(
     orders.map((r) => ({ id: r.id, status: r.status, remaining: units(r.remaining_quantity, 8) })),
-    [...oracle.orders.values()]
+    [...replayed]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map(({ id, status, remaining }) => ({ id, status, remaining })),
   );
@@ -192,5 +203,11 @@ export async function verifyReplay(db: Client) {
     'All accepted commands must be applied',
   );
   console.log(`replay commands=${commands.length} trades=${trades.length} orders=${orders.length}`);
-  return { book: oracle.book(), orders: [...oracle.orders.values()], trades: expected };
+  const abc = oracle('ABC');
+  return {
+    book: abc.book(),
+    orders: replayed,
+    abcOrders: [...abc.orders.values()],
+    trades: expected,
+  };
 }
