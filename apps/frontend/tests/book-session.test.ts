@@ -860,6 +860,43 @@ describe('market book synchronization', () => {
     assert.equal(state.socket.subscribes, 2);
   });
 
+  it('replays buffered deltas in sequence order whatever order they arrived in', () => {
+    const state = market(10);
+    state.delta(14, [change(14)]);
+    state.delta(13, [change(13, '2')]);
+    state.delta(12, [change(13, '0'), change(12)]);
+    state.accept(11);
+    assert.equal(state.statuses.at(-1), 'live');
+    assert.equal(state.books.at(-1)?.seq, '14');
+    assert.deepEqual(state.books.at(-1)?.asks, [level(12), level(13, '2'), level(14)]);
+  });
+
+  it('recovers from a malformed heartbeat while live and ignores one while waiting', () => {
+    const state = market(10);
+    state.socket.fire('book.heartbeat', { instrument: 'ABC', seq: 'bad' });
+    assert.equal(state.statuses.at(-1), 'stale');
+    assert.equal(state.socket.subscribes, 2);
+    state.accept(10);
+    assert.equal(state.statuses.at(-1), 'live');
+
+    state.clock.tick(8000);
+    assert.equal(state.statuses.at(-1), 'stale');
+    // Поки чекаємо heartbeat, лише коректний запускає відновлення.
+    state.socket.fire('book.heartbeat', { instrument: 'ABC', seq: 'bad' });
+    assert.equal(state.socket.subscribes, 2);
+    state.heartbeat(10);
+    assert.equal(state.socket.subscribes, 3);
+  });
+
+  it('ignores empty events without throwing', () => {
+    const state = market(10, [level(100)]);
+    for (const event of ['book.delta', 'book.heartbeat', 'book.resync'])
+      for (const payload of [undefined, null]) state.socket.fire(event, payload);
+    assert.deepEqual(state.statuses, ['loading', 'live']);
+    assert.equal(state.socket.subscribes, 1);
+    assert.deepEqual(state.books.at(-1)?.asks, [level(100)]);
+  });
+
   it('keeps the previous snapshot throughout reconnect', () => {
     const state = market(10, [level(100)]);
     const visible = state.books.at(-1);
