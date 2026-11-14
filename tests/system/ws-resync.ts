@@ -11,7 +11,16 @@ import { container, docker, engine, request, submit, until, waitReady } from './
 import { adminToken, owner, testUser, withFreshBook } from './workload';
 
 async function restBook(): Promise<BookState> {
-  const response = await request('/instruments/ABC/book');
+  // Запит, що вже чекав на з'єднання з убитою реплікою, nginx може завершити 504: коли ім'я
+  // репліки зникає з DNS, upstream перебудовується, і повтору на іншій репліці не буває.
+  const response = await until(
+    async () => {
+      const reply = await request('/instruments/ABC/book');
+      if ([502, 503, 504].includes(reply.status)) await reply.text();
+      return reply;
+    },
+    (reply) => ![502, 503, 504].includes(reply.status),
+  );
   assert.equal(response.status, 200);
   return (await response.json()) as BookState;
 }
@@ -41,7 +50,7 @@ void withFreshBook(async (db) => {
   let snapshots = 0;
   let subscribes = 0;
   let heartbeats = 0;
-  const states: { status: BookStatus; at: number }[] = [];
+  const states: { status: BookStatus; at: number; beats: number }[] = [];
 
   // Перехоплюємо кадр перед тим, як його отримає той самий автомат, що працює в браузері.
   const transport: SocketLike = {
@@ -90,7 +99,7 @@ void withFreshBook(async (db) => {
     },
     onStatus(value) {
       status = value;
-      states.push({ status, at: performance.now() });
+      states.push({ status, at: performance.now(), beats: heartbeats });
     },
     onSnapshot() {
       snapshots++;
@@ -231,6 +240,33 @@ void withFreshBook(async (db) => {
       assert.equal(subscribes, attempts);
       assert.deepEqual(book, await restBook());
       console.log(`ws=live-deltas seq=91 snapshots=0 levels=${book?.bids.length}`);
+    }
+    {
+      // Загублена delta посередині: наступна вже прийшла, тож розрив видно без heartbeat.
+      const phase = states.length;
+      const before = snapshots;
+      const attempts = subscribes;
+      await afterHeartbeat();
+      const beats = heartbeats;
+      dropSeq = '92';
+      for (const price of ['70', '71', '72']) {
+        const response = await submit(trader, {
+          instrument: 'ABC',
+          side: 'buy',
+          price,
+          quantity: '0.1',
+        });
+        assert(response.ok, await response.clone().text());
+      }
+      await waitApplied('94');
+      await checkLive('94', before, phase, 'stale');
+      assert.equal(subscribes, attempts + 1, 'A gap should trigger exactly one snapshot request');
+      const stale = states.slice(phase).find((state) => state.status === 'stale');
+      // Через heartbeat розрив видно лише на другому після втрати.
+      assert(stale && stale.beats - beats < 2, 'The next delta must reveal the gap');
+      console.log(
+        `ws=middle-delta-loss seq=94 snapshots=1 heartbeatsBeforeStale=${stale.beats - beats}`,
+      );
     }
   } finally {
     stop();

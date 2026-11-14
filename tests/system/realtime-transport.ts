@@ -63,15 +63,46 @@ async function routesAroundStaleReplica() {
 async function main() {
   const db = database();
   await db.connect();
+  let maker: { token: string; orderId: string } | undefined;
+  let failure: unknown;
   try {
     assert(
       (await db.query('SELECT pg_try_advisory_lock(894215631024) AS ok')).rows[0].ok,
       'Another ownership system check is already running',
     );
+    // Порожня книга збіглася б і з snapshot, що завжди порожній: кладемо заявку далеко від ринку.
+    const seller = await token(
+      'register',
+      `${randomUUID()}@system.test`,
+      'transport-user-password',
+    );
+    const placed = await submit(seller, {
+      instrument: 'ABC',
+      side: 'sell',
+      price: '9999',
+      quantity: '0.5',
+    });
+    assert([200, 201, 202].includes(placed.status), await placed.clone().text());
+    maker = {
+      token: seller,
+      orderId: ((await placed.json()) as { order: { id: string } }).order.id,
+    };
+    const restingId = maker.orderId;
+    await until(
+      async () => (await db.query('SELECT status FROM orders WHERE id=$1', [restingId])).rows[0],
+      (row) => row?.status === 'open',
+    );
     for (const base of ['http://engine-lb:3001', 'http://engine-lb:8080']) {
       const rest = await request('/instruments/ABC/book', 'GET', undefined, undefined, base);
       assert.equal(rest.status, 200);
-      const { bids, asks } = (await rest.json()) as { bids: unknown[]; asks: unknown[] };
+      const { bids, asks } = (await rest.json()) as {
+        bids: unknown[];
+        asks: { price: string }[];
+      };
+      assert(
+        asks.some(({ price }) => price === '9999.00'),
+        'The resting order must be in the book',
+      );
       const metrics = await request('/metrics', 'GET', undefined, undefined, base);
       assert.equal(metrics.status, base.endsWith(':3001') ? 404 : 200);
       await metrics.text();
@@ -127,7 +158,20 @@ async function main() {
       console.log(`transport listener=${base} connects=2 snapshots=2 pollingRejected=2: PASS`);
     }
     await routesAroundStaleReplica();
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
+    // Заявка не повинна лишатися на ABC для наступних сценаріїв.
+    if (maker) {
+      const cancel = await request(`/orders/${maker.orderId}`, 'DELETE', maker.token);
+      const problem = [200, 202].includes(cancel.status)
+        ? undefined
+        : `Cancel ${maker.orderId}: ${cancel.status} ${await cancel.text()}`;
+      // Збій прибирання не ховає первинну помилку сценарію.
+      if (problem && failure) console.error(problem);
+      else assert.equal(problem, undefined, problem);
+    }
     await db.end();
   }
 }
