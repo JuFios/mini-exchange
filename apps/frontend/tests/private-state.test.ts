@@ -317,6 +317,79 @@ it('merges active, filled and recent orders by the highest version', async () =>
   assert.equal(byId.get('tie')?.version, 3);
 });
 
+it('keeps cancelled orders that are older than the latest hundred orders', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  const at = (second: number) => new Date(Date.UTC(2026, 10, 1, 0, 0, second)).toISOString();
+  // Скасовані старші за 120 новіших заявок, тож у перших 100 рядках `all` їх немає.
+  const orders = [
+    ...Array.from({ length: 5 }, (_, i) => ({ id: `cancelled-${i}`, status: 'cancelled', at: i })),
+    ...Array.from({ length: 120 }, (_, i) => ({
+      id: `newer-${i}`,
+      status: i % 2 ? 'filled' : 'open',
+      at: 10 + i,
+    })),
+  ].map(({ id, status, at: second }) => ({ id, status, createdAt: at(second), version: 1 }));
+  const statuses: Record<string, string[]> = {
+    active: ['pending', 'open', 'partially_filled'],
+    filled: ['filled'],
+    cancelled: ['cancelled'],
+  };
+  // Двійник `GET /orders`: фільтр, спадний порядок і курсор, як у engine.
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (!path.startsWith('/api/engine/orders?')) return Response.json([]);
+    const query = new URL(path, 'http://localhost').searchParams;
+    const status = query.get('status') ?? 'all';
+    const cursor = query.get('cursor');
+    const after = cursor && JSON.parse(Buffer.from(cursor, 'base64url').toString());
+    const page = orders
+      .filter((order) => status === 'all' || statuses[status]?.includes(order.status))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .filter(
+        (order) =>
+          !after ||
+          order.createdAt < after.createdAt ||
+          (order.createdAt === after.createdAt && order.id < after.id),
+      )
+      .slice(0, Number(query.get('limit') ?? 50));
+    return Response.json(page);
+  });
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  let snapshot: { orders: typeof orders } | undefined;
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: Error) {
+        completed.emit('error', error);
+      },
+      onSnapshot(value: { orders: typeof orders }) {
+        snapshot = value;
+        completed.emit('snapshot');
+      },
+      knownOrderIds: () => [],
+      onOrder() {},
+      onWallet() {},
+    },
+    { setTimeout: () => undefined, clearTimeout() {} },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  await once(completed, 'snapshot');
+  stop();
+  const cancelled = snapshot!.orders.filter(({ status }) => status === 'cancelled');
+  assert.deepEqual(
+    cancelled.map(({ id }) => id).sort(),
+    [0, 1, 2, 3, 4].map((i) => `cancelled-${i}`),
+  );
+});
+
 it('keeps an order accepted with a short 202 instead of reporting a failure', () => {
   const { acceptedOrder } = require('../lib/private-state');
   const input = { instrument: 'ABC', side: 'buy', price: '100.00', quantity: '2.00000000' };
