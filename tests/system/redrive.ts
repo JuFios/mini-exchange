@@ -38,17 +38,25 @@ async function main() {
       assert.equal(response.status, 200, await response.clone().text());
       return (await response.json()) as Report;
     };
-    const cli = () => {
+    // Код 1 означає розбіжність лише разом зі звітом: падіння процесу теж дало б ненульовий код.
+    const cli = (): { code: number; report: Report } => {
+      let code = 0;
+      let out: string;
       try {
-        const out = execFileSync(
+        out = execFileSync(
           'docker',
           ['exec', settlementContainer, 'node', 'dist/reconcile', '--from', from],
           { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
         );
-        return { code: 0, out };
       } catch (error) {
-        return { code: (error as { status: number }).status, out: '' };
+        const failure = error as { status: number; stdout?: string; stderr?: string };
+        code = failure.status;
+        out = failure.stdout ?? '';
+        assert.equal(code, 1, `reconcile crashed: ${failure.stderr}`);
       }
+      const report = JSON.parse(out) as Report;
+      assert.equal(report.ok, code === 0, 'Exit code must follow the report');
+      return { code, report };
     };
 
     const seller = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
@@ -113,7 +121,9 @@ async function main() {
       lost.discrepancies.filter(({ type }) => type === 'missing').map(({ tradeId }) => tradeId),
       [tradeId],
     );
-    assert.equal(cli().code, 1, 'reconcile must exit 1 while a trade is missing');
+    const missing = cli();
+    assert.equal(missing.code, 1, 'reconcile must exit 1 while a trade is missing');
+    assert(missing.report.discrepancies.some((d) => d.type === 'missing' && d.tradeId === tradeId));
 
     const redrive = await request('/admin/outbox/redrive', 'POST', admin, { tradeIds: [tradeId] });
     assert.equal(redrive.status, 200, await redrive.clone().text());
@@ -171,7 +181,9 @@ async function main() {
     assert.equal(stuck.ok, false);
     assert.equal(stuck.counts.stuck_reservation, 1);
     assert.equal(stuckOf(stuck)[0].actual?.reservationId, orderId);
-    assert.equal(cli().code, 1, 'reconcile must exit 1 while a reservation is stuck');
+    const stuckReport = cli();
+    assert.equal(stuckReport.code, 1, 'reconcile must exit 1 while a reservation is stuck');
+    assert.equal(stuckOf(stuckReport.report)[0]?.actual?.reservationId, orderId);
 
     const release = await request('/admin/outbox/redrive', 'POST', admin, { orderIds: [orderId] });
     assert.equal(release.status, 200, await release.clone().text());

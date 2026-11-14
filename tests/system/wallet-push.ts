@@ -60,7 +60,19 @@ async function main() {
     );
     listeners.push(sellerPush, buyerPush, observerPush);
 
-    // XYZ не використовують інші сценарії, тож на книзі немає чужих заявок і угода лише ця.
+    // XYZ використовують і `trace`, і `orders:sync`. Вони не лишають заявок, що перетнулися б
+    // з ціною 100; інакше покупець виконався б із чужою заявкою, тож це перевіряємо явно.
+    const book = await request(`/instruments/${instrument}/book`);
+    assert.equal(book.status, 200);
+    const { bids, asks } = (await book.json()) as {
+      bids: { price: string }[];
+      asks: { price: string }[];
+    };
+    assert(
+      !asks.some(({ price }) => Number(price) <= 100) &&
+        !bids.some(({ price }) => Number(price) >= 100),
+      `XYZ has orders left by another scenario: ${JSON.stringify({ bids, asks })}`,
+    );
     const order = { instrument, price: '100', quantity: '1' };
     const resting = await submit(seller, { ...order, side: 'sell' });
     assert([200, 201, 202].includes(resting.status), await resting.clone().text());

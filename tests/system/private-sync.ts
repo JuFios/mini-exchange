@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { io, Socket } from 'socket.io-client';
+import { readActiveOrders } from '../../apps/frontend/lib/active-orders';
 import { engine, request, submit, token, until, waitReady } from './helpers';
 
 const instrument = 'XYZ';
@@ -13,22 +14,6 @@ async function page(accessToken: string, query: string): Promise<Order[]> {
   const response = await request(`/orders?${query}`, 'GET', accessToken);
   assert.equal(response.status, 200, await response.clone().text());
   return (await response.json()) as Order[];
-}
-
-/** Усі активні заявки сторінками за курсором, як це описує README. */
-async function allActive(accessToken: string, limit: number): Promise<Order[]> {
-  const orders: Order[] = [];
-  let cursor = '';
-  for (;;) {
-    const rows = await page(accessToken, `status=active&limit=${limit}${cursor}`);
-    if (rows.length === 0) return orders;
-    orders.push(...rows);
-    const last = rows[rows.length - 1];
-    const key = Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString(
-      'base64url',
-    );
-    cursor = `&cursor=${key}`;
-  }
 }
 
 async function main() {
@@ -48,6 +33,8 @@ async function main() {
     socket.once('connect_error', reject);
   });
   const placed: string[] = [];
+  let taken: string | undefined;
+  let failure: unknown;
   try {
     // 60 активних заявок далеко від ринку: вони не зіставляються й не заважають іншим сценаріям.
     const sell = async (price: number) => {
@@ -73,6 +60,7 @@ async function main() {
       quantity: '0.1',
     });
     assert([200, 201, 202].includes(taking.status), await taking.clone().text());
+    taken = ((await taking.clone().json()) as { order: { id: string } }).order.id;
 
     await until(
       async () => updates.filter(({ status }) => status === 'open').length,
@@ -98,8 +86,9 @@ async function main() {
     for (const { orderId, status } of buffered) if (!naive.has(orderId)) naive.set(orderId, status);
     assert.equal(naive.get(raced), 'open', 'The old recipe revives a filled order');
 
-    // Рецепт README: усі сторінки (малий ліміт змушує брати кілька), потім відсутні за ID.
-    const pages = await allActive(owner, 25);
+    // Рецепт README тим самим кодом, що й термінал: усі сторінки (малий ліміт змушує брати
+    // кілька), потім відсутні за ID.
+    const pages = await readActiveOrders((query) => page(owner, query), 25);
     assert.equal(pages.length, ACTIVE);
     assert.equal(new Set(pages.map(({ id }) => id)).size, ACTIVE, 'Pages must not repeat orders');
     const state = new Map(pages.map((order) => [order.id, order]));
@@ -121,9 +110,28 @@ async function main() {
     console.log(
       `private sync active=${ACTIVE} singlePage=${single.length} pages=3 raced=filled oldRecipe=revived`,
     );
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     socket.disconnect();
-    for (const id of placed) await request(`/orders/${id}`, 'DELETE', owner).then((r) => r.text());
+    // Залишки на XYZ зачепили б `wallet:push` у наступному прогоні, тож скасування перевіряємо.
+    const problems: string[] = [];
+    const orders = [
+      ...placed.map((id) => ({ id, auth: owner })),
+      ...(taken ? [{ id: taken, auth: buyer }] : []),
+    ];
+    for (const { id, auth } of orders) {
+      const cancel = await request(`/orders/${id}`, 'DELETE', auth);
+      const body = await cancel.text();
+      // Виконану заявку скасувати не можна, і залишку в неї немає.
+      const filled = cancel.status === 409 && body.includes('ORDER_ALREADY_FILLED');
+      if (![200, 202].includes(cancel.status) && !filled)
+        problems.push(`Cancel ${id}: ${cancel.status} ${body}`);
+    }
+    // Збій прибирання не ховає первинну помилку сценарію.
+    if (problems.length && failure) console.error(problems.join('\n'));
+    else assert.equal(problems.length, 0, problems.join('\n'));
   }
 }
 
