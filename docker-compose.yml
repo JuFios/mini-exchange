@@ -139,6 +139,7 @@ services:
     env_file: ./apps/settlement-service/.env.example
     environment:
       <<: *tracing-environment
+      CORS_ORIGINS: *cors-origins
       REDIS_PASSWORD: *redis-password
     depends_on:
       settlement-migrate:
