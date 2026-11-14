@@ -148,3 +148,24 @@ it('reports a ledger trade stored under another instrument even when hash and po
   ]);
   expect(result.matched).toBe(0);
 });
+
+it('totals the ledger side from the seller legs whatever the order of postings', async () => {
+  const trade = engineTrade('2026-01-01T10:00:00.000Z', { buyLimitPrice: '120.00' });
+  const orders: ((postings: LedgerTrade['postings']) => LedgerTrade['postings'])[] = [
+    (postings) => [...postings].reverse(),
+    // Повернення різниці покупцю стоїть перед зарахуванням продавцю, резерв quote — першим.
+    (postings) => [postings[4], postings[2], postings[3], postings[1], postings[0]],
+  ];
+  for (const reorder of orders) {
+    const result = await compare(
+      [trade],
+      [settled(trade, (ledger) => (ledger.postings = reorder(ledger.postings)))],
+    );
+    expect(result.discrepancies).toEqual([]);
+    expect(result.ledger.get('ABC')).toEqual({
+      count: 1,
+      quantity: 50_000_000n,
+      quote: 500_000_000_000n,
+    });
+  }
+});
