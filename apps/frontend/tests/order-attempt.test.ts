@@ -60,3 +60,24 @@ it('drops the key when the request was refused', async () => {
 
   assert.notEqual(keys[0], keys[1]);
 });
+
+it('keeps a separate retry key for each different order after a gateway failure', async () => {
+  const sendWith = (order: import('../lib/decimal').OrderInput) =>
+    (require('../lib/order-attempt') as typeof import('../lib/order-attempt')).sendOrder(order);
+  const others: import('../lib/decimal').OrderInput[] = [
+    { ...input, instrument: 'XYZ' },
+    { ...input, side: 'sell' as const },
+    { ...input, price: '100.01' },
+    { ...input, quantity: '1.5' },
+  ];
+  const failed = () => new Response('{}', { status: 503 });
+  answers = [failed, ...others.map(() => failed), pending('first')];
+
+  await assert.rejects(send());
+  for (const order of others) await assert.rejects(sendWith(order));
+  // Та сама заявка в іншому записі чисел повторює свій ключ.
+  await sendWith({ ...input, price: '100.00', quantity: '1.00000000' });
+
+  assert.equal(new Set(keys.slice(0, 5)).size, 5);
+  assert.equal(keys[5], keys[0]);
+});
