@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { container, database, docker, request, submit, token, until, waitReady } from './helpers';
+import {
+  cleanup,
+  container,
+  database,
+  docker,
+  request,
+  submit,
+  token,
+  until,
+  waitReady,
+} from './helpers';
 
 const settlement = 'http://settlement-service:3002';
 const stream = 'exchange:settlement:{ABC}';
@@ -13,10 +23,12 @@ type Report = {
 };
 
 async function main() {
+  // Пошук контейнера може впасти: тоді з'єднання з БД ще не відкрите.
+  const settlementContainer = container('settlement-service');
   const db = database();
   await db.connect();
-  const settlementContainer = container('settlement-service');
   let ownerContainer: string | undefined;
+  let failure: unknown;
   try {
     for (const service of ['matching-engine-1', 'matching-engine-2']) {
       const id = container(service);
@@ -38,17 +50,25 @@ async function main() {
       assert.equal(response.status, 200, await response.clone().text());
       return (await response.json()) as Report;
     };
-    const cli = () => {
+    // Код 1 означає розбіжність лише разом зі звітом: падіння процесу теж дало б ненульовий код.
+    const cli = (): { code: number; report: Report } => {
+      let code = 0;
+      let out: string;
       try {
-        const out = execFileSync(
+        out = execFileSync(
           'docker',
           ['exec', settlementContainer, 'node', 'dist/reconcile', '--from', from],
           { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
         );
-        return { code: 0, out };
       } catch (error) {
-        return { code: (error as { status: number }).status, out: '' };
+        const failure = error as { status: number; stdout?: string; stderr?: string };
+        code = failure.status;
+        out = failure.stdout ?? '';
+        assert.equal(code, 1, `reconcile crashed: ${failure.stderr}`);
       }
+      const report = JSON.parse(out) as Report;
+      assert.equal(report.ok, code === 0, 'Exit code must follow the report');
+      return { code, report };
     };
 
     const seller = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
@@ -113,7 +133,9 @@ async function main() {
       lost.discrepancies.filter(({ type }) => type === 'missing').map(({ tradeId }) => tradeId),
       [tradeId],
     );
-    assert.equal(cli().code, 1, 'reconcile must exit 1 while a trade is missing');
+    const missing = cli();
+    assert.equal(missing.code, 1, 'reconcile must exit 1 while a trade is missing');
+    assert(missing.report.discrepancies.some((d) => d.type === 'missing' && d.tradeId === tradeId));
 
     const redrive = await request('/admin/outbox/redrive', 'POST', admin, { tradeIds: [tradeId] });
     assert.equal(redrive.status, 200, await redrive.clone().text());
@@ -171,7 +193,9 @@ async function main() {
     assert.equal(stuck.ok, false);
     assert.equal(stuck.counts.stuck_reservation, 1);
     assert.equal(stuckOf(stuck)[0].actual?.reservationId, orderId);
-    assert.equal(cli().code, 1, 'reconcile must exit 1 while a reservation is stuck');
+    const stuckReport = cli();
+    assert.equal(stuckReport.code, 1, 'reconcile must exit 1 while a reservation is stuck');
+    assert.equal(stuckOf(stuckReport.report)[0]?.actual?.reservationId, orderId);
 
     const release = await request('/admin/outbox/redrive', 'POST', admin, { orderIds: [orderId] });
     assert.equal(release.status, 200, await release.clone().text());
@@ -343,13 +367,19 @@ async function main() {
     console.log(
       `redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched} orderId=${orderId} stuck_reservation->ok partialOrderId=${partialId} orders-only=stuck orders+trades->ok`,
     );
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     // Контейнери не лишаються на паузі, якщо перевірка впала посередині.
-    for (const id of [settlementContainer, ownerContainer]) {
-      if (id && docker('inspect', '--format', '{{.State.Paused}}', id) === 'true')
-        docker('unpause', id);
-    }
-    await db.end();
+    await cleanup(
+      failure,
+      ...[settlementContainer, ownerContainer].map((id) => () => {
+        if (id && docker('inspect', '--format', '{{.State.Paused}}', id) === 'true')
+          docker('unpause', id);
+      }),
+      () => db.end(),
+    );
   }
 }
 

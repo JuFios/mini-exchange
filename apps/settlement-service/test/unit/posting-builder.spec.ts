@@ -77,3 +77,35 @@ it('supports each engine instrument base and quote asset at scales 8 and 10', ()
     expect(ASSET_SCALES[quote as keyof typeof ASSET_SCALES]).toBe(10);
   }
 });
+
+it('refuses a trade with a non-positive price or quantity or a limit below the price', () => {
+  for (const change of [
+    { price: 0n },
+    { price: -1n },
+    { quantity: 0n },
+    { quantity: -1n },
+    { buyLimit: input.price - 1n },
+  ]) {
+    expect(() => PostingBuilder.trade({ ...input, ...change })).toThrow('Invalid trade amounts');
+  }
+  expect(PostingBuilder.trade({ ...input, buyLimit: input.price })).toHaveLength(4);
+});
+
+it('refuses an empty entry and any leg that is not positive even when the entry balances', () => {
+  const leg = (direction: Posting['direction'], amount: bigint): Posting => ({
+    userId: 'buyer',
+    asset: 'USD',
+    kind: 'available',
+    direction,
+    amount,
+  });
+  expect(() => PostingBuilder.balanced([])).toThrow('Unbalanced postings');
+  for (const amount of [0n, -5n]) {
+    expect(() => PostingBuilder.balanced([leg('debit', amount), leg('credit', amount)])).toThrow(
+      'Posting amount must be positive',
+    );
+  }
+  expect(() => PostingBuilder.transfer('reserve', { userId: 'buyer', asset: 'USD' }, 0n)).toThrow(
+    'Posting amount must be positive',
+  );
+});

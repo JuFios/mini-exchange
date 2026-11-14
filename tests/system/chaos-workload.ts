@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Client } from 'pg';
-import { container, docker, request, until, waitReady } from './helpers';
+import { cleanup, container, docker, request, until, waitReady } from './helpers';
 import {
   adminToken,
   assertAccepted,
@@ -38,6 +38,7 @@ export async function runChaos(fault: Fault) {
     const service = settlementCrash ? 'settlement-service' : `matching-${old.owner_instance}`;
     const victim = container(service);
     const redis = container('redis');
+    let failure: unknown;
     try {
       await arm(fault, admin, service, redis, old);
       const killed = (async () => {
@@ -73,7 +74,7 @@ export async function runChaos(fault: Fault) {
       if (load.status === 'rejected') throw load.reason;
       const receipts = load.value.flat();
       await verifyWorkload(db, ledger, admin, receipts, workload);
-      const retries = await Promise.all(workload.map((order) => sendOrder(order, true)));
+      const retries = await Promise.all(workload.map((order) => sendOrder(order, true, false)));
       assertAccepted(retries);
       assert(retries.every(({ status }) => status === 200));
       assert.deepEqual(
@@ -85,11 +86,19 @@ export async function runChaos(fault: Fault) {
         (await db.query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).rows[0].next_seq,
         String(ORDER_COUNT),
       );
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
-      const status = docker('inspect', '--format', '{{.State.Status}}', victim);
-      if (status === 'paused') docker('unpause', victim);
-      if (status === 'exited') docker('start', victim);
-      redisCommand(redis, 'DEL', 'system-test:crash');
+      await cleanup(
+        failure,
+        () => {
+          const status = docker('inspect', '--format', '{{.State.Status}}', victim);
+          if (status === 'paused') docker('unpause', victim);
+          if (status === 'exited') docker('start', victim);
+        },
+        () => redisCommand(redis, 'DEL', 'system-test:crash'),
+      );
     }
   });
 }
@@ -371,6 +380,11 @@ async function checkFaultResult(
   const postCommit = fault === 'after_commit_before_memory';
   const seq = postCommit ? Number(last.seq) : Number(last.seq) + 1;
   assert(seq >= 150);
+  // Маркер хука доводить, що процес зупинив саме цей хук на цьому seq, а не інший збій.
+  const point = fault === 'pause' ? 'stall_before_commit' : fault;
+  const marker = `chaos hook reached point=${point} seq=${seq}`;
+  const logs = docker('logs', '--tail', '500', victim);
+  assert(logs.split('\n').includes(marker), `Missing marker: ${marker}`);
   const result = await until(
     async () =>
       (await db.query("SELECT result FROM order_commands WHERE instrument='ABC' AND seq=$1", [seq]))

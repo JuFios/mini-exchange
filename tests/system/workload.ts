@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { database, request, submit, token, units, until, verifyReplay, waitReady } from './helpers';
+import {
+  cleanup,
+  database,
+  request,
+  submit,
+  token,
+  units,
+  until,
+  verifyReplay,
+  waitReady,
+} from './helpers';
 
 export const SEED = 20261105;
 export const ORDER_COUNT = 400;
@@ -36,6 +46,7 @@ export async function withFreshBook(test: (db: Client, ledger: Client) => Promis
     connectionTimeoutMillis: 3000,
     statement_timeout: 5000,
   });
+  let failure: unknown;
   try {
     await db.connect();
     const { rows } = await db.query('SELECT pg_try_advisory_lock(894215631024) AS acquired');
@@ -49,8 +60,15 @@ export async function withFreshBook(test: (db: Client, ledger: Client) => Promis
     } = await db.query("SELECT next_seq FROM instruments WHERE symbol='ABC'");
     assert.equal(instrument.next_seq, '0', 'ABC must have an empty command journal');
     await test(db, ledger);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await Promise.all([db.end(), ledger.end()]);
+    await cleanup(
+      failure,
+      () => db.end(),
+      () => ledger.end(),
+    );
   }
 }
 
@@ -94,9 +112,13 @@ export async function orders(): Promise<Order[]> {
   }));
 }
 
-export async function sendOrder(order: Order, retry: boolean) {
+export async function sendOrder(order: Order, retry: boolean, fresh = true) {
   const { auth, key, ...body } = order;
-  const response = await submit(auth, { ...body, instrument: 'ABC' }, undefined, { key, retry });
+  const response = await submit(auth, { ...body, instrument: 'ABC' }, undefined, {
+    key,
+    retry,
+    fresh,
+  });
   return {
     key,
     status: response.status,
@@ -265,6 +287,7 @@ export async function verifyWorkload(
     asks: depth(asks),
   });
   await verifyLedger(db, ledger, admin, receipts);
+  await verifyBalances(ledger, workload, replay);
   console.log(
     `accepted=${receipts.length} trades=${replay.trades.length} bids=${bids.length} asks=${asks.length} lag=0 reconciliation=ok`,
   );
@@ -330,4 +353,61 @@ async function verifyLedger(db: Client, ledger: Client, admin: string, receipts:
   };
   assert.equal(reconciliation.ok, true, JSON.stringify(reconciliation.discrepancies.slice(0, 5)));
   assert.equal(reconciliation.counts.matched, settled.rows.length);
+}
+
+type Replay = Awaited<ReturnType<typeof verifyReplay>>;
+
+/**
+ * Баланси кожного користувача з replay, без коду settlement: genesis плюс угоди за ціною
+ * виконання, а в резерві — лише залишки заявок у книзі (продаж — base, купівля — ліміт × залишок).
+ * Проводки й звірка рахують суми спільним `PostingBuilder`, тож помилку в ньому бачить лише це.
+ */
+async function verifyBalances(ledger: Client, workload: Order[], replay: Replay) {
+  const users = [...new Set(workload.map(({ auth }) => subject(auth)))];
+  const expected = new Map<string, bigint>();
+  const add = (user: string, asset: string, kind: string, amount: bigint) => {
+    const key = `${user}:${asset}:${kind}`;
+    expected.set(key, (expected.get(key) ?? 0n) + amount);
+  };
+  for (const user of users) {
+    add(user, 'ABC', 'available', units('1000', 8));
+    add(user, 'USD', 'available', units('100000', 10));
+    add(user, 'ABC', 'reserved', 0n);
+    add(user, 'USD', 'reserved', 0n);
+  }
+  // Стек міг уже торгувати XYZ: ці угоди й заявки до рахунків ABC/USD цього навантаження не належать.
+  const orders = replay.abcOrders;
+  const owners = new Map(orders.map((order) => [order.id, order.ownerId]));
+  const trades = replay.trades.filter(({ instrument }) => instrument === 'ABC');
+  for (const { buyOrderId, sellOrderId, price, quantity } of trades) {
+    const [buyer, seller] = [owners.get(buyOrderId)!, owners.get(sellOrderId)!];
+    add(buyer, 'ABC', 'available', quantity);
+    add(seller, 'ABC', 'available', -quantity);
+    add(buyer, 'USD', 'available', -price * quantity);
+    add(seller, 'USD', 'available', price * quantity);
+  }
+  for (const order of orders) {
+    if (order.status !== 'open' && order.status !== 'partially_filled') continue;
+    const [asset, amount] =
+      order.side === 'sell' ? ['ABC', order.remaining] : ['USD', order.remaining * order.price];
+    add(order.ownerId, asset, 'reserved', amount);
+    add(order.ownerId, asset, 'available', -amount);
+  }
+  const { rows } = await ledger.query<{
+    user_id: string;
+    asset: string;
+    kind: string;
+    balance: string;
+  }>(
+    `SELECT user_id, asset, kind, balance::text FROM accounts
+     WHERE user_id = ANY($1::uuid[]) AND asset IN ('ABC','USD') AND kind IN ('available','reserved')`,
+    [users],
+  );
+  const actual = new Map(
+    rows.map((row) => [`${row.user_id}:${row.asset}:${row.kind}`, BigInt(row.balance)]),
+  );
+  const sorted = (map: Map<string, bigint>) =>
+    [...map].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`);
+  assert.deepEqual(sorted(actual), sorted(expected), 'Ledger balances differ from the replay');
+  console.log(`balances users=${users.length} accounts=${rows.length} replay=match`);
 }

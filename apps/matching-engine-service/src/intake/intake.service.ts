@@ -247,11 +247,13 @@ export class IntakeService {
     payload: object,
     traceparent?: string,
   ) {
+    // Час береться після блокування лічильника, а не на початку транзакції (`now()`): інакше
+    // заявка, що чекала на seq, мала б раніший час за попередню, а її угода — раніший за maker.
     const [command] = await db.query(
       `WITH s AS (
       UPDATE instruments SET next_seq=next_seq+1 WHERE symbol=$1 RETURNING next_seq
-    ) INSERT INTO order_commands (instrument,seq,type,order_id,user_id,payload,traceparent)
-      SELECT $1,s.next_seq,$2,$3,$4,$5,$6 FROM s RETURNING seq,accepted_at`,
+    ) INSERT INTO order_commands (instrument,seq,type,order_id,user_id,payload,traceparent,accepted_at)
+      SELECT $1,s.next_seq,$2,$3,$4,$5,$6,clock_timestamp() FROM s RETURNING seq,accepted_at`,
       [instrument, type, orderId, userId, payload, traceparent ?? null],
     );
     await db.query("SELECT pg_notify('engine_commands',$1)", [instrument]);

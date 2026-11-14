@@ -16,26 +16,63 @@ async function main() {
   const rotate = () => auth('refresh', { refreshToken: first.refreshToken });
   const rotated = await rotate();
   assert.equal(rotated.status, 200);
+  const second = (await rotated.json()) as { accessToken: string };
   const grace = await rotate();
   assert.equal(grace.status, 200);
   const late = (await grace.json()) as { accessToken: string };
-  assert.equal(
-    (await request('/wallets', 'GET', late.accessToken, undefined, settlement)).status,
-    200,
-  );
+  // Logout відкликає сесію, а не один токен: перевіряємо кожен виданий access.
+  const tokens = { first: first.accessToken, rotated: second.accessToken, late: late.accessToken };
+  for (const [name, accessToken] of Object.entries(tokens)) {
+    const wallet = await request('/wallets', 'GET', accessToken, undefined, settlement);
+    assert.equal(wallet.status, 200, name);
+  }
+  // Сокет, відкритий до виходу, має закрити сервер, а не лише нове підключення.
+  const open = io(engine + '/private', {
+    transports: ['websocket'],
+    reconnection: false,
+    auth: { token: first.accessToken },
+  });
+  let closeMs: number;
+  // Сокет закривається за будь-якого результату: інакше він тримав би процес до `exp` токена.
+  try {
+    const closed = new Promise<number>((resolve) =>
+      open.once('disconnect', () => resolve(performance.now())),
+    );
+    await new Promise<void>((resolve, reject) => {
+      open.once('connect', () => resolve());
+      open.once('connect_error', reject);
+    });
 
-  const logout = await request('/api/auth/logout', 'POST', undefined, {}, frontend, {
-    origin: frontend,
-    cookie: 'exchange_refresh=' + first.refreshToken,
-  });
-  assert.equal(logout.status, 204);
-  assert.equal((await rotate()).status, 401);
-  const wallet = await request('/wallets', 'GET', late.accessToken, undefined, settlement);
-  assert.equal(wallet.status, 401);
-  const orders = await request('/api/engine/orders', 'GET', undefined, undefined, frontend, {
-    cookie: 'exchange_access=' + late.accessToken,
-  });
-  assert.equal(orders.status, 401);
+    // Звірка сесій може закрити сокет ще до того, як клієнт отримає 204: час рахуємо від запиту.
+    const loggedOut = performance.now();
+    const logout = await request('/api/auth/logout', 'POST', undefined, {}, frontend, {
+      origin: frontend,
+      cookie: 'exchange_refresh=' + first.refreshToken,
+    });
+    assert.equal(logout.status, 204);
+    assert.equal((await rotate()).status, 401);
+    for (const [name, accessToken] of Object.entries(tokens)) {
+      const wallet = await request('/wallets', 'GET', accessToken, undefined, settlement);
+      assert.equal(wallet.status, 401, name);
+      const engineOrders = await request('/orders', 'GET', accessToken);
+      assert.equal(engineOrders.status, 401, name);
+      const orders = await request('/api/engine/orders', 'GET', undefined, undefined, frontend, {
+        cookie: 'exchange_access=' + accessToken,
+      });
+      assert.equal(orders.status, 401, name);
+    }
+    // README обіцяє закриття не пізніше ніж за 13 с після відкликання.
+    let timer: NodeJS.Timeout | undefined;
+    const closedAt = await Promise.race([
+      closed,
+      new Promise<undefined>((resolve) => (timer = setTimeout(resolve, 15000, undefined))),
+    ]).finally(() => clearTimeout(timer));
+    assert(closedAt !== undefined, 'The open private socket stayed connected after logout');
+    closeMs = Math.round(closedAt - loggedOut);
+    assert(closeMs >= 0 && closeMs <= 13000, `The open private socket closed after ${closeMs}ms`);
+  } finally {
+    open.disconnect();
+  }
 
   const socket = io(engine + '/private', {
     transports: ['websocket'],
@@ -52,7 +89,7 @@ async function main() {
     socket.disconnect();
   }
   console.log(
-    'loggedOut=204 lateRefresh=401 settlementWallet=401 frontendOrders=401 privateWs=UNAUTHORIZED',
+    `loggedOut=204 lateRefresh=401 tokens=3 settlementWallet=401 engineOrders=401 frontendOrders=401 privateWs=UNAUTHORIZED openSocketClosedMs=${closeMs}`,
   );
 }
 

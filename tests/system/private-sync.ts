@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { io, Socket } from 'socket.io-client';
-import { engine, request, submit, token, until, waitReady } from './helpers';
+import { readActiveOrders } from '../../apps/frontend/lib/active-orders';
+import { cancelOrder, cleanup, engine, request, submit, token, until, waitReady } from './helpers';
 
 const instrument = 'XYZ';
 const ACTIVE = 60;
@@ -13,22 +14,6 @@ async function page(accessToken: string, query: string): Promise<Order[]> {
   const response = await request(`/orders?${query}`, 'GET', accessToken);
   assert.equal(response.status, 200, await response.clone().text());
   return (await response.json()) as Order[];
-}
-
-/** Усі активні заявки сторінками за курсором, як це описує README. */
-async function allActive(accessToken: string, limit: number): Promise<Order[]> {
-  const orders: Order[] = [];
-  let cursor = '';
-  for (;;) {
-    const rows = await page(accessToken, `status=active&limit=${limit}${cursor}`);
-    if (rows.length === 0) return orders;
-    orders.push(...rows);
-    const last = rows[rows.length - 1];
-    const key = Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString(
-      'base64url',
-    );
-    cursor = `&cursor=${key}`;
-  }
 }
 
 async function main() {
@@ -48,6 +33,8 @@ async function main() {
     socket.once('connect_error', reject);
   });
   const placed: string[] = [];
+  let taken: string | undefined;
+  let failure: unknown;
   try {
     // 60 активних заявок далеко від ринку: вони не зіставляються й не заважають іншим сценаріям.
     const sell = async (price: number) => {
@@ -62,8 +49,15 @@ async function main() {
       placed.push(order.id);
       return order.id;
     };
-    for (let batch = 0; batch < ACTIVE; batch += 10)
-      await Promise.all(Array.from({ length: 10 }, (_, i) => sell(500 + batch + i)));
+    for (let batch = 0; batch < ACTIVE; batch += 10) {
+      // Дочікуємось усіх у пачці: інакше заявка, прийнята після першої відмови, не потрапила б
+      // у прибирання.
+      const results = await Promise.allSettled(
+        Array.from({ length: 10 }, (_, i) => sell(500 + batch + i)),
+      );
+      const rejected = results.find((result) => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+    }
     // Заявка, що стане `filled`, поки клієнт без зв'язку.
     const raced = await sell(400);
     const taking = await submit(buyer, {
@@ -73,6 +67,7 @@ async function main() {
       quantity: '0.1',
     });
     assert([200, 201, 202].includes(taking.status), await taking.clone().text());
+    taken = ((await taking.clone().json()) as { order: { id: string } }).order.id;
 
     await until(
       async () => updates.filter(({ status }) => status === 'open').length,
@@ -98,8 +93,9 @@ async function main() {
     for (const { orderId, status } of buffered) if (!naive.has(orderId)) naive.set(orderId, status);
     assert.equal(naive.get(raced), 'open', 'The old recipe revives a filled order');
 
-    // Рецепт README: усі сторінки (малий ліміт змушує брати кілька), потім відсутні за ID.
-    const pages = await allActive(owner, 25);
+    // Рецепт README тим самим кодом, що й термінал: усі сторінки (малий ліміт змушує брати
+    // кілька), потім відсутні за ID.
+    const pages = await readActiveOrders((query) => page(owner, query), 25);
     assert.equal(pages.length, ACTIVE);
     assert.equal(new Set(pages.map(({ id }) => id)).size, ACTIVE, 'Pages must not repeat orders');
     const state = new Map(pages.map((order) => [order.id, order]));
@@ -121,9 +117,17 @@ async function main() {
     console.log(
       `private sync active=${ACTIVE} singlePage=${single.length} pages=3 raced=filled oldRecipe=revived`,
     );
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    socket.disconnect();
-    for (const id of placed) await request(`/orders/${id}`, 'DELETE', owner).then((r) => r.text());
+    // Залишки на XYZ зачепили б `wallet:push` у наступному прогоні, тож скасування перевіряємо.
+    await cleanup(
+      failure,
+      () => socket.disconnect(),
+      ...placed.map((id) => () => cancelOrder(owner, id)),
+      () => taken && cancelOrder(buyer, taken),
+    );
   }
 }
 
