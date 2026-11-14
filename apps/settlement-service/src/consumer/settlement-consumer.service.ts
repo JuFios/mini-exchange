@@ -178,7 +178,8 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
       BATCH_SIZE,
     )) as [string, Entry[], string[]?];
     this.cursors.set(stream, cursor);
-    // Redis 7 сам прибирає з PEL записи, обрізані XTRIM; їхній payload втрачено, звірка покаже пропуск.
+    // XTRIM не змінює PEL: XAUTOCLAIM у Redis 7 сам прибирає з нього записи, яких уже немає в
+    // stream. Їхній payload втрачено, звірка покаже пропуск.
     if (deleted?.length) {
       this.stats.trimmedPending += deleted.length;
       this.logger.error({ alert: 'settlement_trimmed_pending', stream, count: deleted.length });
