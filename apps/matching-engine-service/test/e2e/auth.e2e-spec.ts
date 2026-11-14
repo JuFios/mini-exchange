@@ -153,6 +153,34 @@ it('seeds an admin, reserves the address and preserves its password on restart',
   expect((await post('refresh', { refreshToken: ordinary.tokens.accessToken })).status).toBe(401);
 });
 
+it('drops the admin role of issued tokens once the address leaves ADMIN_EMAILS', async () => {
+  const email = process.env.ADMIN_EMAILS!;
+  const login = await post('login', { email, password: process.env.ADMIN_PASSWORD! });
+  expect(login.status).toBe(201);
+  const { accessToken } = (await login.json()) as Tokens;
+  const internal = { 'x-internal-token': process.env.INTERNAL_API_TOKEN! };
+  const adminRoutes = async () => [
+    (await request('/admin/instruments', 'GET', accessToken)).status,
+    (await request('/admin/outbox/redrive', 'POST', accessToken, { tradeIds: [randomUUID()] }))
+      .status,
+  ];
+  // Цим маршрутом settlement перевіряє роль: у нього немає власного ADMIN_EMAILS.
+  const internalCheck = async (path: string) =>
+    (await request(`/internal/auth/${path}`, 'GET', accessToken, undefined, internal)).status;
+  expect(await adminRoutes()).toEqual([200, 200]);
+
+  await restart({ ADMIN_EMAILS: [`other-${randomUUID()}@demo.local`] });
+  expect(await adminRoutes()).toEqual([403, 403]);
+  expect(await internalCheck('admin')).toBe(403);
+  // Сесія лишається дійсною: зникає лише роль.
+  expect((await request('/orders', 'GET', accessToken)).status).toBe(200);
+  expect(await internalCheck('session')).toBe(204);
+
+  await restart();
+  expect(await adminRoutes()).toEqual([200, 200]);
+  expect(await internalCheck('admin')).toBe(204);
+});
+
 it('treats addresses that differ only in letter case as one account', async () => {
   const email = `Case-${randomUUID()}@Example.test`;
   const { credentials } = await registerAccount(email);
