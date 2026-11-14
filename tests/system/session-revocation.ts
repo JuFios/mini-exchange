@@ -32,41 +32,47 @@ async function main() {
     reconnection: false,
     auth: { token: first.accessToken },
   });
-  const closed = new Promise<number>((resolve) =>
-    open.once('disconnect', () => resolve(performance.now())),
-  );
-  await new Promise<void>((resolve, reject) => {
-    open.once('connect', () => resolve());
-    open.once('connect_error', reject);
-  });
-
-  // Звірка сесій може закрити сокет ще до того, як клієнт отримає 204: час рахуємо від запиту.
-  const loggedOut = performance.now();
-  const logout = await request('/api/auth/logout', 'POST', undefined, {}, frontend, {
-    origin: frontend,
-    cookie: 'exchange_refresh=' + first.refreshToken,
-  });
-  assert.equal(logout.status, 204);
-  assert.equal((await rotate()).status, 401);
-  for (const [name, accessToken] of Object.entries(tokens)) {
-    const wallet = await request('/wallets', 'GET', accessToken, undefined, settlement);
-    assert.equal(wallet.status, 401, name);
-    const engineOrders = await request('/orders', 'GET', accessToken);
-    assert.equal(engineOrders.status, 401, name);
-    const orders = await request('/api/engine/orders', 'GET', undefined, undefined, frontend, {
-      cookie: 'exchange_access=' + accessToken,
+  let closeMs: number;
+  // Сокет закривається за будь-якого результату: інакше він тримав би процес до `exp` токена.
+  try {
+    const closed = new Promise<number>((resolve) =>
+      open.once('disconnect', () => resolve(performance.now())),
+    );
+    await new Promise<void>((resolve, reject) => {
+      open.once('connect', () => resolve());
+      open.once('connect_error', reject);
     });
-    assert.equal(orders.status, 401, name);
+
+    // Звірка сесій може закрити сокет ще до того, як клієнт отримає 204: час рахуємо від запиту.
+    const loggedOut = performance.now();
+    const logout = await request('/api/auth/logout', 'POST', undefined, {}, frontend, {
+      origin: frontend,
+      cookie: 'exchange_refresh=' + first.refreshToken,
+    });
+    assert.equal(logout.status, 204);
+    assert.equal((await rotate()).status, 401);
+    for (const [name, accessToken] of Object.entries(tokens)) {
+      const wallet = await request('/wallets', 'GET', accessToken, undefined, settlement);
+      assert.equal(wallet.status, 401, name);
+      const engineOrders = await request('/orders', 'GET', accessToken);
+      assert.equal(engineOrders.status, 401, name);
+      const orders = await request('/api/engine/orders', 'GET', undefined, undefined, frontend, {
+        cookie: 'exchange_access=' + accessToken,
+      });
+      assert.equal(orders.status, 401, name);
+    }
+    // README обіцяє закриття не пізніше ніж за 13 с після відкликання.
+    let timer: NodeJS.Timeout | undefined;
+    const closedAt = await Promise.race([
+      closed,
+      new Promise<undefined>((resolve) => (timer = setTimeout(resolve, 15000, undefined))),
+    ]).finally(() => clearTimeout(timer));
+    assert(closedAt !== undefined, 'The open private socket stayed connected after logout');
+    closeMs = Math.round(closedAt - loggedOut);
+    assert(closeMs >= 0 && closeMs <= 13000, `The open private socket closed after ${closeMs}ms`);
+  } finally {
+    open.disconnect();
   }
-  // README обіцяє закриття не пізніше ніж за 13 с після відкликання.
-  const closedAt = await Promise.race([
-    closed,
-    new Promise<undefined>((resolve) => setTimeout(resolve, 15000, undefined)),
-  ]);
-  open.disconnect();
-  assert(closedAt !== undefined, 'The open private socket stayed connected after logout');
-  const closeMs = Math.round(closedAt - loggedOut);
-  assert(closeMs >= 0 && closeMs <= 13000, `The open private socket closed after ${closeMs}ms`);
 
   const socket = io(engine + '/private', {
     transports: ['websocket'],

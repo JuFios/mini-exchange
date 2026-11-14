@@ -137,6 +137,38 @@ export async function submit(
   throw new Error(`Order retry deadline exceeded for ${key}`);
 }
 
+/**
+ * Виконує всі кроки прибирання, навіть якщо якийсь упав. Без первинної помилки збій кроку валить
+ * прогін (залишки помітять); з нею лише друкується, щоб не підмінити справжню причину.
+ */
+export async function cleanup(failure: unknown, ...steps: (() => unknown)[]): Promise<void> {
+  const problems: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      problems.push(error);
+    }
+  }
+  if (!problems.length) return;
+  if (failure !== undefined) {
+    for (const problem of problems) console.error('Cleanup failed:', problem);
+    return;
+  }
+  throw problems.length === 1 ? problems[0] : new AggregateError(problems, 'Cleanup failed');
+}
+
+/** Скасовує заявку. Виконана (409 `ORDER_ALREADY_FILLED`) теж годиться: залишку в неї немає. */
+export async function cancelOrder(accessToken: string, id: string) {
+  const response = await request(`/orders/${id}`, 'DELETE', accessToken);
+  const body = await response.text();
+  const filled = response.status === 409 && body.includes('ORDER_ALREADY_FILLED');
+  assert(
+    [200, 202].includes(response.status) || filled,
+    `Cancel ${id}: ${response.status} ${body}`,
+  );
+}
+
 export async function token(path: string, email: string, password: string) {
   const response = await request(`/auth/${path}`, 'POST', undefined, { email, password });
   assert.equal(response.status, 201, await response.clone().text());

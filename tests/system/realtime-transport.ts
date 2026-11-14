@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { io } from 'socket.io-client';
 import { randomUUID } from 'node:crypto';
-import { database, request, submit, token, until, waitReady } from './helpers';
+import {
+  cancelOrder,
+  cleanup,
+  database,
+  request,
+  submit,
+  token,
+  until,
+  waitReady,
+} from './helpers';
 
 const balancer = 'http://engine-lb:3001';
 
@@ -14,16 +23,20 @@ function subscribeThroughBalancer(): Promise<string> {
     reconnection: false,
     timeout: 5000,
   });
+  let timer: NodeJS.Timeout | undefined;
   return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('No acknowledgement in 10 s')), 10000);
+    timer = setTimeout(() => reject(new Error('No acknowledgement in 10 s')), 10000);
     socket.once('connect_error', reject);
     socket.once('connect', () =>
-      socket.emit('book.subscribe', { instrument: 'ABC' }, (ack: { instance?: string }) => {
-        clearTimeout(timer);
-        resolve(String(ack.instance));
-      }),
+      socket.emit('book.subscribe', { instrument: 'ABC' }, (ack: { instance?: string }) =>
+        resolve(String(ack.instance)),
+      ),
     );
-  }).finally(() => socket.disconnect());
+  }).finally(() => {
+    // Таймер не тримає процес після відмови підключення.
+    clearTimeout(timer);
+    socket.disconnect();
+  });
 }
 
 /** Завислу репліку LB обходить: жодне підключення не потрапляє на неї й не зазнає відмови. */
@@ -33,6 +46,7 @@ async function routesAroundStaleReplica() {
   const stale = 'http://matching-engine-2:3001';
   const chaos = (point: string) => request('/admin/chaos', 'POST', admin, { point }, stale);
   let restingOrderId: string | undefined;
+  let failure: unknown;
   try {
     assert.equal((await chaos('freeze_stream_reader')).status, 201);
     const accepted = await submit(seller, {
@@ -52,11 +66,17 @@ async function routesAroundStaleReplica() {
     for (let attempt = 0; attempt < 20; attempt++) instances.add(await subscribeThroughBalancer());
     assert.deepEqual([...instances], ['engine-1'], 'Only the healthy replica may accept clients');
     console.log('stale replica bypassed by the load balancer connects=20 instance=engine-1: PASS');
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await chaos('unfreeze_stream_reader');
-    await waitReady('matching-engine-2');
-    // Заявка не повинна лишатися на ABC для наступних сценаріїв.
-    if (restingOrderId) await request(`/orders/${restingOrderId}`, 'DELETE', seller);
+    await cleanup(
+      failure,
+      async () => assert.equal((await chaos('unfreeze_stream_reader')).status, 201),
+      () => waitReady('matching-engine-2'),
+      // Заявка не повинна лишатися на ABC для наступних сценаріїв.
+      () => restingOrderId && cancelOrder(seller, restingOrderId),
+    );
   }
 }
 
@@ -162,17 +182,12 @@ async function main() {
     failure = error;
     throw error;
   } finally {
-    // Заявка не повинна лишатися на ABC для наступних сценаріїв.
-    if (maker) {
-      const cancel = await request(`/orders/${maker.orderId}`, 'DELETE', maker.token);
-      const problem = [200, 202].includes(cancel.status)
-        ? undefined
-        : `Cancel ${maker.orderId}: ${cancel.status} ${await cancel.text()}`;
-      // Збій прибирання не ховає первинну помилку сценарію.
-      if (problem && failure) console.error(problem);
-      else assert.equal(problem, undefined, problem);
-    }
-    await db.end();
+    await cleanup(
+      failure,
+      // Заявка не повинна лишатися на ABC для наступних сценаріїв.
+      () => maker && cancelOrder(maker.token, maker.orderId),
+      () => db.end(),
+    );
   }
 }
 void main().catch((error) => {

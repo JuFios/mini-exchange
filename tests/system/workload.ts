@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import { database, request, submit, token, units, until, verifyReplay, waitReady } from './helpers';
+import {
+  cleanup,
+  database,
+  request,
+  submit,
+  token,
+  units,
+  until,
+  verifyReplay,
+  waitReady,
+} from './helpers';
 
 export const SEED = 20261105;
 export const ORDER_COUNT = 400;
@@ -36,6 +46,7 @@ export async function withFreshBook(test: (db: Client, ledger: Client) => Promis
     connectionTimeoutMillis: 3000,
     statement_timeout: 5000,
   });
+  let failure: unknown;
   try {
     await db.connect();
     const { rows } = await db.query('SELECT pg_try_advisory_lock(894215631024) AS acquired');
@@ -49,8 +60,15 @@ export async function withFreshBook(test: (db: Client, ledger: Client) => Promis
     } = await db.query("SELECT next_seq FROM instruments WHERE symbol='ABC'");
     assert.equal(instrument.next_seq, '0', 'ABC must have an empty command journal');
     await test(db, ledger);
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await Promise.all([db.end(), ledger.end()]);
+    await cleanup(
+      failure,
+      () => db.end(),
+      () => ledger.end(),
+    );
   }
 }
 

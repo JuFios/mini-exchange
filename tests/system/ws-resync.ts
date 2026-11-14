@@ -7,7 +7,7 @@ import {
   type BookStatus,
   type SocketLike,
 } from '../../apps/frontend/lib/book-session';
-import { container, docker, engine, request, submit, until, waitReady } from './helpers';
+import { cleanup, container, docker, engine, request, submit, until, waitReady } from './helpers';
 import { adminToken, owner, testUser, withFreshBook } from './workload';
 
 async function restBook(): Promise<BookState> {
@@ -137,6 +137,7 @@ void withFreshBook(async (db) => {
     assert.deepEqual(book, await restBook());
     assert(instance === 'engine-1' || instance === 'engine-2');
   }
+  let failure: unknown;
   try {
     socket.connect();
     await checkLive('0', 0, 0, 'loading');
@@ -268,10 +269,16 @@ void withFreshBook(async (db) => {
         `ws=middle-delta-loss seq=94 snapshots=1 heartbeatsBeforeStale=${stale.beats - beats}`,
       );
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    stop();
-    if (frozenService) await chaos(frozenService, 'unfreeze_stream_reader');
-    if (stoppedReplica) docker('start', stoppedReplica);
+    await cleanup(
+      failure,
+      stop,
+      () => frozenService && chaos(frozenService, 'unfreeze_stream_reader'),
+      () => stoppedReplica && docker('start', stoppedReplica),
+    );
   }
 }).catch((error) => {
   console.error(error);

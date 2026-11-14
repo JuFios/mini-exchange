@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { docker, request, until } from './helpers';
+import { cleanup, docker, request, until } from './helpers';
 
 const [project, starterImage, fixedImage] = process.argv.slice(2);
 const network = `${project}_default`;
@@ -80,6 +80,7 @@ async function lockScenario(image: string, variant: 'starter' | 'fixed') {
     String(TTL_MS),
     String(RENEW_MS),
   );
+  let failure: unknown;
   try {
     await until(
       async () => docker('logs', owner),
@@ -139,13 +140,21 @@ async function lockScenario(image: string, variant: 'starter' | 'fixed') {
         `baseline=fixed-lock attempts=${attempts} takeoverMs=${takeoverMs} ttlMs=${TTL_MS}`,
       );
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    try {
-      docker('rm', '-f', contender);
-    } catch {
-      // Претендента ще не створено.
-    }
-    docker('exec', redis, 'redis-cli', 'DEL', key);
+    await cleanup(
+      failure,
+      () => {
+        try {
+          docker('rm', '-f', contender);
+        } catch {
+          // Претендента ще не створено.
+        }
+      },
+      () => docker('exec', redis, 'redis-cli', 'DEL', key),
+    );
   }
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { io, Socket } from 'socket.io-client';
 import { readActiveOrders } from '../../apps/frontend/lib/active-orders';
-import { engine, request, submit, token, until, waitReady } from './helpers';
+import { cancelOrder, cleanup, engine, request, submit, token, until, waitReady } from './helpers';
 
 const instrument = 'XYZ';
 const ACTIVE = 60;
@@ -49,8 +49,15 @@ async function main() {
       placed.push(order.id);
       return order.id;
     };
-    for (let batch = 0; batch < ACTIVE; batch += 10)
-      await Promise.all(Array.from({ length: 10 }, (_, i) => sell(500 + batch + i)));
+    for (let batch = 0; batch < ACTIVE; batch += 10) {
+      // Дочікуємось усіх у пачці: інакше заявка, прийнята після першої відмови, не потрапила б
+      // у прибирання.
+      const results = await Promise.allSettled(
+        Array.from({ length: 10 }, (_, i) => sell(500 + batch + i)),
+      );
+      const rejected = results.find((result) => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+    }
     // Заявка, що стане `filled`, поки клієнт без зв'язку.
     const raced = await sell(400);
     const taking = await submit(buyer, {
@@ -114,24 +121,13 @@ async function main() {
     failure = error;
     throw error;
   } finally {
-    socket.disconnect();
     // Залишки на XYZ зачепили б `wallet:push` у наступному прогоні, тож скасування перевіряємо.
-    const problems: string[] = [];
-    const orders = [
-      ...placed.map((id) => ({ id, auth: owner })),
-      ...(taken ? [{ id: taken, auth: buyer }] : []),
-    ];
-    for (const { id, auth } of orders) {
-      const cancel = await request(`/orders/${id}`, 'DELETE', auth);
-      const body = await cancel.text();
-      // Виконану заявку скасувати не можна, і залишку в неї немає.
-      const filled = cancel.status === 409 && body.includes('ORDER_ALREADY_FILLED');
-      if (![200, 202].includes(cancel.status) && !filled)
-        problems.push(`Cancel ${id}: ${cancel.status} ${body}`);
-    }
-    // Збій прибирання не ховає первинну помилку сценарію.
-    if (problems.length && failure) console.error(problems.join('\n'));
-    else assert.equal(problems.length, 0, problems.join('\n'));
+    await cleanup(
+      failure,
+      () => socket.disconnect(),
+      ...placed.map((id) => () => cancelOrder(owner, id)),
+      () => taken && cancelOrder(buyer, taken),
+    );
   }
 }
 

@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { container, database, docker, request, submit, token, until, waitReady } from './helpers';
+import {
+  cleanup,
+  container,
+  database,
+  docker,
+  request,
+  submit,
+  token,
+  until,
+  waitReady,
+} from './helpers';
 
 const settlement = 'http://settlement-service:3002';
 const stream = 'exchange:settlement:{ABC}';
@@ -13,10 +23,12 @@ type Report = {
 };
 
 async function main() {
+  // Пошук контейнера може впасти: тоді з'єднання з БД ще не відкрите.
+  const settlementContainer = container('settlement-service');
   const db = database();
   await db.connect();
-  const settlementContainer = container('settlement-service');
   let ownerContainer: string | undefined;
+  let failure: unknown;
   try {
     for (const service of ['matching-engine-1', 'matching-engine-2']) {
       const id = container(service);
@@ -355,13 +367,19 @@ async function main() {
     console.log(
       `redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched} orderId=${orderId} stuck_reservation->ok partialOrderId=${partialId} orders-only=stuck orders+trades->ok`,
     );
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     // Контейнери не лишаються на паузі, якщо перевірка впала посередині.
-    for (const id of [settlementContainer, ownerContainer]) {
-      if (id && docker('inspect', '--format', '{{.State.Paused}}', id) === 'true')
-        docker('unpause', id);
-    }
-    await db.end();
+    await cleanup(
+      failure,
+      ...[settlementContainer, ownerContainer].map((id) => () => {
+        if (id && docker('inspect', '--format', '{{.State.Paused}}', id) === 'true')
+          docker('unpause', id);
+      }),
+      () => db.end(),
+    );
   }
 }
 
