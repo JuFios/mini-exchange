@@ -26,6 +26,9 @@ docker compose config --format json | jq -e '
   (["exchange-db","settlement-service"] | all(. as $name | $s[$name].ports | length == 1 and .[0].host_ip == "127.0.0.1")) and
   ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == "127.0.0.1") and (map(.target) | sort == [3000,3001])) and
   ($s["engine-lb"].depends_on.frontend.condition == "service_healthy") and
+  # CORS у відповідях nginx має збігатися з CORS engine.
+  (["matching-engine-1","matching-engine-2"] | all(. as $name |
+    $s[$name].environment.CORS_ORIGINS == $s["engine-lb"].environment.CORS_ORIGINS)) and
   (["frontend","postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
@@ -81,6 +84,10 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     ($s["settlement-service"].ports | length == 1 and .[0].host_ip == "127.0.0.1") and
     ($s["engine-lb"].ports | length == 2 and all(.[]; .host_ip == "127.0.0.1") and (map(.target) | sort == [3000,3001])) and
     ($s["engine-lb"].environment.TRUSTED_TLS_PROXY_IP == $ENV.TRUSTED_TLS_PROXY_IP) and
+    (["matching-engine-1","matching-engine-2"] | all(. as $name |
+      $s[$name].environment.CORS_ORIGINS == $s["engine-lb"].environment.CORS_ORIGINS)) and
+    ($s["engine-lb"].environment.CORS_ORIGINS == $ENV.CORS_ORIGINS) and
+    ("CORS_ORIGINS" | test($s["engine-lb"].environment.NGINX_ENVSUBST_FILTER)) and
     (["matching-engine-1","matching-engine-2"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     (($s.frontend.ports // []) | length == 0) and
     ($s.frontend.environment.COOKIE_SECURE == "true") and
