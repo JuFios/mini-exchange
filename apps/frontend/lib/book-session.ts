@@ -109,6 +109,8 @@ export function startBookSession(
   let status: BookStatus = 'reconnecting';
   let book: BookState | undefined;
   let heartbeat: bigint | undefined;
+  // `seq` книги в момент попереднього heartbeat.
+  let heartbeatFloor: bigint | undefined;
   const buffered = new Map<bigint, Change[]>();
   let retry: unknown;
   let waiting: unknown;
@@ -174,7 +176,8 @@ export function startBookSession(
         bids: reply.snapshot.bids.slice(0, 50).map(projectLevel),
         asks: reply.snapshot.asks.slice(0, 50).map(projectLevel),
       };
-      if (book && BigInt(next.seq) < BigInt(book.seq)) return failSnapshot();
+      // Snapshot читається з PostgreSQL уже після кожної отриманої delta. Менший `seq` можливий
+      // лише після скидання історії (`down -v`, відновлення з копії): тоді він і є поточною книгою.
       const pending = [...buffered.keys()].sort((a, b) => (a < b ? -1 : 1));
       for (const seq of pending) {
         const applied = BigInt(next.seq);
@@ -184,6 +187,7 @@ export function startBookSession(
 
       buffered.clear();
       heartbeat = undefined;
+      heartbeatFloor = undefined;
       reconnectDelay = RETRY_MIN_MS;
       failures = 0;
       book = next;
@@ -217,6 +221,7 @@ export function startBookSession(
     resyncPending = false;
     buffered.clear();
     heartbeat = undefined;
+    heartbeatFloor = undefined;
   }
 
   socket.on('connect', () => {
@@ -240,12 +245,16 @@ export function startBookSession(
       return;
     }
     const seq = BigInt(event.seq);
-    if (book && seq <= BigInt(book.seq)) return;
-    if (status === 'live' && book && seq === BigInt(book.seq) + 1n) {
-      book = apply(book, seq, event.changes);
-      view.onBook(book);
-      return;
+    if (status === 'live' && book) {
+      if (seq <= BigInt(book.seq)) return;
+      if (seq === BigInt(book.seq) + 1n) {
+        book = apply(book, seq, event.changes);
+        view.onBook(book);
+        return;
+      }
     }
+    // Поки snapshot не прийшов, старіші delta відсіює він сам: після скидання історії книга
+    // на екрані може бути попереду нової.
     buffered.set(seq, event.changes);
     if (status === 'live') recover();
   });
@@ -263,10 +272,20 @@ export function startBookSession(
       return recover();
     }
     if (status !== 'live' || !book) return;
-    if (!isSequence(event.seq) || (heartbeat !== undefined && heartbeat > BigInt(book.seq))) {
+    if (!isSequence(event.seq)) return recover();
+    const seq = BigInt(event.seq);
+    const applied = BigInt(book.seq);
+    // Попередній heartbeat випередив книгу: delta загубилась. Поточний відстає від книги
+    // на момент попереднього: репліка читає seq із PG уже після того heartbeat, а всі delta,
+    // що клієнт мав тоді, вже були закомічені. Отже, історію в PG скинуто.
+    if (
+      (heartbeat !== undefined && heartbeat > applied) ||
+      (heartbeatFloor !== undefined && seq < heartbeatFloor)
+    ) {
       return recover();
     }
-    heartbeat = BigInt(event.seq);
+    heartbeat = seq;
+    heartbeatFloor = applied;
     armHeartbeatTimeout();
   });
   socket.on('disconnect', (reason: string) => {

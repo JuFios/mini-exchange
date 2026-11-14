@@ -373,24 +373,41 @@ describe('recovery before the first snapshot on a connection', () => {
     assert.equal(clock.pending, 0);
   });
 
-  it('rejects an older recovery snapshot and keeps retrying until the visible sequence is reached', () => {
-    const { socket, clock, statuses, books } = start();
+  it('takes an older recovery snapshot as the book after the history was reset', () => {
+    const { socket, clock, statuses, books, snapshots } = start();
     socket.fire('connect');
     socket.accept(BOOK);
     socket.fire('disconnect', 'transport close');
     socket.fire('connect');
     exhaustAttempts(socket, clock);
     clock.tick(10_000);
-    socket.accept({ ...BOOK, seq: '9' });
-    assert.equal(statuses.at(-1), 'error');
-    assert.equal(books.at(-1)?.seq, '10');
-    clock.tick(10_000);
-    socket.accept({ ...BOOK, seq: '11' });
+    socket.accept({ ...BOOK, seq: '3', bids: [] });
     assert.equal(statuses.at(-1), 'live');
     assert.deepEqual(
       books.map(({ seq }) => seq),
-      ['10', '11'],
+      ['10', '3'],
     );
+    assert.deepEqual(books.at(-1)?.bids, []);
+    assert.equal(snapshots.length, 2);
+    clock.tick(10_000);
+    assert.equal(socket.subscribes, 8);
+  });
+
+  it('takes the first snapshot of a new connection even when it is behind the visible book', () => {
+    const { socket, statuses, books } = start();
+    socket.fire('connect');
+    socket.accept(BOOK);
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    // Після `docker compose down -v` нова історія починається з нуля.
+    socket.fire('book.delta', { instrument: 'ABC', seq: '1', changes: [] });
+    socket.accept({ ...BOOK, seq: '0', bids: [] });
+    assert.equal(statuses.at(-1), 'live');
+    assert.deepEqual(
+      books.map(({ seq }) => seq),
+      ['10', '1'],
+    );
+    assert.equal(socket.subscribes, 2);
   });
 
   it('coalesces resync signals during a slow retry before publishing the recovered book', () => {
@@ -735,6 +752,112 @@ describe('market book synchronization', () => {
     state.heartbeat(17);
     assert.deepEqual(state.statuses, ['loading', 'live']);
     assert.equal(state.socket.emitted.filter(({ event }) => event === 'book.subscribe').length, 1);
+  });
+
+  it('requests a snapshot when heartbeat falls behind the book of the previous heartbeat', () => {
+    const state = market(10);
+    state.heartbeat(10);
+    state.delta(11);
+    // PG читається після попереднього heartbeat, тож 11 там уже є: 10 означало б скидання.
+    state.heartbeat(11);
+    assert.equal(state.statuses.at(-1), 'live');
+    state.heartbeat(3);
+    assert.equal(state.statuses.at(-1), 'stale');
+    assert.equal(state.socket.subscribes, 2);
+    state.accept(3, [level(100)]);
+    assert.equal(state.statuses.at(-1), 'live');
+    assert.equal(state.books.at(-1)?.seq, '3');
+    assert.deepEqual(state.books.at(-1)?.asks, [level(100)]);
+  });
+
+  it('stays live when deltas overtake a heartbeat that was read before them', () => {
+    const state = market(10);
+    state.delta(11);
+    state.delta(12);
+    state.heartbeat(10);
+    state.delta(13);
+    state.heartbeat(12);
+    state.heartbeat(13);
+    assert.deepEqual(state.statuses, ['loading', 'live']);
+    assert.equal(state.socket.subscribes, 1);
+    state.heartbeat(12);
+    assert.equal(state.statuses.at(-1), 'stale');
+  });
+
+  it('does not apply buffered deltas across a gap after the snapshot', () => {
+    const { socket, clock, statuses, books } = start();
+    socket.fire('connect');
+    socket.fire('book.delta', { instrument: 'ABC', seq: '12', changes: [change(12)] });
+    socket.fire('book.delta', { instrument: 'ABC', seq: '13', changes: [change(13)] });
+    socket.accept({ ...BOOK, seq: '10' });
+    assert.equal(books.length, 0);
+    assert.notEqual(statuses.at(-1), 'live');
+    clock.tick(RETRY_MIN_MS);
+    assert.equal(socket.subscribes, 2);
+    socket.accept({ ...BOOK, seq: '11' });
+    assert.equal(statuses.at(-1), 'live');
+    assert.equal(books.at(-1)?.seq, '13');
+    assert.deepEqual(books.at(-1)?.asks, [level(12), level(13)]);
+  });
+
+  it('changes only the side named by each change and removes empty levels', () => {
+    const state = market(10, [level(101), level(102)]);
+    state.delta(11, [{ ...level(100), side: 'bid' }]);
+    assert.deepEqual(state.books.at(-1)?.bids, [level(100)]);
+    assert.deepEqual(state.books.at(-1)?.asks, [level(101), level(102)]);
+    state.delta(12, [{ ...level(101), side: 'bid' }]);
+    assert.deepEqual(state.books.at(-1)?.bids, [level(101), level(100)]);
+    assert.deepEqual(state.books.at(-1)?.asks, [level(101), level(102)]);
+    state.delta(13, [change(101, '0')]);
+    assert.deepEqual(state.books.at(-1)?.asks, [level(102)]);
+    state.delta(14, [{ ...change(102), orders: 0 }]);
+    assert.deepEqual(state.books.at(-1)?.asks, []);
+    state.delta(15, [{ ...level(101, '0'), side: 'bid' }]);
+    assert.deepEqual(state.books.at(-1)?.bids, [level(100)]);
+  });
+
+  it('keeps bids from the highest price and asks from the lowest after deltas', () => {
+    const state = market(10);
+    state.delta(11, [
+      { ...level(98), side: 'bid' },
+      { ...level(99.5), side: 'bid' },
+      { ...level(97), side: 'bid' },
+      change(103),
+      change(101.25),
+      change(102),
+    ]);
+    assert.deepEqual(
+      state.books.at(-1)?.bids.map(({ price }) => price),
+      ['99.50', '98.00', '97.00'],
+    );
+    assert.deepEqual(
+      state.books.at(-1)?.asks.map(({ price }) => price),
+      ['101.25', '102.00', '103.00'],
+    );
+  });
+
+  it('ignores events of another instrument', () => {
+    const state = market(10, [level(100)]);
+    const books = state.books.length;
+    state.socket.fire('book.delta', { instrument: 'XYZ', seq: '11', changes: [change(50)] });
+    state.socket.fire('book.delta', { instrument: 'XYZ', seq: '15', changes: [] });
+    state.socket.fire('book.delta', { instrument: 'XYZ', seq: 'bad', changes: [] });
+    state.socket.fire('book.heartbeat', { instrument: 'XYZ', seq: '20' });
+    state.socket.fire('book.heartbeat', { instrument: 'XYZ', seq: '20' });
+    state.socket.fire('book.resync', { instrument: 'XYZ' });
+    assert.equal(state.books.length, books);
+    assert.deepEqual(state.statuses, ['loading', 'live']);
+    assert.equal(state.socket.subscribes, 1);
+    state.delta(11, [change(101)]);
+    assert.deepEqual(state.books.at(-1)?.asks, [level(100), level(101)]);
+
+    state.clock.tick(8000);
+    assert.equal(state.statuses.at(-1), 'stale');
+    // Heartbeat іншого інструмента не знімає очікування свого.
+    state.socket.fire('book.heartbeat', { instrument: 'XYZ', seq: '11' });
+    assert.equal(state.socket.subscribes, 1);
+    state.heartbeat(11);
+    assert.equal(state.socket.subscribes, 2);
   });
 
   it('keeps the previous snapshot throughout reconnect', () => {
