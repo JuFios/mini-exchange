@@ -1,0 +1,6 @@
+# Origin запиту, якщо він є в `CORS_ORIGINS` engine; інакше порожньо. Compose передає nginx той
+# самий список, що й engine, тож відповіді, які формує сам nginx, мають ті самі CORS-заголовки.
+map "$http_origin,${CORS_ORIGINS}," $engine_cors_origin {
+  "~*^(?<cors_origin>[^,]+),(?:[^,]*,)*?[ \t]*\k<cors_origin>/?[ \t]*," $cors_origin;
+  default "";
+}
