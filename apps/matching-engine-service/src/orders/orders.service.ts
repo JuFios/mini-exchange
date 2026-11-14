@@ -204,7 +204,9 @@ export class OrdersService {
     }
     if (query.status === 'active')
       builder.andWhere("o.status IN ('pending','open','partially_filled')");
+    // Обидва фільтри йдуть індексом `orders_owner_status_idx` у порядку курсора.
     if (query.status === 'filled') builder.andWhere("o.status='filled'");
+    if (query.status === 'cancelled') builder.andWhere("o.status='cancelled'");
     if (query.cursor !== undefined) {
       try {
         const decoded = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8')) as {
