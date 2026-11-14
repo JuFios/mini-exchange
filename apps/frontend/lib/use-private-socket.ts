@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { type Clock, type SocketLike, realClock, RETRY_MIN_MS, RETRY_MAX_MS } from './book-session';
+import { readActiveOrders } from './active-orders';
 import { apiJson, ApiError, errorMessage } from './client-api';
 import { bindSession } from './session-binding';
 import { startWalletRefresh } from './wallet-refresh';
@@ -49,23 +50,8 @@ export function transient(error: unknown) {
   return error instanceof TypeError;
 }
 
-async function readActiveOrders(signal: AbortSignal) {
-  const orders: Order[] = [];
-  const query = '/api/engine/orders?status=active&limit=100';
-  let cursor = '';
-
-  for (;;) {
-    const page = await apiJson<Order[]>(query + (cursor ? '&cursor=' + cursor : ''), { signal });
-    const last = page.at(-1);
-    if (!last) return orders;
-    orders.push(...page);
-    const next = btoa(JSON.stringify({ createdAt: last.createdAt, id: last.id }))
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-    if (next === cursor) throw new Error('Order cursor did not advance');
-    cursor = next;
-  }
+function readActive(signal: AbortSignal) {
+  return readActiveOrders((query) => apiJson<Order[]>('/api/engine/orders?' + query, { signal }));
 }
 
 interface OrderRead {
@@ -168,7 +154,7 @@ export function startPrivateSocket(
 
   function load(signal: AbortSignal) {
     void Promise.all([
-      readActiveOrders(signal),
+      readActive(signal),
       apiJson<Order[]>('/api/engine/orders?status=filled&limit=100', { signal }),
       apiJson<Order[]>('/api/engine/orders?status=all&limit=100', { signal }),
       apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
