@@ -389,6 +389,138 @@ it('keeps cancelled orders that are older than the latest hundred orders', async
   );
 });
 
+it('finishes a snapshot that needs more order reads than the ingress allows at once', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  // Терміналу відомі 150 заявок, яких уже немає серед активних: кожну він дочитує за ID.
+  const known = Array.from({ length: 150 }, (_, i) => `known-${i}`);
+  // Двійник ліміту nginx: 100 читань заявок, далі 429, поки таймер не поверне квоту.
+  let quota = 100;
+  let inFlight = 0;
+  let peak = 0;
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (!path.startsWith('/api/engine/orders')) return Response.json([]);
+    if (quota === 0) return Response.json({ message: 'Забагато запитів' }, { status: 429 });
+    quota--;
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setImmediate(resolve));
+    inFlight--;
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    return Response.json({
+      id,
+      status: 'cancelled',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      version: 2,
+    });
+  });
+  const timers: (() => void)[] = [];
+  const errors: unknown[] = [];
+  let snapshot: { orders: { id: string }[] } | undefined;
+  const socket = new EventEmitter();
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: unknown) {
+        errors.push(error);
+      },
+      onSnapshot(value: { orders: { id: string }[] }) {
+        snapshot = value;
+      },
+      knownOrderIds: () => known,
+      onOrder() {},
+      onWallet() {},
+    },
+    {
+      setTimeout(callback: () => void) {
+        timers.push(callback);
+        return callback;
+      },
+      clearTimeout(handle: unknown) {
+        const index = timers.indexOf(handle as () => void);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  // Кожен крок — секунда: квота відновлюється, і спрацьовують відкладені повтори.
+  for (let second = 0; second < 20 && !snapshot; second++) {
+    for (let tick = 0; tick < 50; tick++) await new Promise((resolve) => setImmediate(resolve));
+    quota = Math.min(100, quota + 20);
+    for (const timer of timers.splice(0)) timer();
+  }
+  stop();
+  assert.ok(snapshot, `No snapshot after ${errors.length} failed loads`);
+  assert.deepEqual(snapshot.orders.map(({ id }) => id).sort(), [...known].sort());
+  // Дочитування за ID не відкриває 150 запитів одразу.
+  assert.ok(peak <= 8, `Peak of ${peak} parallel order reads`);
+});
+
+it('stops the remaining order reads of a snapshot attempt that already failed', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  const known = Array.from({ length: 40 }, (_, i) => `known-${i}`);
+  const reads: string[] = [];
+  mock.method(globalThis, 'fetch', async (path: string, options: RequestInit) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    reads.push(id);
+    // Перша заявка дає тимчасову помилку, решта відповідає не одразу.
+    if (id === 'known-0') return Response.json({ message: 'x' }, { status: 503 });
+    for (let tick = 0; tick < 5; tick++) await new Promise((resolve) => setImmediate(resolve));
+    options.signal?.throwIfAborted();
+    return Response.json({
+      id,
+      status: 'cancelled',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      version: 2,
+    });
+  });
+  const timers: (() => void)[] = [];
+  const errors: unknown[] = [];
+  const socket = new EventEmitter();
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: unknown) {
+        errors.push(error);
+      },
+      onSnapshot() {},
+      knownOrderIds: () => known,
+      onOrder() {},
+      onWallet() {},
+    },
+    {
+      setTimeout(callback: () => void) {
+        timers.push(callback);
+      },
+      clearTimeout() {},
+    },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  for (let tick = 0; tick < 200; tick++) await new Promise((resolve) => setImmediate(resolve));
+  stop();
+  assert.equal(errors.length, 1);
+  // Повтор знімка ще не почався, тож усі читання належать першій спробі.
+  assert.equal(timers.length, 1);
+  assert.ok(reads.length <= 8, `The failed attempt read ${reads.length} orders`);
+});
+
 it('keeps an order accepted with a short 202 instead of reporting a failure', () => {
   const { acceptedOrder } = require('../lib/private-state');
   const input = { instrument: 'ABC', side: 'buy', price: '100.00', quantity: '2.00000000' };
