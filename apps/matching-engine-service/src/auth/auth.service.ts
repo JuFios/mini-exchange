@@ -26,7 +26,8 @@ interface TokenPair {
 const BCRYPT_COST = 10;
 
 // Те саме, що `LOWER(... COLLATE "C")` у пошуку й індексі: змінюється лише латиниця ASCII.
-const asciiLowerCase = (email: string) => email.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+export const asciiLowerCase = (email: string) =>
+  email.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
 @Injectable()
 export class AuthService {

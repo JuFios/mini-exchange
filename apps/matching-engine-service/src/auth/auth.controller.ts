@@ -1,4 +1,6 @@
+import type { Request } from 'express';
 import { AuthRateGuard } from '../security/rate-limit.guards';
+import { RateLimits } from '../security/rate-limits';
 import {
   Body,
   Controller,
@@ -7,6 +9,8 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Req,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
@@ -18,7 +22,10 @@ import { Roles, RolesGuard } from './guards/roles.guard';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly limits: RateLimits,
+  ) {}
 
   @Post('register')
   @UseGuards(AuthRateGuard)
@@ -30,8 +37,18 @@ export class AuthController {
   @Post('login')
   @UseGuards(AuthRateGuard)
   @Header('Cache-Control', 'no-store')
-  login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
+  async login(@Body() dto: LoginDto, @Req() request: Request) {
+    const refund = await this.limits.loginAttempt(dto.email, request);
+    let wrongPassword = false;
+    try {
+      return await this.auth.login(dto);
+    } catch (error) {
+      wrongPassword = error instanceof UnauthorizedException;
+      throw error;
+    } finally {
+      // Успішний вхід і збій не через пароль (503 БД) спробою не вважаються.
+      if (!wrongPassword) await refund();
+    }
   }
 
   // Без IP-ліміту входу: користувачі за одним NAT вичерпували б його звичайними оновленнями,

@@ -60,7 +60,15 @@ export const settlementGroupLag = gauge(
   'stream',
 );
 
-for (const scope of ['auth', 'login_email', 'public', 'orders', 'orders_minute', 'ws_subscribe']) {
+for (const scope of [
+  'auth',
+  'login_email',
+  'login_email_total',
+  'public',
+  'orders',
+  'orders_minute',
+  'ws_subscribe',
+]) {
   rateLimited.inc({ scope }, 0);
 }
 ordersRejected.inc({ reason: 'internal' }, 0);

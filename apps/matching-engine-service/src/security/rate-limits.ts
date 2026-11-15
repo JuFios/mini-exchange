@@ -14,6 +14,7 @@ import type { Request, Response } from 'express';
 import { createHash } from 'node:crypto';
 import { rateLimited } from '../observability/metrics';
 import type { EngineEnv } from '../config/env.validation';
+import { asciiLowerCase } from '../auth/auth.service';
 
 class RateLimited extends HttpException {
   constructor(readonly retryAfter: number) {
@@ -32,7 +33,31 @@ export class RateLimitFilter implements ExceptionFilter {
   }
 }
 
-type Scope = 'auth' | 'login_email' | 'public' | 'orders' | 'orders_minute';
+interface Taken {
+  key: string;
+  window: number;
+}
+
+type Scope = 'auth' | 'login_email' | 'login_email_total' | 'public' | 'orders' | 'orders_minute';
+
+// Невдалі входи рахуються у фіксованому вікні від першої невдачі. Відхилена спроба не рахується
+// й не подовжує вікно, на відміну від скрипта бібліотеки: інакше потік відхилених запитів з
+// однієї адреси тримав би блок безстроково. Повертає {дозволено, мс до кінця вікна}.
+const LOGIN_ATTEMPT = `local hits = tonumber(redis.call('GET', KEYS[1]) or '0')
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl <= 0 then
+  redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
+  return {1, tonumber(ARGV[1])}
+end
+if hits >= tonumber(ARGV[2]) then return {0, ttl} end
+redis.call('INCR', KEYS[1])
+return {1, ttl}`;
+// Повертає спробу лише в її вікні: у новому вікні PTTL більший, ніж був під час спроби, і чужа
+// невдача не стирається. DECR не змінює TTL.
+const LOGIN_REFUND = `local ttl = redis.call('PTTL', KEYS[1])
+local hits = tonumber(redis.call('GET', KEYS[1]) or '0')
+if ttl > 0 and ttl <= tonumber(ARGV[1]) and hits > 0 then return redis.call('DECR', KEYS[1]) end
+return 0`;
 
 @Injectable()
 export class RateLimits implements OnModuleDestroy {
@@ -62,13 +87,37 @@ export class RateLimits implements OnModuleDestroy {
     );
   }
 
-  loginEmail(email: string): Promise<void> {
-    return this.check(
+  /**
+   * Списує спробу входу до bcrypt і повертає функцію, яка її повертає. Контролер повертає
+   * спробу після успішного входу чи помилки не через пароль, тож лічильники рахують лише невдалі
+   * паролі. Списання до перевірки обмежує й паралельні спроби, які ще не дочекались bcrypt.
+   * Строгий ліміт — на пару (email, IP): чужі невдалі спроби з іншої адреси не блокують власника.
+   * Загальний ліміт на email — проти перебору з багатьох адрес.
+   */
+  async loginAttempt(email: string, request: Request): Promise<() => Promise<void>> {
+    const account = asciiLowerCase(email);
+    const ttl = this.config.getOrThrow('LOGIN_EMAIL_RATE_TTL_MS', { infer: true });
+    const pair = await this.attempt(
       'login_email',
-      email.trim().toLowerCase(),
-      this.config.getOrThrow('LOGIN_EMAIL_RATE_TTL_MS', { infer: true }),
+      `${account}\n${this.ip(request)}`,
+      ttl,
       this.config.getOrThrow('LOGIN_EMAIL_RATE_LIMIT', { infer: true }),
     );
+    let total: Taken;
+    try {
+      total = await this.attempt(
+        'login_email_total',
+        account,
+        ttl,
+        this.config.getOrThrow('LOGIN_EMAIL_TOTAL_RATE_LIMIT', { infer: true }),
+      );
+    } catch (error) {
+      await this.refund(pair);
+      throw error;
+    }
+    return async () => {
+      await Promise.all([this.refund(pair), this.refund(total)]);
+    };
   }
 
   publicRead(request: Request): Promise<void> {
@@ -101,6 +150,30 @@ export class RateLimits implements OnModuleDestroy {
 
   private ip(request: Request): string {
     return (request.ip ?? request.socket.remoteAddress ?? '').replace(/^::ffff:/, '');
+  }
+
+  private async attempt(scope: Scope, identity: string, ttl: number, limit: number) {
+    const identityHash = createHash('sha256').update(identity).digest('hex');
+    const key = `${this.prefix}:${scope}:${limit}:${ttl}:${identityHash}`;
+    let result: unknown;
+    try {
+      result = await this.storage.redis.eval(LOGIN_ATTEMPT, 1, key, ttl, limit);
+    } catch {
+      throw new ServiceUnavailableException('Обмежувач запитів тимчасово недоступний');
+    }
+    const [allowed, window] = result as [number, number];
+    if (allowed === 1) return { key, window };
+    rateLimited.inc({ scope });
+    throw new RateLimited(Math.max(1, Math.ceil(window / 1000)));
+  }
+
+  // Повернення — best effort: якщо Redis недоступний, спроба лишиться списаною до кінця вікна.
+  private async refund({ key, window }: Taken): Promise<void> {
+    try {
+      await this.storage.redis.eval(LOGIN_REFUND, 1, key, window);
+    } catch {
+      return;
+    }
   }
 
   private async check(scope: Scope, identity: string, ttl: number, limit: number): Promise<void> {
