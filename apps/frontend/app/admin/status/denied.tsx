@@ -1,13 +1,8 @@
 import Link from 'next/link';
 import { Header } from '../../components/header';
-import type { AdminAccess } from '../../../lib/admin-access';
 
-const messages: Record<Exclude<AdminAccess, 'admin'>, string> = {
-  forbidden: 'Сторінка доступна лише адміністратору.',
-  unknown: 'Не вдалося перевірити роль адміністратора. Оновіть сторінку трохи пізніше.',
-};
-
-export function AdminDenied({ access }: { access: Exclude<AdminAccess, 'admin'> }) {
+/** Engine відповів 403: адресу вилучено з ADMIN_EMAILS, хоча claims токена досі мають роль. */
+export function AdminDenied() {
   return (
     <>
       <Header admin={false} page="status" />
@@ -19,7 +14,7 @@ export function AdminDenied({ access }: { access: Exclude<AdminAccess, 'admin'> 
           </div>
         </div>
         <p className="message error" role="alert">
-          {messages[access]}
+          Сторінка доступна лише адміністратору.
         </p>
         <p>
           <Link href="/exchange/ABC">Повернутися до торгівлі</Link>
