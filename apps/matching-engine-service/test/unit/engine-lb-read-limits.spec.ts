@@ -17,12 +17,39 @@ it('applies the address, token and listener read limits on both engine listeners
     'limit_req zone=orders_reads_by_client burst=500 nodelay;',
     'limit_req zone=orders_reads burst=100 nodelay;',
     'limit_req zone=orders_reads_total burst=200 nodelay;',
+    'limit_req zone=orders_writes_by_client burst=1000 nodelay;',
+    'limit_req zone=orders_writes burst=100 nodelay;',
   ];
   expect(limits(3001)).toEqual(expected);
   expect(limits(8080)).toEqual(expected);
   // Лічильник стелі окремий для кожного listener і лише для читань заявок.
   expect(config).toContain('map "$orders_read:$server_port" $orders_listener_key {');
   expect(config).toMatch(/limit_req_zone \$orders_listener_key zone=orders_reads_total:\S+ rate=/);
+});
+
+// Подання й скасування ключуються так само, як читання, але у своїх зонах і без стелі listener.
+it('keys order writes by token and client address in separate zones', () => {
+  const config = readFileSync(join(__dirname, '../../../../deploy/nginx/engine-lb.conf'), 'utf8');
+  const map = /map "\$request_method:\$uri" \$orders_write \{\n([\s\S]*?)\n\}\n/.exec(config);
+  expect(map?.[1].split('\n').map((line) => line.trim())).toEqual([
+    '~*^(POST|DELETE):/orders(?:/|$) 1;',
+    'default "";',
+  ]);
+  expect(config).toMatch(
+    /limit_req_zone \$orders_write_token_key zone=orders_writes:\S+ rate=20r\/s;/,
+  );
+  expect(config).toMatch(
+    /limit_req_zone \$orders_write_client_key zone=orders_writes_by_client:\S+ rate=100r\/s;/,
+  );
+  const client =
+    /map "\$orders_write:\$server_port:\$http_x_forwarded_for" \$orders_write_client_key \{\n([\s\S]*?)\n\}\n/.exec(
+      config,
+    );
+  expect(client?.[1].split('\n').map((line) => line.trim())).toEqual([
+    '"~^1:8080:(?<orders_write_forwarded>.+)$" $orders_write_forwarded;',
+    '"~^1:" $remote_addr;',
+    'default "";',
+  ]);
 });
 
 // Ліміт без обробника 429 віддає HTML без `Retry-After`. Обробник на рівні server діє на всі

@@ -24,6 +24,16 @@ it('matches the expression that keys the ingress read limit', () => {
   expect('^' + entry![1].replace('(?<orders_token>', '(?<signature>')).toBe(BEARER_HEADER.source);
 });
 
+it('keys the ingress write limit with the same expression as the read limit', () => {
+  const config = readFileSync(join(__dirname, '../../../../deploy/nginx/engine-lb.conf'), 'utf8');
+  const block = (head: string) =>
+    new RegExp(`map "${head}" \\$\\w+ \\{\\n([\\s\\S]*?)\\n\\}\\n`).exec(config)?.[1];
+  const read = block('\\$orders_read:\\$http_authorization');
+  const write = block('\\$orders_write:\\$http_authorization');
+  expect(read).toBeDefined();
+  expect(write?.replaceAll('orders_write_token', 'orders_token')).toBe(read);
+});
+
 it.each([
   [`Bearer ${token}`, token],
   [`bearer\t${token}`, token],
