@@ -18,7 +18,8 @@ deny() {
 }
 docker compose exec -T redis sh -ec 'REDISCLI_AUTH="$REDIS_ENGINE_PASSWORD" redis-cli --user engine --no-auth-warning ping' | grep -qx PONG
 docker compose exec -T redis sh -ec 'REDISCLI_AUTH="$REDIS_SETTLEMENT_PASSWORD" redis-cli --user settlement --no-auth-warning ping' | grep -qx PONG
-test "$(cli CONFIG GET requirepass | tail -1)" = ''
+# Повна відповідь: порожній вивід збою `docker compose exec` не має пройти як порожній пароль.
+test "$(cli CONFIG GET requirepass)" = requirepass
 for user in engine settlement; do
   deny "$user" FLUSHALL
   deny "$user" CONFIG SET maxmemory-policy allkeys-lru
