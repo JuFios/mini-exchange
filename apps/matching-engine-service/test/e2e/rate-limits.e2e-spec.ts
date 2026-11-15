@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { ServiceUnavailableException } from '@nestjs/common';
+import { AuthService } from '../../src/auth/auth.service';
 import { connect, disconnected, emitWithAck } from '../helpers/websocket';
 import { engineApp } from './engine-app';
 
@@ -179,6 +181,68 @@ describe('failed logins per email', () => {
     expect(statuses.filter((status) => status === 401)).toHaveLength(5);
     expect(statuses.filter((status) => status === 429)).toHaveLength(15);
   });
+
+  it.each([
+    { scope: 'address', pairLimit: 1, totalLimit: 1000, unavailable: false },
+    { scope: 'total', pairLimit: 1000, totalLimit: 1, unavailable: false },
+    { scope: 'address', pairLimit: 1, totalLimit: 1000, unavailable: true },
+    { scope: 'total', pairLimit: 1000, totalLimit: 1, unavailable: true },
+  ] as const)(
+    'preserves the next $scope window after a delayed login (unavailable: $unavailable)',
+    async ({ scope, pairLimit, totalLimit, unavailable }) => {
+      const window = 2000;
+      const options = {
+        AUTH_RATE_LIMIT: 1000,
+        LOGIN_EMAIL_RATE_LIMIT: pairLimit,
+        LOGIN_EMAIL_TOTAL_RATE_LIMIT: totalLimit,
+        LOGIN_EMAIL_RATE_TTL_MS: window,
+      };
+      await api.restart(options);
+      const replica = await api.build({ ...options, INSTANCE_ID: 'peer' });
+      const email = await owner();
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => (entered = resolve));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const auth = api.app().get(AuthService);
+      const original = auth.login.bind(auth);
+      const delayed = jest.spyOn(auth, 'login').mockImplementationOnce(async (dto) => {
+        const result = await original(dto);
+        entered();
+        await gate;
+        if (unavailable) throw new ServiceUnavailableException();
+        return result;
+      });
+      const pending = login('192.0.2.70', email, password);
+      const replicaUrl = await replica.getUrl();
+      const attempt = (ip: string) =>
+        fetch(`${replicaUrl}/auth/login`, {
+          method: 'POST',
+          headers: { ...from(ip), 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password: 'incorrect-password' }),
+          signal: AbortSignal.timeout(5000),
+        });
+      try {
+        await Promise.race([
+          waiting,
+          pending.then(() => {
+            throw new Error('Login completed before the session barrier');
+          }),
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, window + 100));
+        expect((await attempt('192.0.2.70')).status).toBe(401);
+        release();
+        expect((await pending).status).toBe(unavailable ? 503 : 201);
+        expect((await attempt('192.0.2.70')).status).toBe(429);
+        expect((await attempt('192.0.2.71')).status).toBe(scope === 'total' ? 429 : 401);
+      } finally {
+        release();
+        await pending.catch(() => undefined);
+        delayed.mockRestore();
+        await replica.close();
+      }
+    },
+  );
 });
 
 it('rejects the 121st public read from the same IP and accepts another IP', async () => {
