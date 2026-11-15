@@ -181,6 +181,25 @@ it('drops the admin role of issued tokens once the address leaves ADMIN_EMAILS',
   expect(await internalCheck('admin')).toBe(204);
 });
 
+it('accepts only the bearer header forms that the ingress read limit keys', async () => {
+  const { tokens } = await registerAccount();
+  const token = tokens.accessToken;
+  const status = async (authorization: string) =>
+    (await request('/orders', 'GET', undefined, undefined, { authorization })).status;
+  // Ці форми nginx рахує в ліміті читань на токен.
+  for (const header of [
+    `Bearer ${token}`,
+    `bearer ${token}`,
+    `Bearer\t${token}`,
+    `Bearer  ${token}`,
+    `Bearer ${token} trailing`,
+  ])
+    expect([header, await status(header)]).toEqual([header, 200]);
+  // Ці nginx не розпізнає як токен, тож engine не має їх приймати.
+  for (const header of [`Bearer\u00a0${token}`, `\u00a0Bearer ${token}`, `Bearer\u00a0\t${token}`])
+    expect([header, await status(header)]).toEqual([header, 401]);
+});
+
 it('treats addresses that differ only in letter case as one account', async () => {
   const email = `Case-${randomUUID()}@Example.test`;
   const { credentials } = await registerAccount(email);
