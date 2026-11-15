@@ -7,6 +7,7 @@ import { cleanup, container, docker, engine, request, token, until, waitReady } 
 const allowed = ['http://localhost:3000', 'http://127.0.0.1:3000'];
 const origins = [...allowed, 'https://not-allowed.example'];
 const replicas = ['matching-engine-1', 'matching-engine-2'];
+const internal = 'http://engine-lb:8080';
 
 // Прогін, убитий посеред паузи чи зупинки, не має ламати наступний.
 const resume = (id: string) => {
@@ -156,16 +157,71 @@ async function main() {
   try {
     // Зависла репліка: nginx чекає proxy_read_timeout на кожній і відповідає 504.
     for (const id of ids) docker('pause', id);
-    const paused = await Promise.all(
+    // Проби 504 читають книгу: її ліміт з'єднань не рахує, тож перевірки ролі нижче не можуть
+    // забрати їм місце, хоч би в якому порядку запити дійшли до nginx.
+    const probes = Promise.all(
       origins.map(
         async (origin) =>
           [
             origin,
-            await request('/instruments', 'GET', undefined, undefined, engine, { origin }, 60000),
+            await request(
+              '/instruments/ABC/book',
+              'GET',
+              undefined,
+              undefined,
+              engine,
+              { origin },
+              60000,
+            ),
           ] as const,
       ),
     );
+    // Завислі репліки тримають з'єднання, тож запити понад ліміт з'єднань на `:8080` отримують
+    // 429 від nginx: у тому самому JSON із `Retry-After`, що й на `location /`, а не HTML.
+    const roleChecks = Promise.all(
+      Array.from({ length: 70 }, async () => {
+        try {
+          const response = await request(
+            '/auth/admin',
+            'GET',
+            accessToken,
+            undefined,
+            internal,
+            {},
+            10000,
+          );
+          const text = await response.text();
+          return {
+            status: response.status,
+            type: response.headers.get('content-type')?.split(';')[0] ?? null,
+            retry: response.headers.get('retry-after'),
+            text,
+          };
+        } catch (error) {
+          return { status: 0, type: null, retry: null, text: (error as Error).name };
+        }
+      }),
+    );
+    const paused = await probes;
+    const limited = (await roleChecks).filter(({ status }) => status === 429);
     for (const id of ids) docker('unpause', id);
+    const shapes = new Set(
+      limited.map(({ type, retry, text }) => JSON.stringify({ type, retry, text })),
+    );
+    console.log(
+      `engine-lb internal limit refused=${limited.length} shapes=${[...shapes].join(' ')}`,
+    );
+    assert(limited.length > 0, 'The connection limit on the internal listener refused nothing');
+    assert.deepEqual(
+      [...shapes],
+      [
+        JSON.stringify({
+          type: 'application/json',
+          retry: '1',
+          text: '{"statusCode":429,"message":"Забагато запитів"}',
+        }),
+      ],
+    );
     // Engine знову відповідає, тож порівняння з його ACAO чесне.
     await until(
       async () => (await request('/health')).status,
