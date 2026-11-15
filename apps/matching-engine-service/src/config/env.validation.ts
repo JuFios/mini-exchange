@@ -185,6 +185,8 @@ const schema = {
   AUTH_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
   AUTH_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
   LOGIN_EMAIL_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
+  LOGIN_EMAIL_TOTAL_RATE_LIMIT: (value: unknown, key: string) =>
+    positiveInteger(value ?? '100', key),
   LOGIN_EMAIL_RATE_TTL_MS: (value: unknown, key: string) => rateWindow(value ?? '900000', key),
   PUBLIC_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '120', key),
   PUBLIC_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '60000', key),
