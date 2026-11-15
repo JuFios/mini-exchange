@@ -130,6 +130,47 @@ async function main() {
     for (let i = 0; i < 10; i++) baseline.push(await sell(victim));
     console.log(`orders read flood baselineP50=${percentile(baseline, 0.5).toFixed(0)}ms`);
 
+    // Ліміт на токен окремо від ліміту на адресу: 150 одночасних читань більші за запас токена
+    // (100), але менші за запас адреси (500). Пауза між пачками повертає квоту адреси.
+    const newToken = () => token('register', `${randomUUID()}@system.test`, password);
+    const reads = async (tokens: string[], header = (value: string) => `Bearer ${value}`) => {
+      const counts: Counts = {};
+      await Promise.all(
+        Array.from({ length: 150 }, async (_, index) => {
+          const authorization = header(tokens[index % tokens.length]);
+          const response = await request('/orders?limit=1', 'GET', undefined, undefined, engine, {
+            authorization,
+          });
+          await response.arrayBuffer();
+          counts[response.status] = (counts[response.status] ?? 0) + 1;
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      return counts;
+    };
+    const single = await reads([await newToken()]);
+    const spread = await reads(await Promise.all([newToken(), newToken(), newToken()]));
+    // Жодна форма заголовка, яку приймає engine, не дає пройти понад квоту токена.
+    const forms: Record<string, (value: string) => string> = {
+      tab: (value) => `Bearer\t${value}`,
+      lowercase: (value) => `bearer ${value}`,
+      trailing: (value) => `Bearer ${value} trailing`,
+      nbsp: (value) => `Bearer\u00a0${value}`,
+      leadingNbsp: (value) => `\u00a0Bearer ${value}`,
+    };
+    const byForm: Record<string, Counts> = {};
+    for (const [name, header] of Object.entries(forms))
+      byForm[name] = await reads([await newToken()], header);
+    console.log(
+      `orders read flood tokenLimit single=${JSON.stringify(single)} spread=${JSON.stringify(spread)} ` +
+        `forms=${JSON.stringify(byForm)}`,
+    );
+    assert((single['429'] ?? 0) >= 30, 'The token limit did not refuse reads beyond its burst');
+    assert.deepEqual(spread, { 200: 150 }, 'Three tokens must stay below both limits');
+    for (const [name, counts] of Object.entries(byForm))
+      // Запас 100 плюс поповнення 20/с, поки пачка доходить до nginx на повільному runner.
+      assert((counts['200'] ?? 0) <= 120, `Header form ${name} passed ${counts['200']} reads`);
+
     let probes: Record<string, number> = {};
     let cors: Record<string, unknown> = {};
     // Заголовок із комою чи `|` не має збігтися сам із собою в map nginx.
