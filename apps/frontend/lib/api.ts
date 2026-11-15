@@ -11,31 +11,48 @@ function parsePublicOrigin(value: string, key: 'PUBLIC_ORIGIN' | 'PUBLIC_ORIGINS
   const authority = /^https?:\/\/([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(?::([0-9]+))?$/i.exec(origin);
   if (authority) {
     const url = URL.canParse(origin) ? new URL(origin) : undefined;
-    if (url?.hostname === authority[1].toLowerCase() && url.port !== '0') return url;
+    if (
+      url &&
+      (authority[1].startsWith('[') || url.hostname === authority[1].toLowerCase()) &&
+      url.port !== '0'
+    )
+      return url;
   }
   throw new Error(key + ' must contain HTTP origins without paths or credentials');
 }
 
-export function requestOrigin(request: Request) {
+function allowedOrigins(): URL[] {
   const configured = process.env.PUBLIC_ORIGIN;
   if (configured) {
     const url = parsePublicOrigin(configured, 'PUBLIC_ORIGIN');
     if (process.env.COOKIE_SECURE === 'true' && url.protocol !== 'https:')
       throw new Error('Remote PUBLIC_ORIGIN must use HTTPS');
-    return url.origin;
+    return [url];
   }
   if (process.env.COOKIE_SECURE === 'true') throw new Error('PUBLIC_ORIGIN is required');
-  const host = (request.headers.get('host') ?? new URL(request.url).host).toLowerCase();
-  const origins = (process.env.PUBLIC_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+  return (process.env.PUBLIC_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
     .split(',')
     .map((origin) => parsePublicOrigin(origin, 'PUBLIC_ORIGINS'));
-  return (origins.find((origin) => origin.host === host) ?? origins[0]).origin;
+}
+
+function selectOrigin(request: Request) {
+  const url = new URL(request.url);
+  const host = (request.headers.get('host') ?? url.host).toLowerCase();
+  const origins = allowedOrigins();
+  const matched = origins.find(
+    (origin) =>
+      origin.host === host && (process.env.PUBLIC_ORIGIN || origin.protocol === url.protocol),
+  );
+  return { matched, fallback: origins[0] };
+}
+
+export function requestOrigin(request: Request) {
+  const { matched, fallback } = selectOrigin(request);
+  return (matched ?? fallback).origin;
 }
 
 export function sameOrigin(request: Request) {
-  const origin = requestOrigin(request);
-  const host = request.headers.get('host') ?? new URL(request.url).host;
-  return request.headers.get('origin') === origin && host.toLowerCase() === new URL(origin).host;
+  return selectOrigin(request).matched?.origin === request.headers.get('origin');
 }
 
 export function frontendProxyToken() {

@@ -245,52 +245,58 @@ it('finds a reservation that stays active after its order closed and clears it a
   terminalOrders = [];
 });
 
-it('finds an order in the book whose reservation a forged close released', async () => {
-  engineTrades = [];
-  const t = trade('2026-01-01T10:00:00.000Z');
-  await reserveTrade(ledger.app(), t);
-  const createdAt = (ageMs: number) => new Date(Date.now() - ageMs).toISOString();
-  const resting = (orderId: string, userId: string, ageMs = 120_000) => ({
-    orderId,
-    userId,
-    instrument: 'ABC',
-    createdAt: createdAt(ageMs),
-  });
-  // Свіжа заявка без резерву новіша за snapshot звірки й не рахується.
-  liveOrders = [
-    resting(t.buyOrderId, t.buyerUserId),
-    resting(t.sellOrderId, t.sellerUserId),
-    resting(randomUUID(), randomUUID(), 1_000),
-  ];
-  const clean = await report();
-  expect(clean.counts.unreserved_order).toBe(0);
-
-  // Запис у stream із правильним власником і активом проходить перевірку release, тож
-  // кошти звільнено, а заявка лишається в книзі. Це має побачити звірка.
-  await ledger
-    .app()
-    .get(ReservationsService)
-    .release(t.buyOrderId, 505000000000n, false, { userId: t.buyerUserId, asset: 'USD' });
-  const forged = await report();
-  expect(forged.ok).toBe(false);
-  expect(forged.counts.unreserved_order).toBe(1);
-  expect(
-    forged.discrepancies.filter(({ type }: { type: string }) => type === 'unreserved_order'),
-  ).toEqual([
-    {
-      type: 'unreserved_order',
-      tradeId: null,
+it.each([
+  ['fully', 505000000000n],
+  ['partially', 10000000000n],
+] as const)(
+  'finds an order in the book whose reservation a forged close released %s',
+  async (_, amount) => {
+    engineTrades = [];
+    const t = trade('2026-01-01T10:00:00.000Z');
+    await reserveTrade(ledger.app(), t);
+    const createdAt = (ageMs: number) => new Date(Date.now() - ageMs).toISOString();
+    const resting = (orderId: string, userId: string, ageMs = 120_000) => ({
+      orderId,
+      userId,
       instrument: 'ABC',
-      executedAt: null,
-      expected: { orderId: t.buyOrderId, reservation: 'active' },
-      actual: { orderId: t.buyOrderId, userId: t.buyerUserId, createdAt: expect.any(String) },
-    },
-  ]);
-  expect((await report('&instrument=XYZ')).counts.unreserved_order).toBe(0);
-  expect((await report('&instrument=ABC')).counts.unreserved_order).toBe(1);
-  liveOrders = [];
-  expect((await report()).counts.unreserved_order).toBe(0);
-});
+      createdAt: createdAt(ageMs),
+    });
+    // Свіжа заявка без резерву новіша за snapshot звірки й не рахується.
+    liveOrders = [
+      resting(t.buyOrderId, t.buyerUserId),
+      resting(t.sellOrderId, t.sellerUserId),
+      resting(randomUUID(), randomUUID(), 1_000),
+    ];
+    const clean = await report();
+    expect(clean.counts.unreserved_order).toBe(0);
+
+    // Запис у stream із правильним власником і активом проходить перевірку release, тож
+    // кошти звільнено, а заявка лишається в книзі. Це має побачити звірка.
+    await ledger
+      .app()
+      .get(ReservationsService)
+      .release(t.buyOrderId, amount, false, { userId: t.buyerUserId, asset: 'USD' });
+    const forged = await report();
+    expect(forged.ok).toBe(false);
+    expect(forged.counts.unreserved_order).toBe(1);
+    expect(
+      forged.discrepancies.filter(({ type }: { type: string }) => type === 'unreserved_order'),
+    ).toEqual([
+      {
+        type: 'unreserved_order',
+        tradeId: null,
+        instrument: 'ABC',
+        executedAt: null,
+        expected: { orderId: t.buyOrderId, reservation: 'active' },
+        actual: { orderId: t.buyOrderId, userId: t.buyerUserId, createdAt: expect.any(String) },
+      },
+    ]);
+    expect((await report('&instrument=XYZ')).counts.unreserved_order).toBe(0);
+    expect((await report('&instrument=ABC')).counts.unreserved_order).toBe(1);
+    liveOrders = [];
+    expect((await report()).counts.unreserved_order).toBe(0);
+  },
+);
 
 it('reports an unavailable engine order lookup instead of a clean reservation check', async () => {
   const t = trade('2026-01-01T10:00:00.000Z');

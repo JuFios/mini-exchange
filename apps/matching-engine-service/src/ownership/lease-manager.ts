@@ -49,6 +49,14 @@ export class LeaseManager implements OnModuleDestroy {
     return ping === 'PONG' && Array.isArray(policy) && policy[1] === 'noeviction';
   }
 
+  async redisReadyForActivation(): Promise<boolean> {
+    // PING дозволений іншим ролям. Acquire чекає готовності клієнта й перевіряє права engine.
+    const key = `lease:instrument:{activation-probe-${randomUUID()}}`;
+    const owner = randomUUID();
+    if (!(await this.locks.acquire(key, owner, 1000))) return false;
+    return (await this.locks.release(key, owner)) === 1 && (await this.redisReady());
+  }
+
   assert(lease: InstrumentLease): void {
     if (!this.valid(lease)) throw new FencedOutError();
   }

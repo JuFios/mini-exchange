@@ -1,24 +1,86 @@
+import { randomUUID } from 'node:crypto';
+import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import { engineApp } from './engine-app';
 import { FakeSettlement } from './fakes/settlement.fake';
 import { ReservationClient, Reservation } from '../../src/intake/reservation.client';
 
 const api = engineApp();
+let settlement: FakeSettlement;
+let settlementUrl: string;
+
+beforeEach(async () => {
+  settlement = new FakeSettlement(process.env.INTERNAL_API_TOKEN!);
+  settlementUrl = await settlement.start();
+});
+
+afterEach(() => settlement.close());
+
+function fundedSettings() {
+  return {
+    RESERVATIONS_ENABLED: true,
+    ENGINE_WORKER_ENABLED: false,
+    SETTLEMENT_URL: settlementUrl,
+  };
+}
+
+async function expectUnfundedIntake(token: string) {
+  expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual([
+    { reservations_required: false },
+  ]);
+  expect([201, 202]).toContain((await api.submit(token)).status);
+  expect(await api.database().query('SELECT status, reserved FROM order_requests')).toEqual([
+    { status: 'accepted', reserved: false },
+  ]);
+}
 
 it('preserves unfunded intake if the first funded replica fails startup validation', async () => {
   const token = await api.register();
   await expect(
     api.build({
-      RESERVATIONS_ENABLED: true,
+      ...fundedSettings(),
       DEPLOYMENT_MODE: 'remote',
       ADMIN_PASSWORD: 'different-remote-password',
     }),
   ).rejects.toThrow(/Remote seeded admin credentials/);
 
-  expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual([
-    { reservations_required: false },
-  ]);
-  expect((await api.submit(token)).status).toBe(201);
+  await expectUnfundedIntake(token);
+});
+
+it.each([
+  [{ INTERNAL_API_TOKEN: 'incorrect-internal-token-for-tests' }, /reservation credentials/],
+  [{ REDIS_USERNAME: 'unknown-role' }, /Engine Redis is unavailable/],
+] as const)(
+  'keeps unfunded intake available when a funded dependency is misconfigured',
+  async (settings, error) => {
+    const token = await api.register();
+    await expect(
+      api.build({ ...fundedSettings(), ...settings }).then((instance) => instance.close()),
+    ).rejects.toThrow(error);
+    await expectUnfundedIntake(token);
+  },
+);
+
+it('keeps unfunded intake when the Redis role can ping but cannot acquire a lease', async () => {
+  const token = await api.register();
+  const name = `limited-${randomUUID()}`;
+  const password = randomUUID();
+  const redis = new Redis({
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD,
+  });
+  try {
+    await redis.call('ACL', 'SETUSER', name, 'on', `>${password}`, '+ping', '+config|get', '+info');
+    await expect(
+      api
+        .build({ ...fundedSettings(), REDIS_USERNAME: name, REDIS_PASSWORD: password })
+        .then((instance) => instance.close()),
+    ).rejects.toThrow(/Engine Redis is unavailable/);
+    await expectUnfundedIntake(token);
+  } finally {
+    await redis.call('ACL', 'DELUSER', name).finally(() => redis.disconnect());
+  }
 });
 
 it('scans the history once when funded replicas race on first startup', async () => {
@@ -58,7 +120,7 @@ it('scans the history once when funded replicas race on first startup', async ()
 it('rejects an unfunded insert from a writer that does not know the application guard', async () => {
   const token = await api.register();
   const ownerId = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
-  const funded = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+  const funded = await api.build(fundedSettings());
   try {
     await expect(
       api.database().query(
@@ -112,7 +174,7 @@ it.each(permutations([0, 1, 2, 3]).map((order) => ({ order, completion: order.jo
           throw new Error('Submits completed before the reservation barrier');
         }),
       ]);
-      funded = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+      funded = await api.build(fundedSettings());
       for (const index of order) {
         releases[index]();
         expect((await pending[index]).status).toBe(503);
@@ -128,7 +190,7 @@ it.each(permutations([0, 1, 2, 3]).map((order) => ({ order, completion: order.jo
 
 it('refuses an unfunded replica and its writes after another replica requires reservations', async () => {
   const token = await api.register();
-  const funded = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+  const funded = await api.build(fundedSettings());
   try {
     expect((await api.submit(token)).status).toBe(503);
     await expect(api.build({ RESERVATIONS_ENABLED: false })).rejects.toThrow(
@@ -187,7 +249,7 @@ it('starts a funded replica again without locking the mode row once reservations
 });
 
 async function enabled() {
-  const app = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+  const app = await api.build(fundedSettings());
   await app.close();
 }
 

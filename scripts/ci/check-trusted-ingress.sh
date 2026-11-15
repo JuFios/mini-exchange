@@ -95,6 +95,16 @@ docker exec "$prefix-ingress" sh -ec '
 '
 printf 'Public hosts: default port removed, case normalized, duplicates removed, alternate port preserved\n'
 
+docker exec -e DEPLOYMENT_MODE=local -e PUBLIC_ORIGIN= \
+  -e 'PUBLIC_ORIGINS=http://[2001:0db8:0:0:0:0:0:1]:0080,http://[2001:db8::1]' \
+  -e 'ENGINE_PUBLIC_WS_URL=wss://[2001:0db8:0:0:0:0:0:2]:00443/socket.io' \
+  "$prefix-ingress" /docker-entrypoint.d/16-check-public-origins.sh
+docker exec "$prefix-ingress" nginx -t
+docker exec "$prefix-ingress" sh -ec '
+  test "$(grep -cF \"[2001:db8::1]\" /etc/nginx/conf.d/10-public-hosts.conf)" = 1
+  grep -qF \"[2001:db8::2]\" /etc/nginx/conf.d/10-public-hosts.conf
+'
+
 if docker exec -e TRUSTED_TLS_PROXY_IP=0.0.0.0/0 "$prefix-ingress" \
   /docker-entrypoint.d/15-check-proxy-ip.sh; then
   echo 'The ingress accepted a universal trusted proxy range' >&2

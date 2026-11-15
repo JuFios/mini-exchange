@@ -6,10 +6,12 @@ import { InternalTokenGuard } from '../security/internal-token.guard';
 
 export const MAX_TERMINAL_LOOKUP = 1000;
 export const LIVE_PAGE_SIZE = 1000;
-// Частковий індекс `orders_live_id_idx` дає сторінку за `id` без проходу термінальної історії.
+// Частковий індекс дає порядок id, а LATERAL перевіряє резерв лише прочитаних заявок.
 export const LIVE_ORDERS_SQL = `SELECT o.id AS "orderId", o.owner_id AS "userId", o.instrument,
     o.created_at AS "createdAt"
-  FROM orders o JOIN order_requests r ON r.order_id = o.id AND r.reserved
+  FROM orders o JOIN LATERAL (
+    SELECT 1 FROM order_requests r WHERE r.order_id = o.id AND r.reserved LIMIT 1
+  ) funded ON true
   WHERE o.status IN ('open','partially_filled') AND o.id > $1
     AND ($2::text IS NULL OR o.instrument = $2)
   ORDER BY o.id LIMIT ${LIVE_PAGE_SIZE}`;

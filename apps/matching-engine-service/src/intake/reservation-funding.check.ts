@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
+import { LeaseManager } from '../ownership/lease-manager';
+import { ReservationClient } from './reservation.client';
 
 /**
  * Резерви вмикаються лише на історії, де кожна жива або виконана заявка має резерв.
@@ -11,6 +13,8 @@ export class ReservationFundingCheck {
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
+    private readonly leases: LeaseManager,
+    private readonly reservations: ReservationClient,
   ) {}
 
   async ensureMode(): Promise<void> {
@@ -22,6 +26,10 @@ export class ReservationFundingCheck {
         'SELECT reservations_required FROM engine_settings WHERE id=true',
       );
       if (current?.reservations_required) return;
+      await this.reservations.assertReady();
+      if (!(await this.leases.redisReadyForActivation().catch(() => false))) {
+        throw new Error('Engine Redis is unavailable before enabling reservations');
+      }
     }
     await this.source.transaction(async (db) => {
       await db.query("SET LOCAL statement_timeout='60s'");

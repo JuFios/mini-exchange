@@ -85,19 +85,19 @@ export async function scanStuckReservations(
 }
 
 /**
- * Заявка в книзі без активного резерву: її кошти вже звільнено, наприклад підробленим
+ * Заявка в книзі з відсутнім або передчасно зменшеним резервом: її кошти звільнено, наприклад підробленим
  * `order.closed`, і власник може витратити їх удруге. Резерв створюється до прийому заявки, тож
  * свіжа заявка без нього означала б лише, що snapshot звірки старший за неї: її пропускаємо.
  */
 export function unreservedOrders(
   orders: readonly LiveOrder[],
-  active: ReadonlySet<string>,
+  funded: ReadonlySet<string>,
   { now, graceMs }: { now: number; graceMs: number },
 ): Discrepancy[] {
   return orders
     .filter(
       (order) =>
-        !active.has(order.orderId.toLowerCase()) && now - Date.parse(order.createdAt) >= graceMs,
+        !funded.has(order.orderId.toLowerCase()) && now - Date.parse(order.createdAt) >= graceMs,
     )
     .map((order) => ({
       type: 'unreserved_order' as const,
@@ -109,7 +109,7 @@ export function unreservedOrders(
     }));
 }
 
-/** Проходить сторінками книгу engine і шукає заявки, чиї резерви в ledger не активні. */
+/** Проходить сторінками книгу engine і шукає заявки без належного забезпечення. */
 export async function scanUnreservedOrders(
   db: EntityManager,
   engine: Pick<EngineOrdersClient, 'live'>,
@@ -122,8 +122,13 @@ export async function scanUnreservedOrders(
     const page = await engine.live(after, context.instrument);
     if (page.length === 0) break;
     const rows: { reservation_id: string }[] = await db.query(
-      `SELECT reservation_id FROM reservations
-       WHERE reservation_id = ANY($1::uuid[]) AND status = 'active'`,
+      // Справжній order.closed з’являється лише після виходу заявки з книги. Частковий
+      // release інакше лишив би active та не порушив би рівність журналу й балансів.
+      `SELECT r.reservation_id FROM reservations r
+       WHERE r.reservation_id = ANY($1::uuid[]) AND r.status = 'active'
+         AND NOT EXISTS (
+           SELECT 1 FROM journal_entries j WHERE j.operation_id = 'release:' || r.reservation_id::text
+         )`,
       [page.map(({ orderId }) => orderId)],
     );
     const missing = unreservedOrders(

@@ -80,6 +80,7 @@ import { TerminusModule } from '@nestjs/terminus';
     PrivateGateway,
     InstrumentCatalog,
   ],
+  exports: [LeaseManager, ReservationClient],
 })
 export class OrdersModule {
   static async register(): Promise<DynamicModule> {

@@ -44,6 +44,31 @@ it('canonicalizes the local allowlist and keeps non-default ports distinct', () 
   }
 });
 
+it('checks both configured schemes for the same canonical IPv6 host', () => {
+  const previous = process.env.PUBLIC_ORIGINS;
+  try {
+    process.env.PUBLIC_ORIGINS = 'http://[2001:0db8:0:0:0:0:0:1]:3000,https://[2001:db8::1]:3000';
+    for (const origin of ['http://[2001:db8::1]:3000', 'https://[2001:db8::1]:3000']) {
+      assert.equal(sameOrigin(new Request(origin, { headers: { origin } })), true);
+    }
+    const https = 'https://[2001:db8::1]:3000';
+    const crossScheme = new Request(https, { headers: { origin: 'http://[2001:db8::1]:3000' } });
+    assert.equal(sameOrigin(crossScheme), false);
+    assert.equal(requestOrigin(crossScheme), https);
+    assert.equal(
+      sameOrigin(
+        new Request('https://[2001:db8::1]:3001', {
+          headers: { origin: 'https://[2001:db8::1]:3000' },
+        }),
+      ),
+      false,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.PUBLIC_ORIGINS;
+    else process.env.PUBLIC_ORIGINS = previous;
+  }
+});
+
 it('rejects an invalid or demo proxy token in remote mode', () => {
   const secure = process.env.COOKIE_SECURE;
   const proxyToken = process.env.FRONTEND_PROXY_TOKEN;
