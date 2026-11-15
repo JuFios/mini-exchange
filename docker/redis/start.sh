@@ -1,6 +1,9 @@
 #!/bin/sh
 # ACL перезаписується атомарно: падіння до rename лишає попередні права до наступного старту.
 set -eu
+# Службові команди (`docker compose run redis sh ...`, імпорт тому) ACL не потребують і не мають
+# лишати файлів у /data: імпорт вимагає порожній том.
+if [ "${1:-}" != redis-server ]; then exec /usr/local/bin/docker-entrypoint.sh "$@"; fi
 umask 077
 hash() { printf '%s' "$1" | sha256sum | cut -d ' ' -f 1; }
 : "${REDISCLI_AUTH:?REDISCLI_AUTH is required}"
