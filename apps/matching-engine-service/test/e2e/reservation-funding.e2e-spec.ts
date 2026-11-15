@@ -87,6 +87,52 @@ it('refuses an unfunded replica and its writes after another replica requires re
   }
 });
 
+it('gives up an unfunded submit after 3 s while a starting replica holds the mode row', async () => {
+  const token = await api.register();
+  const runner = api.database().createQueryRunner();
+  await runner.connect();
+  await runner.startTransaction();
+  try {
+    // Як старт репліки: тримає рядок довше за межу простою сесії.
+    await runner.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+    await runner.query('SELECT 1 FROM engine_settings WHERE id=true FOR UPDATE');
+    const started = Date.now();
+    const response = await api.request(
+      '/orders',
+      'POST',
+      token,
+      { instrument: 'ABC', side: 'sell', price: 100, quantity: 1 },
+      {},
+      10_000,
+    );
+    // Межа блокування 3 с, а не statement_timeout сесії (5 с).
+    expect(response.status).toBe(503);
+    expect(Date.now() - started).toBeLessThan(4500);
+  } finally {
+    await runner.rollbackTransaction();
+    await runner.release();
+  }
+  expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+});
+
+it('starts a funded replica again without locking the mode row once reservations are required', async () => {
+  await enabled();
+  const runner = api.database().createQueryRunner();
+  await runner.connect();
+  await runner.startTransaction();
+  try {
+    // Як старт репліки: тримає рядок довше за межу простою сесії.
+    await runner.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+    await runner.query('SELECT 1 FROM engine_settings WHERE id=true FOR UPDATE');
+    const started = Date.now();
+    await enabled();
+    expect(Date.now() - started).toBeLessThan(10_000);
+  } finally {
+    await runner.rollbackTransaction();
+    await runner.release();
+  }
+});
+
 async function enabled() {
   const app = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
   await app.close();

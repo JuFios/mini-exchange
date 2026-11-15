@@ -121,6 +121,9 @@ export class IntakeService {
     const claimed = await pg(async () => {
       await this.assertActive(this.source.manager, dto.instrument);
       const [row]: RequestRow[] = await this.source.transaction(async (db) => {
+        // До першого блокування: старт репліки тримає рядок режиму до 60 с, і без межі заявка
+        // чекала б до statement_timeout.
+        await db.query("SET LOCAL lock_timeout='3s'");
         await this.assertReservationMode(db);
         await db.query(
           `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
@@ -152,8 +155,8 @@ export class IntakeService {
     });
     return pg(async () => {
       const result = await this.source.transaction(async (db) => {
-        await this.assertReservationMode(db);
         await db.query("SET LOCAL lock_timeout='3s'");
+        await this.assertReservationMode(db);
         const [rows] = await db.query(
           `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
         WHERE user_id=$1 AND idempotency_key=$2 AND status='reserving' RETURNING order_id`,

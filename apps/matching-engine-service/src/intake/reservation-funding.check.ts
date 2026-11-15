@@ -15,6 +15,14 @@ export class ReservationFundingCheck implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     const enabled = this.config.getOrThrow<boolean>('RESERVATIONS_ENABLED');
+    // Після першого ввімкнення інваріант тримає тригер, а прапорець назад не змінюється. Тож
+    // повторний старт не сканує всю історію й не блокує рядок режиму, на якому чекають заявки.
+    if (enabled) {
+      const [current] = await this.source.query(
+        'SELECT reservations_required FROM engine_settings WHERE id=true',
+      );
+      if (current?.reservations_required) return;
+    }
     await this.source.transaction(async (db) => {
       await db.query("SET LOCAL statement_timeout='60s'");
       await db.query("SET LOCAL lock_timeout='60s'");
