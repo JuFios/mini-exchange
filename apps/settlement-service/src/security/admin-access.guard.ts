@@ -8,7 +8,7 @@ export class AdminAccessGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const claims = await this.session.authenticate(request.headers.authorization);
+    const claims = await this.session.authenticate(request.headers.authorization, 'admin');
     if (!Array.isArray(claims.roles) || !claims.roles.includes('admin')) {
       throw new ForbiddenException();
     }

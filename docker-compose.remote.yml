@@ -38,7 +38,8 @@ services:
   engine-lb:
     environment:
       TRUSTED_TLS_PROXY_IP: ${TRUSTED_TLS_PROXY_IP:?Set the TLS proxy address seen by nginx}
-      NGINX_ENVSUBST_FILTER: '^TRUSTED_TLS_PROXY_IP$'
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS for the remote frontend}
+      NGINX_ENVSUBST_FILTER: '^(TRUSTED_TLS_PROXY_IP|CORS_ORIGINS)$'
     volumes:
       - './deploy/nginx/real-ip.conf.template:/etc/nginx/templates/real-ip.conf.template:ro'
       - './deploy/nginx/check-proxy-ip.sh:/docker-entrypoint.d/15-check-proxy-ip.sh:ro'

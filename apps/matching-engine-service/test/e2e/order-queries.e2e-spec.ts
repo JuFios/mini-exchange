@@ -70,6 +70,54 @@ it('paginates one hundred twenty orders in descending timestamp and UUID order w
   expect(duplicateTimes.every(({ n }: { n: number }) => n === 10)).toBe(true);
 });
 
+it('filters cancelled orders older than the latest hundred and pages them by cursor', async () => {
+  const owner = await register();
+  const other = await register();
+  const sub = (token: string) =>
+    JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
+  // Десять скасованих заявок старші за 120 відкритих: у вікні останніх 100 їх немає.
+  await database().query(
+    `INSERT INTO orders(owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+    SELECT $1,'ABC','sell',100,1,1,CASE WHEN i<10 THEN 'cancelled' ELSE 'open' END,
+      TIMESTAMPTZ '2026-11-01T00:00:00Z'+((i/3)::int)*INTERVAL '1 second'
+    FROM generate_series(0,129) i`,
+    [sub(owner)],
+  );
+  await database().query(
+    `INSERT INTO orders(owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+    VALUES ($1,'ABC','sell',100,1,1,'cancelled',TIMESTAMPTZ '2026-11-01T00:00:00Z')`,
+    [sub(other)],
+  );
+  const expected = await database().query(
+    `SELECT id FROM orders WHERE owner_id=$1 AND status='cancelled'
+    ORDER BY created_at DESC,id DESC`,
+    [sub(owner)],
+  );
+  expect(expected).toHaveLength(10);
+  const received: string[] = [];
+  const lengths: number[] = [];
+  let cursor = '';
+  for (let page = 0; page < 4; page++) {
+    const response = await request(
+      `/orders?status=cancelled&limit=4${cursor ? `&cursor=${cursor}` : ''}`,
+      'GET',
+      owner,
+    );
+    expect(response.status).toBe(200);
+    const orders = (await response.json()) as { id: string; status: string; createdAt: string }[];
+    lengths.push(orders.length);
+    expect(orders.every(({ status }) => status === 'cancelled')).toBe(true);
+    received.push(...orders.map(({ id }) => id));
+    const last = orders.at(-1);
+    if (!last) break;
+    cursor = Buffer.from(JSON.stringify({ createdAt: last.createdAt, id: last.id })).toString(
+      'base64url',
+    );
+  }
+  expect(lengths).toEqual([4, 4, 2, 0]);
+  expect(received).toEqual(expected.map(({ id }: { id: string }) => id));
+});
+
 it('pages imported orders whose timestamps differ only in microseconds', async () => {
   const owner = await register();
   const userId = JSON.parse(Buffer.from(owner.split('.')[1], 'base64url').toString()).sub;

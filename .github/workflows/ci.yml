@@ -261,6 +261,8 @@ jobs:
         run: docker compose run --rm system-tests npm run wallet:push
       - name: Check the order sync recipe for the private WebSocket
         run: docker compose run --rm system-tests npm run orders:sync
+      - name: Check that one user's order reads do not slow other submits
+        run: docker compose run --rm system-tests npm run orders:read-flood
       - name: Run concurrency, chaos and reconnect against fresh stacks
         run: bash tests/system/run-fresh.sh
       - name: Reproduce starter failures and compare lease recovery

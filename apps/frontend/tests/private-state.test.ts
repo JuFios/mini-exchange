@@ -197,7 +197,7 @@ it('restores private state with a fresh handshake after server expiry', async ()
     'POST /api/auth/ws-token',
     'GET /api/engine/orders?status=active&limit=100',
     'GET /api/engine/orders?status=filled&limit=100',
-    'GET /api/engine/orders?status=all&limit=100',
+    'GET /api/engine/orders?status=cancelled&limit=100',
     'GET /api/settlement/wallets',
   ]) {
     assert.equal(requests.filter((entry) => entry === request).length, 2, request);
@@ -256,7 +256,7 @@ it('sends the user to the sign-in page when the session is gone', async () => {
   }
 });
 
-it('merges active, filled and recent orders by the highest version', async () => {
+it('merges active, filled and cancelled orders by the highest version', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
   const row = (id: string, status: string, version: number) => ({
     id,
@@ -274,9 +274,8 @@ it('merges active, filled and recent orders by the highest version', async () =>
     if (path.includes('status=filled')) {
       return Response.json([row('a', 'filled', 2), row('old-filled', 'filled', 2)]);
     }
-    if (path.includes('status=all')) {
-      // `old-filled` випав зі сторінки `all`, бо новіших скасованих понад ліміт.
-      return Response.json([row('c', 'cancelled', 4), row('tie', 'open', 3)]);
+    if (path.includes('status=cancelled')) {
+      return Response.json([row('c', 'cancelled', 4)]);
     }
     return Response.json([]);
   });
@@ -315,6 +314,211 @@ it('merges active, filled and recent orders by the highest version', async () =>
   assert.equal(byId.get('old-filled')?.status, 'filled');
   assert.equal(byId.get('c')?.status, 'cancelled');
   assert.equal(byId.get('tie')?.version, 3);
+});
+
+it('keeps cancelled orders that are older than the latest hundred orders', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  const at = (second: number) => new Date(Date.UTC(2026, 10, 1, 0, 0, second)).toISOString();
+  // Скасовані старші за 120 новіших заявок, тож у перших 100 рядках `all` їх немає.
+  const orders = [
+    ...Array.from({ length: 5 }, (_, i) => ({ id: `cancelled-${i}`, status: 'cancelled', at: i })),
+    ...Array.from({ length: 120 }, (_, i) => ({
+      id: `newer-${i}`,
+      status: i % 2 ? 'filled' : 'open',
+      at: 10 + i,
+    })),
+  ].map(({ id, status, at: second }) => ({ id, status, createdAt: at(second), version: 1 }));
+  const statuses: Record<string, string[]> = {
+    active: ['pending', 'open', 'partially_filled'],
+    filled: ['filled'],
+    cancelled: ['cancelled'],
+  };
+  // Двійник `GET /orders`: фільтр, спадний порядок і курсор, як у engine.
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (!path.startsWith('/api/engine/orders?')) return Response.json([]);
+    const query = new URL(path, 'http://localhost').searchParams;
+    const status = query.get('status') ?? 'all';
+    const cursor = query.get('cursor');
+    const after = cursor && JSON.parse(Buffer.from(cursor, 'base64url').toString());
+    const page = orders
+      .filter((order) => status === 'all' || statuses[status]?.includes(order.status))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .filter(
+        (order) =>
+          !after ||
+          order.createdAt < after.createdAt ||
+          (order.createdAt === after.createdAt && order.id < after.id),
+      )
+      .slice(0, Number(query.get('limit') ?? 50));
+    return Response.json(page);
+  });
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  let snapshot: { orders: typeof orders } | undefined;
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: Error) {
+        completed.emit('error', error);
+      },
+      onSnapshot(value: { orders: typeof orders }) {
+        snapshot = value;
+        completed.emit('snapshot');
+      },
+      knownOrderIds: () => [],
+      onOrder() {},
+      onWallet() {},
+    },
+    { setTimeout: () => undefined, clearTimeout() {} },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  await once(completed, 'snapshot');
+  stop();
+  const cancelled = snapshot!.orders.filter(({ status }) => status === 'cancelled');
+  assert.deepEqual(
+    cancelled.map(({ id }) => id).sort(),
+    [0, 1, 2, 3, 4].map((i) => `cancelled-${i}`),
+  );
+});
+
+it('finishes a snapshot that needs more order reads than the ingress allows at once', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  // Терміналу відомі 150 заявок, яких уже немає серед активних: кожну він дочитує за ID.
+  const known = Array.from({ length: 150 }, (_, i) => `known-${i}`);
+  // Двійник ліміту nginx: 100 читань заявок, далі 429, поки таймер не поверне квоту.
+  let quota = 100;
+  let inFlight = 0;
+  let peak = 0;
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (!path.startsWith('/api/engine/orders')) return Response.json([]);
+    if (quota === 0) return Response.json({ message: 'Забагато запитів' }, { status: 429 });
+    quota--;
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => setImmediate(resolve));
+    inFlight--;
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    return Response.json({
+      id,
+      status: 'cancelled',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      version: 2,
+    });
+  });
+  const timers: (() => void)[] = [];
+  const errors: unknown[] = [];
+  let snapshot: { orders: { id: string }[] } | undefined;
+  const socket = new EventEmitter();
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: unknown) {
+        errors.push(error);
+      },
+      onSnapshot(value: { orders: { id: string }[] }) {
+        snapshot = value;
+      },
+      knownOrderIds: () => known,
+      onOrder() {},
+      onWallet() {},
+    },
+    {
+      setTimeout(callback: () => void) {
+        timers.push(callback);
+        return callback;
+      },
+      clearTimeout(handle: unknown) {
+        const index = timers.indexOf(handle as () => void);
+        if (index >= 0) timers.splice(index, 1);
+      },
+    },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  // Кожен крок — секунда: квота відновлюється, і спрацьовують відкладені повтори.
+  for (let second = 0; second < 20 && !snapshot; second++) {
+    for (let tick = 0; tick < 50; tick++) await new Promise((resolve) => setImmediate(resolve));
+    quota = Math.min(100, quota + 20);
+    for (const timer of timers.splice(0)) timer();
+  }
+  stop();
+  assert.ok(snapshot, `No snapshot after ${errors.length} failed loads`);
+  assert.deepEqual(snapshot.orders.map(({ id }) => id).sort(), [...known].sort());
+  // Дочитування за ID не відкриває 150 запитів одразу.
+  assert.ok(peak <= 8, `Peak of ${peak} parallel order reads`);
+});
+
+it('stops the remaining order reads of a snapshot attempt that already failed', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  const known = Array.from({ length: 40 }, (_, i) => `known-${i}`);
+  const reads: string[] = [];
+  mock.method(globalThis, 'fetch', async (path: string, options: RequestInit) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    reads.push(id);
+    // Перша заявка дає тимчасову помилку, решта відповідає не одразу.
+    if (id === 'known-0') return Response.json({ message: 'x' }, { status: 503 });
+    for (let tick = 0; tick < 5; tick++) await new Promise((resolve) => setImmediate(resolve));
+    options.signal?.throwIfAborted();
+    return Response.json({
+      id,
+      status: 'cancelled',
+      createdAt: '2026-11-01T00:00:00.000Z',
+      version: 2,
+    });
+  });
+  const timers: (() => void)[] = [];
+  const errors: unknown[] = [];
+  const socket = new EventEmitter();
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError(error: unknown) {
+        errors.push(error);
+      },
+      onSnapshot() {},
+      knownOrderIds: () => known,
+      onOrder() {},
+      onWallet() {},
+    },
+    {
+      setTimeout(callback: () => void) {
+        timers.push(callback);
+      },
+      clearTimeout() {},
+    },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  for (let tick = 0; tick < 200; tick++) await new Promise((resolve) => setImmediate(resolve));
+  stop();
+  assert.equal(errors.length, 1);
+  // Повтор знімка ще не почався, тож усі читання належать першій спробі.
+  assert.equal(timers.length, 1);
+  assert.ok(reads.length <= 8, `The failed attempt read ${reads.length} orders`);
 });
 
 it('keeps an order accepted with a short 202 instead of reporting a failure', () => {

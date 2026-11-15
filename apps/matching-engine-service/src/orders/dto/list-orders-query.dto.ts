@@ -2,7 +2,7 @@ import { IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator'
 
 export class ListOrdersQueryDto {
   @IsOptional()
-  @IsIn(['active', 'filled', 'all'], { message: 'Некоректний статус' })
+  @IsIn(['active', 'filled', 'cancelled', 'all'], { message: 'Некоректний статус' })
   status?: string;
 
   @IsOptional()

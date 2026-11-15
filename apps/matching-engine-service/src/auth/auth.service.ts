@@ -249,7 +249,8 @@ export class AuthService {
     return users.find((user) => user.email === email) ?? (users.length === 1 ? users[0] : null);
   }
 
-  private isAdminEmail(email: string): boolean {
+  /** Поточний список адрес, а не стан на момент видачі токена: роль знімається перезапуском. */
+  isAdminEmail(email: string): boolean {
     return this.config.getOrThrow<string[]>('ADMIN_EMAILS').includes(email.toLowerCase());
   }
 
