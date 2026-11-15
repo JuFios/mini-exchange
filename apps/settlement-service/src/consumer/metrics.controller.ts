@@ -38,7 +38,12 @@ export class MetricsController {
     const queue = await this.consumer.queue().catch(() => undefined);
     if (queue) {
       this.pending.set(queue.streams.reduce((sum, { pending }) => sum + pending, 0));
-      this.lag.set(queue.streams.reduce((sum, { lag }) => sum + (lag ?? 0), 0));
+      // null від Redis означає, що lag невідомий (наприклад, після видалення недоставленого
+      // запису). Нуль ховав би відставання, тож метрика стає NaN.
+      const lags = queue.streams.map(({ lag }) => lag);
+      this.lag.set(
+        lags.includes(null) ? NaN : lags.reduce<number>((sum, lag) => sum + (lag ?? 0), 0),
+      );
     }
     return lines.join('\n') + '\n' + (queue ? await this.registry.metrics() : '');
   }

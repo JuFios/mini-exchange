@@ -1,0 +1,21 @@
+# Правила Prometheus для черги settlement за метриками engine (`GET /metrics` кожної репліки).
+# Обидві репліки читають той самий Redis, тож правила беруть `max`. Порівняння з NaN не
+# спрацьовує, тому невідомий стан ловить окреме правило (`x != x` істинне лише для NaN).
+# Поведінку перевіряє `settlement-alerts.test.yml` (`promtool test rules`).
+groups:
+  - name: settlement
+    rules:
+      - alert: SettlementBehind
+        expr: max by (stream) (engine_settlement_group_lag) > 1000
+        for: 5m
+      - alert: SettlementLagging
+        # Lag не падав до нуля 10 хвилин: consumer не встигає або не читає. Під постійним
+        # навантаженням здоровий consumer теж може так виглядати; тоді правило лише попереджає.
+        # `for`, а не `min_over_time`: вікно функції бере наявні точки, тож нова серія чи
+        # щойно запущений Prometheus спрацювали б на першому ненульовому вимірі.
+        expr: max by (stream) (engine_settlement_group_lag) > 0
+        for: 10m
+      - alert: SettlementQueueUnknown
+        expr: max by (stream) (engine_settlement_group_lag != engine_settlement_group_lag) or
+          absent(engine_settlement_group_lag)
+        for: 5m

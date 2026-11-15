@@ -1,0 +1,67 @@
+# Поведінкові тести правил: `promtool test rules settlement-alerts.test.yml`.
+rule_files: [settlement-alerts.yml]
+evaluation_interval: 1m
+tests:
+  # Короткий backlog нової серії (3 хв) не будить нікого: обіцяно 10 хвилин.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-1"}'
+        values: '5 5 5 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - { eval_time: 2m, alertname: SettlementLagging, exp_alerts: [] }
+      - { eval_time: 14m, alertname: SettlementLagging, exp_alerts: [] }
+
+  # Lag не падає до нуля: попередження після 10 хвилин, не раніше.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-1"}'
+        values: '3+1x15'
+    alert_rule_test:
+      - { eval_time: 9m, alertname: SettlementLagging, exp_alerts: [] }
+      - eval_time: 11m
+        alertname: SettlementLagging
+        exp_alerts: [{ exp_labels: { stream: s } }]
+
+  # Один нуль скидає відлік: 9 хв lag, нуль, знову lag — попередження лише через 10 хв після нуля.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-1"}'
+        values: '5x8 0 5x14'
+    alert_rule_test:
+      - { eval_time: 12m, alertname: SettlementLagging, exp_alerts: [] }
+      - eval_time: 21m
+        alertname: SettlementLagging
+        exp_alerts: [{ exp_labels: { stream: s } }]
+
+  # Понад 1000 недоставлених записів 5 хвилин: відставання.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-1"}'
+        values: '2000x10'
+    alert_rule_test:
+      - { eval_time: 4m, alertname: SettlementBehind, exp_alerts: [] }
+      - eval_time: 6m
+        alertname: SettlementBehind
+        exp_alerts: [{ exp_labels: { stream: s } }]
+
+  # NaN (Redis не відповів, групи немає) — невідомий стан; число на іншій репліці його не ховає.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-1"}'
+        values: 'NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN'
+      - series: 'engine_settlement_group_lag{stream="s",instance="engine-2"}'
+        values: '5x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SettlementQueueUnknown
+        exp_alerts: [{ exp_labels: { stream: s } }]
+
+  # Метрик engine немає зовсім.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="engine"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: SettlementQueueUnknown
+        exp_alerts: [{ exp_labels: {} }]

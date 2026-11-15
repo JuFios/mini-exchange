@@ -14,15 +14,20 @@ const P50_BOUND_MS = 200;
 const P95_BOUND_MS = 600;
 
 type Counts = Record<string, number>;
+type Mode = 'token' | 'forged' | 'addresses';
 
 const percentile = (values: number[], share: number) =>
   [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * share))];
 
 // Рядок у формі JWT з випадковим підписом: для nginx це новий токен на кожен запит.
 const forged = () => [12, 48, 32].map((size) => randomBytes(size).toString('base64url')).join('.');
+// Нова адреса клієнта для `:8080`, де її задає `X-Forwarded-For`.
+const address = () => `10.${[0, 0, 0].map(() => Math.floor(Math.random() * 250) + 1).join('.')}`;
 
 /** Потік читань в окремому процесі, щоб його цикл подій не впливав на виміри заявок. */
-async function flood(mode: 'token' | 'forged', accessToken: string) {
+async function flood(mode: Mode, accessToken: string) {
+  // У режимі `addresses` — кілька токенів через кому.
+  const tokens = accessToken.split(',');
   const counts: Counts = {};
   let running = true;
   process.on('message', () => {
@@ -30,14 +35,23 @@ async function flood(mode: 'token' | 'forged', accessToken: string) {
   });
   const loop = async (index: number) => {
     // Обидва слухачі й обидва маршрути читання в кожній комбінації.
-    const base = index % 4 === 0 || index % 4 === 3 ? internal : engine;
+    const base = mode === 'addresses' || index % 4 === 0 || index % 4 === 3 ? internal : engine;
     const path = index % 2 ? `/orders/${randomUUID()}` : '/orders?status=all&limit=100';
     while (running) {
       // Підроблені токени чергуються із запитами без токена: обидва не мають ключа токена.
-      const bearer = mode === 'token' ? accessToken : index % 3 ? forged() : undefined;
+      const bearer =
+        mode === 'token'
+          ? accessToken
+          : mode === 'addresses'
+            ? tokens[index % tokens.length]
+            : index % 3
+              ? forged()
+              : undefined;
+      const headers: Record<string, string> =
+        mode === 'addresses' ? { 'x-forwarded-for': address() } : {};
       let key: string;
       try {
-        const response = await request(path, 'GET', bearer, undefined, base);
+        const response = await request(path, 'GET', bearer, undefined, base, headers);
         await response.arrayBuffer();
         key = String(response.status);
       } catch (error) {
@@ -51,7 +65,7 @@ async function flood(mode: 'token' | 'forged', accessToken: string) {
   process.send!(counts, () => process.disconnect());
 }
 
-function startFlood(mode: 'token' | 'forged', accessToken: string) {
+function startFlood(mode: Mode, accessToken: string) {
   const child: ChildProcess = fork(__filename, ['--flood', mode, accessToken], {
     execArgv: ['--require', 'ts-node/register'],
     env: { ...process.env, TS_NODE_TRANSPILE_ONLY: 'true' },
@@ -101,8 +115,8 @@ async function main() {
     return latency;
   };
 
-  async function underFlood(mode: 'token' | 'forged', during?: () => Promise<void>) {
-    const started = startFlood(mode, flooder);
+  async function underFlood(mode: Mode, during?: () => Promise<void>, accessToken = flooder) {
+    const started = startFlood(mode, accessToken);
     floods.push(started);
     const latencies: number[] = [];
     // Потік має розігнатися, перш ніж міряти заявки іншого користувача.
@@ -252,13 +266,68 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal((await request('/orders?limit=1', 'GET', flooder)).status, 200);
 
-    // Без справжнього токена ліміт на адресу клієнта тримає той самий потік.
-    const anonymous = await underFlood('forged');
+    // Без справжнього токена ліміт на адресу клієнта тримає той самий потік. Ліміт на адресу
+    // нижчий за стелю listener: одна адреса не забирає квоту користувачів з інших адрес.
+    const others = await Promise.all(Array.from({ length: 5 }, newToken));
+    const othersCounts: Counts = {};
+    const anonymous = await underFlood('forged', async () => {
+      const until = performance.now() + 3000;
+      await Promise.all(
+        others.map(async (other, index) => {
+          while (performance.now() < until) {
+            const started = performance.now();
+            const response = await request('/orders?limit=1', 'GET', other, undefined, internal, {
+              'x-forwarded-for': `198.51.100.${index + 1}`,
+            });
+            await response.arrayBuffer();
+            othersCounts[response.status] = (othersCounts[response.status] ?? 0) + 1;
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.max(0, 200 - (performance.now() - started))),
+            );
+          }
+        }),
+      );
+    });
+    const othersTotal = Object.values(othersCounts).reduce((sum, count) => sum + count, 0);
+    console.log(`orders read flood othersUnderOneAddress=${JSON.stringify(othersCounts)}`);
     assert((anonymous['401'] ?? 0) > 0, 'No read without a valid token reached the engine');
+    assert(
+      (othersCounts['200'] ?? 0) >= othersTotal * 0.8,
+      'One address took the read quota of users at other addresses',
+    );
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal((await request('/orders?limit=1', 'GET', flooder)).status, 200);
     // Підроблені ключі не витіснили місця для токена, якого nginx ще не бачив.
     const fresh = await token('register', `${randomUUID()}@system.test`, password);
+    assert.equal((await request('/orders?limit=1', 'GET', fresh)).status, 200);
+
+    // Потік із багатьох адрес і токенів: кожен ключ лишається під своїм лімітом, і без стелі
+    // listener engine отримував би всі читання.
+    const many = await Promise.all(Array.from({ length: 50 }, newToken));
+    // Стеля окрема для кожного listener: потік на `:8080` не забирає квоту `:3001`.
+    const publicReader = await newToken();
+    const publicCounts: Counts = {};
+    await underFlood(
+      'addresses',
+      async () => {
+        for (let i = 0; i < 20; i++) {
+          const started = performance.now();
+          const response = await request('/orders?limit=1', 'GET', publicReader);
+          await response.arrayBuffer();
+          publicCounts[response.status] = (publicCounts[response.status] ?? 0) + 1;
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, 100 - (performance.now() - started))),
+          );
+        }
+      },
+      many.join(','),
+    );
+    console.log(`orders read flood publicUnderInternalFlood=${JSON.stringify(publicCounts)}`);
+    assert(
+      (publicCounts['200'] ?? 0) >= 16,
+      'A flood on the internal listener took the read quota of the public one',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal((await request('/orders?limit=1', 'GET', fresh)).status, 200);
   } catch (error) {
     failure = error;
@@ -277,9 +346,7 @@ async function main() {
 }
 
 const [flag, mode, accessToken] = process.argv.slice(2);
-void (flag === '--flood' ? flood(mode as 'token' | 'forged', accessToken) : main()).catch(
-  (error: unknown) => {
-    console.error(error);
-    process.exit(1);
-  },
-);
+void (flag === '--flood' ? flood(mode as Mode, accessToken) : main()).catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});

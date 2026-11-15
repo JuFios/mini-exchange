@@ -32,7 +32,7 @@ interface Report {
   counts: { engineTrades: number; ledgerTrades: number; matched: number; pending: number };
 }
 
-export function AdminStatus({ user }: { user: string }) {
+export function AdminStatus({ user, notice }: { user: string; notice?: string }) {
   const [status, setStatus] = useState<{ instruments: Instrument[]; queue: Queue }>();
   const [report, setReport] = useState<Report>();
   const [error, setError] = useState('');
@@ -96,6 +96,11 @@ export function AdminStatus({ user }: { user: string }) {
           </div>
           <span className="tag">ОНОВЛЕННЯ · 2 С</span>
         </div>
+        {notice && (
+          <p className="message pending" role="status">
+            {notice}
+          </p>
+        )}
         {error && (
           <p className="message error" role="alert">
             {error}

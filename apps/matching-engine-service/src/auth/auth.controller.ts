@@ -1,9 +1,20 @@
 import { AuthRateGuard } from '../security/rate-limit.guards';
-import { Body, Controller, Header, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { Roles, RolesGuard } from './guards/roles.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -32,6 +43,15 @@ export class AuthController {
   refresh(@Body() dto: RefreshTokenDto) {
     return this.auth.refresh(dto.refreshToken);
   }
+
+  // Роль у claims лишається до `exp`; frontend показує «Стан системи» лише після цієї перевірки.
+  // Внутрішнього токена в frontend немає, тож це звичайний маршрут за access JWT: 204, 403 або 401.
+  @Get('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(['admin'])
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Header('Cache-Control', 'no-store')
+  admin(): void {}
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)

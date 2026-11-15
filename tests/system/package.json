@@ -28,7 +28,9 @@
     "trace": "ts-node trace.ts",
     "rate-limit": "ts-node rate-limit-frontend.ts",
     "orders:read-flood": "ts-node orders-read-flood.ts",
-    "session:revocation": "ts-node session-revocation.ts"
+    "engine-lb:errors": "ts-node edge-errors.ts",
+    "session:revocation": "ts-node session-revocation.ts",
+    "frontend:admin": "ts-node admin-page.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",

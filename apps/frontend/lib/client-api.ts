@@ -25,6 +25,19 @@ function refreshSession() {
   return refreshing;
 }
 
+/**
+ * Відновлення після 401 у перевірці на сервері: той самий запит оновлення, що й для читань.
+ * 401 від оновлення веде на /login, тимчасовий збій сесію не завершує. Поки JWT далеко від `exp`,
+ * оновлення відповідає 204 і для відкликаної сесії: тоді на /login веде повторна перевірка сторінки.
+ */
+export async function recoverSession(): Promise<'refreshed' | 'signed-out' | 'failed'> {
+  const status = await refreshSession().catch(() => 0);
+  if (status >= 200 && status < 300) return 'refreshed';
+  if (status !== 401) return 'failed';
+  window.location.assign('/login');
+  return 'signed-out';
+}
+
 export async function checkedFetch(path: string, init?: RequestInit) {
   // Проксі звіряє користувача з cookie, тож вкладка зі старим сокетом не подає заявки з чужого рахунку.
   const headers = new Headers(init?.headers);
