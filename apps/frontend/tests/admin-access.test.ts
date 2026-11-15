@@ -35,15 +35,13 @@ describe('admin access check', () => {
 
   it('denies access once the engine refuses the role', async () => {
     // Адресу вилучено з ADMIN_EMAILS: claims досі містять роль, а engine відповідає 403.
-    for (const status of [401, 403]) {
-      mock.method(globalThis, 'fetch', async () => new Response('{}', { status }));
-      assert.equal(await adminAccess(admin), 'forbidden');
-      mock.restoreAll();
-    }
+    mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 403 }));
+    assert.equal(await adminAccess(admin), 'forbidden');
   });
 
   it('reports an unknown role when the engine fails or does not answer in time', async () => {
-    for (const status of [429, 500, 502, 503, 504]) {
+    // 401: сесія скінчилась після middleware; сторінка просить оновити її, а не каже «не адмін».
+    for (const status of [401, 429, 500, 502, 503, 504]) {
       mock.method(globalThis, 'fetch', async () => new Response('{}', { status }));
       assert.equal(await adminAccess(admin), 'unknown', `status ${status}`);
       mock.restoreAll();

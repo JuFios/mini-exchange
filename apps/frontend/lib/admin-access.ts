@@ -27,7 +27,8 @@ export async function adminAccess(
     });
     await response.body?.cancel();
     if (response.status === 204) return 'admin';
-    return response.status === 401 || response.status === 403 ? 'forbidden' : 'unknown';
+    // 401 — сесія скінчилась між middleware і перевіркою або відкликана: роль невідома, а не знята.
+    return response.status === 403 ? 'forbidden' : 'unknown';
   } catch {
     return 'unknown';
   }
