@@ -115,6 +115,7 @@ services:
       INGRESS_TOKEN: ${INGRESS_TOKEN:-demo-ingress-token-local-only-00000001}
       FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:-demo-frontend-proxy-local-only-000001}
     volumes:
+      - './deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro'
       - './deploy/nginx/engine-lb.conf:/etc/nginx/conf.d/default.conf:ro'
       # Образ nginx підставляє змінні оточення в шаблони під час кожного старту.
       - './deploy/nginx/cors-origins.conf.template:/etc/nginx/templates/cors-origins.conf.template:ro'

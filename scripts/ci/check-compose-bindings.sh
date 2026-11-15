@@ -35,6 +35,8 @@ docker compose config --format json | jq -e '
   (["matching-engine-1","matching-engine-2","settlement-service"] | all(. as $name |
     $s[$name].environment.CORS_ORIGINS == $s["engine-lb"].environment.CORS_ORIGINS)) and
   ($s["engine-lb"].volumes | any(.target == "/etc/nginx/templates/cors-origins.conf.template")) and
+  # Без власного nginx.conf лишається типова межа 1024 підключення на воркер.
+  ($s["engine-lb"].volumes | any(.target == "/etc/nginx/nginx.conf" and .read_only == true)) and
   (["frontend","postgres-bootstrap","engine-migrate","settlement-migrate"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] | all(. as $name | $s[$name].restart == "unless-stopped"))'
 remote() {
@@ -93,6 +95,7 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     (["matching-engine-1","matching-engine-2","settlement-service"] | all(. as $name |
       $s[$name].environment.CORS_ORIGINS == $s["engine-lb"].environment.CORS_ORIGINS)) and
     ($s["engine-lb"].volumes | any(.target == "/etc/nginx/templates/cors-origins.conf.template")) and
+    ($s["engine-lb"].volumes | any(.target == "/etc/nginx/nginx.conf" and .read_only == true)) and
     ($s["engine-lb"].environment.CORS_ORIGINS == $ENV.CORS_ORIGINS) and
     ("CORS_ORIGINS" | test($s["engine-lb"].environment.NGINX_ENVSUBST_FILTER)) and
     (["matching-engine-1","matching-engine-2"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
