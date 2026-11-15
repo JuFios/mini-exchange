@@ -50,7 +50,14 @@ it('applies, reverts, and reapplies the schema with database constraints', async
         WHERE table_name='order_requests' AND column_name='reserved') AS funded,
       to_regclass('outbox_trade_executed_idx') IS NOT NULL
         AND to_regclass('outbox_order_closed_idx') IS NOT NULL AS redrive`);
+  const reservationMode = () =>
+    source.query(`SELECT to_regclass('engine_settings') IS NOT NULL AS settings,
+      EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='orders'::regclass
+        AND tgname='orders_reservation_mode') AS trigger`);
   for (let cycle = 0; cycle < 2; cycle++) {
+    expect(await reservationMode()).toEqual([{ settings: true, trigger: true }]);
+    await migrate(source, 'revert');
+    expect(await reservationMode()).toEqual([{ settings: false, trigger: false }]);
     expect(await objects()).toEqual([{ claim: true, funded: true, redrive: true }]);
     await migrate(source, 'revert');
     expect(await objects()).toEqual([{ claim: true, funded: false, redrive: false }]);
@@ -85,7 +92,7 @@ it('serializes concurrent migrations on an empty schema', async () => {
   try {
     await Promise.all([migrate(source, 'run'), migrate(second, 'run')]);
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 7 },
+      { count: 8 },
     ]);
     expect(await source.query('SELECT count(*)::int AS count FROM instruments')).toEqual([
       { count: 2 },
@@ -120,7 +127,7 @@ it('rolls back schema and history when the migration connection is terminated', 
   ).toEqual([{ orders: null, migrations: null, probe: null }]);
   await migrate(source, 'run');
   expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-    { count: 7 },
+    { count: 8 },
   ]);
 });
 
@@ -142,7 +149,7 @@ it('fails with a clear error instead of waiting forever for a migration lock hel
     await runner.commitTransaction();
     await migrate(source, 'run', { lockTimeoutMs: 200 });
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 7 },
+      { count: 8 },
     ]);
   } finally {
     if (runner.isTransactionActive) await runner.rollbackTransaction();

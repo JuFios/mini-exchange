@@ -9,6 +9,7 @@ import { User } from './auth/entities/user.entity';
 import { Order } from './orders/entities/order.entity';
 import { Instrument } from './orders/entities/instrument.entity';
 import {
+  EngineSettings,
   InstrumentState,
   OrderCommand,
   OrderRequest,
@@ -40,6 +41,7 @@ export function engineDataSourceOptions(
       User,
       Order,
       Instrument,
+      EngineSettings,
       InstrumentState,
       OrderCommand,
       OrderRequest,

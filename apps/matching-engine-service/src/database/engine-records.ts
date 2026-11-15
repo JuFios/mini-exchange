@@ -1,5 +1,14 @@
 import { EntitySchema } from 'typeorm';
 
+export const EngineSettings = new EntitySchema({
+  name: 'EngineSettings',
+  tableName: 'engine_settings',
+  columns: {
+    id: { type: 'boolean', primary: true, default: true },
+    reservationsRequired: { name: 'reservations_required', type: 'boolean', default: false },
+  },
+});
+
 export const InstrumentState = new EntitySchema({
   name: 'InstrumentState',
   tableName: 'instrument_state',
