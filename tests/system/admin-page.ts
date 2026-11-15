@@ -10,8 +10,11 @@ const statusPage = 'ОНОВЛЕННЯ · 2 С';
 const denied = 'Сторінка доступна лише адміністратору.';
 const unknown = 'Не вдалося перевірити роль адміністратора.';
 const replicas = ['matching-engine-1', 'matching-engine-2'];
+// Дедлайн перевірки 1,5 с плюс рендер сторінки.
+const DEADLINE_BOUND_MS = 3000;
 
 async function page(path: string, accessToken: string) {
+  const started = performance.now();
   const response = await fetch(frontend + path, {
     headers: { cookie: `exchange_access=${accessToken}` },
     redirect: 'manual',
@@ -21,10 +24,19 @@ async function page(path: string, accessToken: string) {
     status: response.status,
     location: response.headers.get('location'),
     html: await response.text(),
+    ms: Math.round(performance.now() - started),
   };
 }
 
+const unpause = (id: string) => {
+  if (docker('inspect', '--format', '{{.State.Status}}', id) === 'paused') docker('unpause', id);
+};
+
 async function main() {
+  const ids = replicas.map(container);
+  // Прогін, убитий посеред паузи, не має ламати наступний.
+  for (const id of ids) unpause(id);
+  for (const service of replicas) await waitReady(service);
   const login = await request('/auth/login', 'POST', undefined, {
     email: process.env.ADMIN_EMAIL,
     password: process.env.ADMIN_PASSWORD,
@@ -37,7 +49,7 @@ async function main() {
   const adminTrade = await page('/exchange/ABC', admin);
   const userStatus = await page('/admin/status', user);
   const userTrade = await page('/exchange/ABC', user);
-  const seen = {
+  const seen: Record<string, unknown[]> = {
     adminStatus: [
       adminStatus.status,
       adminStatus.html.includes(statusPage),
@@ -48,31 +60,43 @@ async function main() {
     userLink: [userTrade.status, userTrade.html.includes(link)],
   };
 
-  // Engine не відповідає: сторінка не чекає довше за дедлайн перевірки й не відкривається.
-  const ids = replicas.map(container);
-  let stalled: Awaited<ReturnType<typeof page>> & { ms?: number };
   try {
+    // Одна репліка зависла: nginx має перейти на іншу раніше, ніж спливе дедлайн перевірки.
+    docker('pause', ids[0]);
+    const pages = [];
+    for (let i = 0; i < 6; i++) pages.push(await page('/admin/status', admin));
+    unpause(ids[0]);
+    seen.oneStalled = [pages.filter(({ html }) => html.includes(statusPage)).length];
+    const slowest = Math.max(...pages.map(({ ms }) => ms));
+
+    // Обидві зависли: сторінка не відкривається, посилання немає, дедлайн тримається.
     for (const id of ids) docker('pause', id);
-    const started = performance.now();
-    stalled = await page('/admin/status', admin);
-    stalled.ms = Math.round(performance.now() - started);
+    const stalled = await page('/admin/status', admin);
+    const stalledTrade = await page('/exchange/ABC', admin);
+    seen.stalled = [
+      stalled.status,
+      stalled.html.includes(unknown),
+      stalled.html.includes(statusPage),
+    ];
+    seen.stalledLink = [stalledTrade.status, stalledTrade.html.includes(link)];
+    console.log(
+      `admin page ${JSON.stringify(seen)} oneStalledSlowestMs=${slowest} ` +
+        `stalledMs=${stalled.ms} stalledTradeMs=${stalledTrade.ms}`,
+    );
+    for (const [name, ms] of Object.entries({ slowest, stalled: stalled.ms }))
+      assert(ms < DEADLINE_BOUND_MS, `The admin page (${name}) waited ${ms} ms`);
   } finally {
-    for (const id of ids)
-      if (docker('inspect', '--format', '{{.State.Status}}', id) === 'paused')
-        docker('unpause', id);
+    for (const id of ids) unpause(id);
   }
   for (const service of replicas) await waitReady(service);
-  Object.assign(seen, {
-    stalled: [stalled.status, stalled.html.includes(unknown), stalled.html.includes(statusPage)],
-  });
-  console.log(`admin page ${JSON.stringify(seen)} stalledMs=${stalled.ms}`);
-  assert(stalled.ms < 5000, `The admin page waited ${stalled.ms} ms for a stalled engine`);
   assert.deepEqual(seen, {
     adminStatus: [200, true, false],
     adminLink: [200, true],
     userStatus: [307, `${frontend}/exchange/ABC`],
     userLink: [200, false],
+    oneStalled: [6],
     stalled: [200, true, false],
+    stalledLink: [200, false],
   });
 }
 
