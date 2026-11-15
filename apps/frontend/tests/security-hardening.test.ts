@@ -42,26 +42,62 @@ it('replaces upstream HTML errors with a bounded JSON response', async () => {
   assert.doesNotMatch(await response.text(), /nginx|html/);
 });
 
-it('does not rotate the refresh cookie on cross-site or same-site navigation', async () => {
-  const access =
+it('refreshes cross-site navigation without rotating the refresh cookie', async () => {
+  const expired =
     'h.' + Buffer.from(JSON.stringify({ sid: 's', exp: 1 })).toString('base64url') + '.s';
-  const fetch = mock.method(globalThis, 'fetch', async () =>
-    Response.json({ accessToken: access, refreshToken: 'r' }),
-  );
+  const fresh =
+    'h.' +
+    Buffer.from(
+      JSON.stringify({ sid: 's', sub: 'u', exp: Math.floor(Date.now() / 1000) + 900 }),
+    ).toString('base64url') +
+    '.s';
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ accessToken: fresh }));
   for (const site of ['cross-site', 'same-site']) {
     const response = await middleware(
       new NextRequest('http://localhost:3000/exchange/ABC', {
         headers: {
           host: 'localhost:3000',
-          cookie: `exchange_access=${access}; exchange_refresh=r`,
+          cookie: `exchange_access=${expired}; exchange_refresh=r`,
           'sec-fetch-site': site,
         },
       }),
     );
-    assert.equal(fetch.mock.callCount(), 0);
-    assert.equal(response.headers.get('set-cookie'), null);
-    assert.equal(response.headers.get('location'), 'http://localhost:3000/login');
+    const body = JSON.parse(String(fetch.mock.calls.at(-1)?.arguments[1]?.body));
+    assert.deepEqual(body, { refreshToken: 'r', rotate: false });
+    // Сторінка відкривається без /login, а refresh-cookie лишається тим самим.
+    assert.equal(response.headers.get('location'), null);
+    const cookies = response.headers.get('set-cookie') ?? '';
+    assert.match(cookies, new RegExp(`exchange_access=${fresh.replace(/\./g, '\\.')}`));
+    assert.doesNotMatch(cookies, /exchange_refresh=/);
   }
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
+it('rotates on a same-origin navigation and signs out when the session is gone', async () => {
+  const expired =
+    'h.' + Buffer.from(JSON.stringify({ sid: 's', exp: 1 })).toString('base64url') + '.s';
+  const navigate = (site: string) =>
+    middleware(
+      new NextRequest('http://localhost:3000/exchange/ABC', {
+        headers: {
+          host: 'localhost:3000',
+          cookie: `exchange_access=${expired}; exchange_refresh=r`,
+          'sec-fetch-site': site,
+        },
+      }),
+    );
+  const rotated = mock.method(globalThis, 'fetch', async () =>
+    Response.json({ accessToken: expired, refreshToken: 'rotated' }),
+  );
+  await navigate('same-origin');
+  assert.deepEqual(JSON.parse(String(rotated.mock.calls[0].arguments[1]?.body)), {
+    refreshToken: 'r',
+  });
+  rotated.mock.restore();
+  mock.method(globalThis, 'fetch', async () => new Response(null, { status: 401 }));
+  const response = await navigate('cross-site');
+  assert.equal(response.headers.get('location'), 'http://localhost:3000/login');
+  assert.match(response.headers.get('set-cookie') ?? '', /exchange_refresh=;/);
 });
 
 it('uses a fresh script nonce and passes it to the renderer', async () => {

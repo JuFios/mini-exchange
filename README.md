@@ -1423,6 +1423,11 @@ Unit-тест «applies the address, token and listener read limits on both engi
 забороняє таке змішування. Cleanup ізольованої тестової БД скидає цей прапорець після закриття app.
 Фейки звірки відповідають і на `/internal/orders/live`; вони перевіряють новий клас розбіжностей.
 
+Тест frontend «does not rotate the refresh cookie on cross-site or same-site navigation» замінено
+тестом «refreshes cross-site navigation without rotating the refresh cookie». Перевірка, що
+refresh-cookie на такому переході не змінюється, лишилась; змінилось лише те, що сторінка тепер
+відкривається з новим access замість переходу на login.
+
 Два unit-тести frontend чекали `GET /orders?status=all&limit=100`. Тепер вони чекають
 `status=cancelled`, бо вкладку «Скасовані» наповнює окремий фільтр. Тест злиття за версією
 більше не повертає відкриту заявку з цього запиту, бо `cancelled` її не віддає. Злиття за
@@ -1884,8 +1889,11 @@ CSP використовує окремий nonce для кожної HTML-ві�
 Inline JavaScript без nonce заборонено; HTML рендериться динамічно. `Permissions-Policy`
 вимикає camera, microphone і geolocation; `x-powered-by` вимкнено. Межа тіла на frontend ingress —
 64 КіБ, відповідь 413 має JSON. Не-JSON 5xx upstream BFF замінює на 503 JSON.
-На GET/HEAD refresh дозволено лише для `Sec-Fetch-Site: same-origin`, `none` або без заголовка.
-Cross-site і same-site перехід із простроченим access веде на login без ротації cookie.
+На GET/HEAD з `Sec-Fetch-Site: same-origin`, `none` або без заголовка refresh ротує токени, як
+завжди. Перехід cross-site або same-site (посилання з пошти чи іншого сайту) отримує лише новий
+access через `"rotate": false`, refresh-cookie не змінюється. Чужа сторінка може обірвати такий
+перехід, але обрив нічого не ламає: старий refresh лишається чинним. Раніше такий перехід вів на
+login, а новий вхід відкликав сесії на інших пристроях.
 
 Реєстрація зберігає 409 для зайнятого email: це дозволяє визначити наявність акаунта під
 IP-лімітом. Підтвердження email у цьому демо немає. Bcrypt cost 10 збережено для сумісності

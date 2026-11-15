@@ -101,10 +101,12 @@ export async function authAction(request: NextRequest, action: 'login' | 'regist
   }
 }
 
-export async function refreshSession(request: NextRequest) {
+/** `rotate: false` — лише новий access JWT; refresh-cookie лишається тим самим. */
+export async function refreshSession(request: NextRequest, rotate = true) {
   const refreshToken = request.cookies.get(REFRESH_COOKIE)?.value;
   if (!refreshToken) return { expired: false };
-  const upstream = await authFetch(request, 'refresh', JSON.stringify({ refreshToken }));
+  const body = rotate ? { refreshToken } : { refreshToken, rotate: false };
+  const upstream = await authFetch(request, 'refresh', JSON.stringify(body));
   if (upstream.status === 401) return { expired: true };
   if (!upstream.ok) return { expired: false, failure: backendResponse(upstream) };
   const tokens: Tokens = await upstream.json();

@@ -45,9 +45,12 @@ export async function middleware(request: NextRequest) {
   // оновлення після grace відкликає сесію. Тому сторінка оновлює лише вже прострочений токен.
   if (refresh && (protectedPage ? expired : nearExpiry) && !deferred) {
     // Для мутацій Origin перевіряється також до можливого refresh.
-    if (navigation ? trustedNavigation : sameOrigin(request)) {
+    if (navigation || sameOrigin(request)) {
       try {
-        update = await refreshSession(request);
+        // Перехід з іншого сайту може обірвати чужа сторінка відразу після відповіді. Обірвана
+        // ротація лишила б старий refresh, і наступне оновлення після grace відкликало б сесію.
+        // Тому такий перехід отримує лише новий access JWT, а refresh-cookie не змінюється.
+        update = await refreshSession(request, !navigation || trustedNavigation);
         // Токен із запасу ще чинний: збій refresh не має його відбирати. Без чинного токена
         // тимчасовий збій (503, 429) віддається як є і на сторінці: перехід на /login
         // змусив би увійти знову, а новий вхід відкликає сесію в інших вкладках і пристроях.
@@ -66,7 +69,7 @@ export async function middleware(request: NextRequest) {
   }
 
   let response: NextResponse;
-  if (protectedPage && (!token || (expired && navigation && !trustedNavigation))) {
+  if (protectedPage && !token) {
     response = NextResponse.redirect(new URL('/login', requestOrigin(request)));
   } else if (path === '/admin/status' && !token?.roles?.includes('admin')) {
     response = NextResponse.redirect(new URL('/exchange/ABC', requestOrigin(request)));
