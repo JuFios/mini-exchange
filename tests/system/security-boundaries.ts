@@ -4,10 +4,10 @@ import { request as httpRequest } from 'node:http';
 import { io } from 'socket.io-client';
 import { engine, request } from './helpers';
 
-function withHost(port: number, host: string) {
+function withHost(port: number, host: string, path = '/health') {
   return new Promise<{ status: number; server: string }>((resolve, reject) => {
     const request = httpRequest(
-      `http://engine-lb:${port}/health`,
+      `http://engine-lb:${port}${path}`,
       {
         headers: { host },
         signal: AbortSignal.timeout(5000),
@@ -36,6 +36,8 @@ async function main() {
   }
   assert.equal((await withHost(3001, 'localhost:3001')).status, 200);
   assert.equal((await withHost(3000, 'localhost:3001')).status, 421);
+  assert.equal((await withHost(3001, 'rebind.attacker.test', '/.engine-lb-error')).status, 404);
+  assert.equal((await withHost(3001, 'rebind.attacker.test', '/.ENGINE-LB-ERROR')).status, 421);
   const frontend = 'http://frontend:3000';
   const oversized = await fetch('http://engine-lb:3000/api/auth/login', {
     method: 'POST',
