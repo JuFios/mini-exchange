@@ -61,6 +61,13 @@ const expected = (status: number, origin: string, read = true): Seen => {
 
 async function main() {
   const ids = replicas.map(container);
+  // Заглушка з імен реплік, яку лишив убитий прогін, перехоплювала б їхні з'єднання.
+  const refuserName = `${docker('inspect', '--format', '{{.Name}}', container('engine-lb')).slice(1)}-refuser`;
+  try {
+    docker('rm', '--force', refuserName);
+  } catch {
+    // Заглушки немає.
+  }
   for (const id of ids) resume(id);
   for (const service of replicas) await waitReady(service, 120000);
   const accessToken = await token(
@@ -154,6 +161,8 @@ async function main() {
   );
 
   let failure: unknown;
+  // Контейнер без слухача на іменах реплік; прибирається й після збою.
+  let refuser: string | undefined;
   try {
     // Зависла репліка: nginx чекає proxy_read_timeout на кожній і відповідає 504.
     for (const id of ids) docker('pause', id);
@@ -235,7 +244,30 @@ async function main() {
       wants['timeout 504'][origin] = expected(504, origin);
     }
 
-    // Зупинені репліки зникають з DNS Compose: nginx лишається без адрес і відповідає 502.
+    // 502 — коли жодна репліка не приймає з'єднання. Зупинки мало: для імені без жодного
+    // контейнера DNS Compose на Linux відповідає помилкою сервера, nginx лишає стару адресу, і
+    // з'єднання до неї зависає (504). Тому на імена реплік ставимо контейнер без слухача, і так,
+    // щоб ім'я ніколи не лишалось без контейнера: спершу заглушка, потім зупинка реплік.
+    const lb = container('engine-lb');
+    const network = docker(
+      'inspect',
+      '--format',
+      '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\\n"}}{{end}}',
+      lb,
+    ).split('\n')[0];
+    refuser = docker(
+      'run',
+      '--detach',
+      '--rm',
+      '--name',
+      refuserName,
+      '--network',
+      network,
+      ...replicas.flatMap((name) => ['--network-alias', name]),
+      docker('inspect', '--format', '{{.Config.Image}}', lb),
+      'sleep',
+      '300',
+    );
     for (const id of ids) docker('stop', '--time', '5', id);
     const down: Record<string, Response> = {};
     for (const origin of origins)
@@ -250,14 +282,20 @@ async function main() {
             { origin },
             10000,
           );
-          if (response.status !== 502) await response.arrayBuffer();
-          return response;
+          // Тіло читається одразу: таймаут запиту спливе, поки репліки перезапускаються.
+          const text = await response.text();
+          return new Response(text, { status: response.status, headers: response.headers });
         },
         (response) => response.status === 502,
-        30000,
+        60000,
       );
+    // Репліки стартують, поки заглушка ще тримає імена; після її видалення nginx перечитує
+    // адреси за `valid=5s` резолвера.
     for (const id of ids) docker('start', id);
     for (const service of replicas) await waitReady(service, 120000);
+    docker('rm', '--force', refuser);
+    refuser = undefined;
+    await new Promise((resolve) => setTimeout(resolve, 6000));
     await until(
       async () => (await request('/health')).status,
       (status) => status === 200,
@@ -273,7 +311,11 @@ async function main() {
     failure = error;
     throw error;
   } finally {
-    await cleanup(failure, ...ids.map((id) => () => resume(id)));
+    await cleanup(
+      failure,
+      () => refuser && docker('rm', '--force', refuser),
+      ...ids.map((id) => () => resume(id)),
+    );
   }
   console.log(`engine-lb errors ${JSON.stringify(results)}`);
   assert.deepEqual(results, wants);
