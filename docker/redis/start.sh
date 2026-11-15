@@ -3,7 +3,13 @@
 set -eu
 # Службові команди (`docker compose run redis sh ...`, імпорт тому) ACL не потребують і не мають
 # лишати файлів у /data: імпорт вимагає порожній том.
-if [ "${1:-}" != redis-server ]; then exec /usr/local/bin/docker-entrypoint.sh "$@"; fi
+# Ті самі форми, які офіційний entrypoint перетворює на запуск сервера: прапорець або `.conf`.
+# Інакше такий запуск пройшов би повз ACL і став би Redis без пароля.
+case "${1:-}" in -*|*.conf) set -- redis-server "$@" ;; esac
+if [ "$(basename -- "${1:-}")" != redis-server ]; then exec "$@"; fi
+# Офіційний entrypoint знижує права лише для `redis-server` без шляху.
+shift
+set -- redis-server "$@"
 umask 077
 hash() { printf '%s' "$1" | sha256sum | cut -d ' ' -f 1; }
 : "${REDISCLI_AUTH:?REDISCLI_AUTH is required}"
