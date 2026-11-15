@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { DataSource } from 'typeorm';
 import { OUTBOX_RELAY_LOCK } from '../database/advisory-lock';
+import { readSettlementQueue } from './settlement-queue';
 import { outboxStreamFields, OutboxStreamRow } from './streams';
 
 const REDIS_TIMEOUT_MS = 1000;
@@ -50,6 +51,14 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
 
   onApplicationBootstrap(): void {
     this.schedule(this.pollMs);
+  }
+
+  /**
+   * Черга settlement для метрик engine: сигнал лишається, коли settlement не працює. Клієнт relay
+   * без offline queue і з таймаутом команди 1 с, тож недоступний Redis не затримує /metrics.
+   */
+  settlementQueue(instruments: string[]) {
+    return readSettlementQueue(this.redis, instruments);
   }
 
   async onModuleDestroy(): Promise<void> {

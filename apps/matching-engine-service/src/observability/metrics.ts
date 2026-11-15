@@ -44,6 +44,21 @@ export const backlog = gauge('engine_backlog', 'Accepted commands still to apply
 export const owner = gauge('engine_owner', 'Locally owned instrument', 'instrument');
 export const unpublished = gauge('outbox_unpublished', 'Outbox records waiting for publication');
 export const wsClients = gauge('ws_clients', 'Connected Engine.IO transports');
+export const settlementStreamLength = gauge(
+  'engine_settlement_stream_length',
+  'Entries in the settlement stream, NaN when Redis is unavailable',
+  'stream',
+);
+export const settlementGroupPending = gauge(
+  'engine_settlement_group_pending',
+  'Settlement stream entries delivered but not acknowledged, NaN when unknown',
+  'stream',
+);
+export const settlementGroupLag = gauge(
+  'engine_settlement_group_lag',
+  'Settlement stream entries not yet delivered to the settlement group, NaN when unknown',
+  'stream',
+);
 
 for (const scope of ['auth', 'login_email', 'public', 'orders', 'orders_minute', 'ws_subscribe']) {
   rateLimited.inc({ scope }, 0);

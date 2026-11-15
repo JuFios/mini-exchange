@@ -1,12 +1,22 @@
 import { HealthCheck, HealthCheckError, HealthCheckService } from '@nestjs/terminus';
-import { backlog, engineMetrics, owner, unpublished } from '../observability/metrics';
+import {
+  backlog,
+  engineMetrics,
+  owner,
+  settlementGroupLag,
+  settlementGroupPending,
+  settlementStreamLength,
+  unpublished,
+} from '../observability/metrics';
 import { Controller, Get, Header, ServiceUnavailableException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { DataSource } from 'typeorm';
 import { ReservationSweeper } from '../intake/reservation-sweeper';
 import { BookLoader } from '../engine/book-loader';
 import { LeaseManager } from './lease-manager';
 import { OwnershipCoordinator } from './ownership-coordinator';
 import { ReplicaLagMonitor } from '../realtime/replica-lag.monitor';
+import { OutboxRelay } from '../outbox/outbox-relay.service';
 
 @Controller()
 export class ReadinessController {
@@ -18,6 +28,7 @@ export class ReadinessController {
     private readonly ownership: OwnershipCoordinator,
     private readonly sweeper: ReservationSweeper,
     private readonly realtime: ReplicaLagMonitor,
+    private readonly modules: ModuleRef,
   ) {}
 
   // showMigrations() створює таблицю міграцій і не звільняє з’єднання після помилки.
@@ -76,6 +87,15 @@ export class ReadinessController {
       backlog.set({ instrument }, Number(state.backlog));
       const lease = this.leases.leases.get(instrument);
       owner.set({ instrument }, Number(lease !== undefined && this.leases.valid(lease)));
+    }
+    // Relay належить кореневому модулю; його клієнт Redis уже є в кожній репліці.
+    const queue = await this.modules
+      .get(OutboxRelay, { strict: false })
+      .settlementQueue(states.map(({ instrument }) => instrument));
+    for (const { stream, length, pending, lag } of queue) {
+      settlementStreamLength.set({ stream }, length);
+      settlementGroupPending.set({ stream }, pending);
+      settlementGroupLag.set({ stream }, lag);
     }
     const lag = this.realtime.lag();
     return (
