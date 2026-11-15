@@ -1,6 +1,6 @@
 import { EntityManager } from 'typeorm';
 import type { Asset } from '../ledger/amount';
-import type { EngineOrdersClient, TerminalOrder } from './engine-orders.client';
+import type { EngineOrdersClient, LiveOrder, TerminalOrder } from './engine-orders.client';
 import type { Discrepancy } from './trade-comparison';
 
 const PAGE_SIZE = 1000;
@@ -80,6 +80,61 @@ export async function scanStuckReservations(
     found.push(...stuck.slice(0, Math.max(0, context.limit - found.length)));
     if (page.length < PAGE_SIZE) break;
     after = page[page.length - 1].reservation_id;
+  }
+  return { count, found };
+}
+
+/**
+ * Заявка в книзі без активного резерву: її кошти вже звільнено, наприклад підробленим
+ * `order.closed`, і власник може витратити їх удруге. Резерв створюється до прийому заявки, тож
+ * свіжа заявка без нього означала б лише, що snapshot звірки старший за неї: її пропускаємо.
+ */
+export function unreservedOrders(
+  orders: readonly LiveOrder[],
+  active: ReadonlySet<string>,
+  { now, graceMs }: { now: number; graceMs: number },
+): Discrepancy[] {
+  return orders
+    .filter(
+      (order) =>
+        !active.has(order.orderId.toLowerCase()) && now - Date.parse(order.createdAt) >= graceMs,
+    )
+    .map((order) => ({
+      type: 'unreserved_order' as const,
+      tradeId: null,
+      instrument: order.instrument,
+      executedAt: null,
+      expected: { orderId: order.orderId, reservation: 'active' },
+      actual: { orderId: order.orderId, userId: order.userId, createdAt: order.createdAt },
+    }));
+}
+
+/** Проходить сторінками книгу engine і шукає заявки, чиї резерви в ledger не активні. */
+export async function scanUnreservedOrders(
+  db: EntityManager,
+  engine: Pick<EngineOrdersClient, 'live'>,
+  context: { instrument?: string; now: number; graceMs: number; limit: number },
+): Promise<{ count: number; found: Discrepancy[] }> {
+  let count = 0;
+  const found: Discrepancy[] = [];
+  let after = NIL_UUID;
+  for (;;) {
+    const page = await engine.live(after, context.instrument);
+    if (page.length === 0) break;
+    const rows: { reservation_id: string }[] = await db.query(
+      `SELECT reservation_id FROM reservations
+       WHERE reservation_id = ANY($1::uuid[]) AND status = 'active'`,
+      [page.map(({ orderId }) => orderId)],
+    );
+    const missing = unreservedOrders(
+      page,
+      new Set(rows.map(({ reservation_id }) => reservation_id)),
+      context,
+    );
+    count += missing.length;
+    found.push(...missing.slice(0, Math.max(0, context.limit - found.length)));
+    if (page.length < PAGE_SIZE) break;
+    after = page[page.length - 1].orderId;
   }
   return { count, found };
 }

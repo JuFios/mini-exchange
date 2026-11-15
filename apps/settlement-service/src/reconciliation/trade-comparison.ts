@@ -42,7 +42,8 @@ export type DiscrepancyType =
   | 'duplicate'
   | 'payload_conflict'
   | 'reservation_leak'
-  | 'stuck_reservation';
+  | 'stuck_reservation'
+  | 'unreserved_order';
 
 export interface Discrepancy {
   type: DiscrepancyType;
@@ -201,6 +202,7 @@ export async function compareStreams(
       payload_conflict: 0,
       reservation_leak: 0,
       stuck_reservation: 0,
+      unreserved_order: 0,
     },
     engine: new Map(),
     ledger: new Map(),

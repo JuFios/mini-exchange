@@ -9,6 +9,13 @@ export interface TerminalOrder {
   closedAt: string;
 }
 
+export interface LiveOrder {
+  orderId: string;
+  userId: string;
+  instrument: string;
+  createdAt: string;
+}
+
 @Injectable()
 export class EngineOrdersClient {
   private readonly url: string;
@@ -30,6 +37,21 @@ export class EngineOrdersClient {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ orderIds }),
+      },
+    );
+    return orders;
+  }
+
+  /** Сторінка (до 1000) заявок у книзі, прийнятих із резервом, з `orderId` більшим за `after`. */
+  async live(after: string, instrument?: string): Promise<LiveOrder[]> {
+    const { orders } = await engineCall<{ orders: LiveOrder[] }>(
+      'orders',
+      new URL('/internal/orders/live', this.url),
+      this.token,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ after, ...(instrument && { instrument }) }),
       },
     );
     return orders;

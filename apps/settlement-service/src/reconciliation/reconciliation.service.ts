@@ -4,7 +4,7 @@ import { DataSource } from 'typeorm';
 import { ASSET_SCALES, Asset, formatAmount } from '../ledger/amount';
 import { EngineOrdersClient } from './engine-orders.client';
 import { EngineTradesClient, Period } from './engine-trades.client';
-import { scanStuckReservations } from './stuck-reservations';
+import { scanStuckReservations, scanUnreservedOrders } from './stuck-reservations';
 import { ledgerTrades } from './ledger-trades.reader';
 import { compareStreams, Discrepancy, DiscrepancyType, Totals } from './trade-comparison';
 
@@ -155,6 +155,14 @@ export class ReconciliationService {
       });
       comparison.counts.stuck_reservation += stuck.count;
       discrepancies.push(...stuck.found);
+      const unreserved = await scanUnreservedOrders(db, this.orders, {
+        instrument: period.instrument,
+        now,
+        graceMs: this.graceMs,
+        limit: Math.max(0, MAX_DISCREPANCIES - discrepancies.length),
+      });
+      comparison.counts.unreserved_order += unreserved.count;
+      discrepancies.push(...unreserved.found);
 
       const perAsset = assets.map((row) => ({
         asset: row.asset,

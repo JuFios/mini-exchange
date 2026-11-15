@@ -35,7 +35,7 @@ const ledger = ledgerApp(
     customize: (builder) =>
       builder
         .overrideProvider(EngineOrdersClient)
-        .useValue({ terminal: async () => [] })
+        .useValue({ terminal: async () => [], live: async () => [] })
         .overrideProvider(EngineTradesClient)
         .useValue({
           async *trades() {
@@ -261,6 +261,58 @@ it('keeps an order close pending until its wallet push reaches the stream', asyn
   } finally {
     append.mockRestore();
   }
+});
+
+it('dead-letters an order close for another user or asset and keeps the reservation', async () => {
+  const trade = tradeFixture();
+  await reserveTrade(ledger.app(), trade);
+  const balances = () =>
+    source().query(
+      "SELECT kind,balance FROM accounts WHERE user_id=$1 AND asset='ABC' ORDER BY kind",
+      [trade.sellerUserId],
+    );
+  const before = await balances();
+  const close = (changes: Record<string, string>) =>
+    streamFields('order.closed', {
+      orderId: trade.sellOrderId,
+      userId: trade.sellerUserId,
+      instrument: 'ABC',
+      side: 'sell',
+      reason: 'cancelled',
+      releasedAsset: 'ABC',
+      releasedAmount: '20000000',
+      seq: '1',
+      ...changes,
+    });
+  consumer = startConsumer(ledger.app());
+  await redis.xadd(abcStream, '*', ...close({ userId: randomUUID() }));
+  await redis.xadd(abcStream, '*', ...close({ releasedAsset: 'USD' }));
+  await until(
+    () => redis.xlen(DEAD_LETTER_STREAM),
+    (length) => length === 2,
+  );
+  await until(
+    () => pendingCount(redis),
+    (pending) => pending === 0,
+  );
+  expect(await balances()).toEqual(before);
+  expect(
+    await source().query('SELECT status,remaining FROM reservations WHERE reservation_id=$1', [
+      trade.sellOrderId,
+    ]),
+  ).toEqual([{ status: 'active', remaining: '50000000' }]);
+  expect(
+    (await source().query('SELECT stream,reason FROM settlement_failures ORDER BY id')).map(
+      ({ reason }: { reason: string }) => reason,
+    ),
+  ).toEqual([
+    'Order close does not match the reservation owner or asset',
+    'Order close does not match the reservation owner or asset',
+  ]);
+
+  // Справжнє закриття після підробленого звільняє резерв як звичайно.
+  await redis.xadd(abcStream, '*', ...close({}));
+  await until(balances, (rows) => rows[1]?.balance === '30000000');
 });
 
 it('dead-letters an invalid record at once and a conflicting trade without moving funds', async () => {
