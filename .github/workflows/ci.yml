@@ -263,6 +263,9 @@ jobs:
         run: docker compose run --rm system-tests npm run orders:sync
       - name: Check that one user's order reads do not slow other submits
         run: docker compose run --rm system-tests npm run orders:read-flood
+      # Зупиняє обидві репліки, тож іде останнім перед прогонами на окремих стеках.
+      - name: Check CORS on responses that nginx builds itself
+        run: docker compose run --rm system-tests npm run engine-lb:errors
       - name: Run concurrency, chaos and reconnect against fresh stacks
         run: bash tests/system/run-fresh.sh
       - name: Reproduce starter failures and compare lease recovery
