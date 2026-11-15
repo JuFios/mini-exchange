@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
-import { ChildProcess, fork } from 'node:child_process';
+import { ChildProcess, fork, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cancelOrder, cleanup, engine, request, submit, token, waitReady } from './helpers';
+import {
+  cancelOrder,
+  cleanup,
+  container,
+  engine,
+  request,
+  submit,
+  token,
+  waitReady,
+} from './helpers';
 
 const internal = 'http://engine-lb:8080';
 const instrument = 'XYZ';
@@ -105,7 +114,22 @@ function startFlood(mode: Mode, accessTokens: string, replayKey: string) {
   };
 }
 
+/**
+ * Нестачу з'єднань nginx пише лише в error log (stderr контейнера), а клієнт бачить обрив, який
+ * у фазах потоку рахується як звичайна помилка. Без цієї перевірки сценарій міг би пройти на
+ * nginx, що вже відмовляє.
+ */
+function connectionShortage(since: string) {
+  const logs = spawnSync('docker', ['logs', '--since', since, container('engine-lb')], {
+    encoding: 'utf8',
+    maxBuffer: 512 * 1024 * 1024,
+  });
+  assert.equal(logs.status, 0, logs.stderr);
+  return /worker_connections are not enough/.test(logs.stderr);
+}
+
 async function main() {
+  const startedAt = new Date().toISOString();
   for (const service of ['matching-engine-1', 'matching-engine-2']) await waitReady(service);
   const password = 'system-user-password';
   const newToken = () => token('register', `${randomUUID()}@system.test`, password);
@@ -236,6 +260,7 @@ async function main() {
     // Запас адреси одним імпульсом з десяти токенів: nginx пропускає одразу лише частину, решту
     // видає зі швидкістю ліміту, тож чужі заявки під імпульсом не сповільнюються.
     await underFlood('pulse', accounts.slice(0, 10).join(','));
+    assert(!connectionShortage(startedAt), 'nginx ran out of worker connections during the flood');
   } catch (error) {
     failure = error;
     throw error;
