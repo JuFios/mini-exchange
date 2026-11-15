@@ -9,7 +9,8 @@ const link = 'href="/admin/status"';
 const statusPage = 'ОНОВЛЕННЯ · 2 С';
 const denied = 'Сторінка доступна лише адміністратору.';
 // Engine не відповів: сторінка відкривається з попередженням, бо її дані backend віддає лише адміну.
-const unverified = 'Не вдалося перевірити роль адміністратора: engine не відповів.';
+const unverified =
+  'Не вдалося перевірити роль адміністратора: engine не відповів або відповів помилкою.';
 const recovering = 'Оновлюємо сесію…';
 const replicas = ['matching-engine-1', 'matching-engine-2'];
 // Дедлайн перевірки 1,5 с плюс рендер сторінки.

@@ -4,6 +4,7 @@ import { adminAccess, adminView } from '../../../lib/admin-access';
 import { clientAddress } from '../../../lib/client-address';
 import { ACCESS_COOKIE, claims } from '../../../lib/session';
 import { AdminDenied } from './denied';
+import { DropRecoveredMarker } from './drop-recovered-marker';
 import { SessionRecovery } from './session-recovery';
 import { AdminStatus } from './status';
 
@@ -22,15 +23,21 @@ export default async function AdminStatusPage({
   );
   if (view === 'login') redirect('/login');
   if (view === 'recover') return <SessionRecovery />;
-  if (view === 'denied') return <AdminDenied />;
   return (
-    <AdminStatus
-      user={user}
-      notice={
-        view === 'unverified'
-          ? 'Не вдалося перевірити роль адміністратора: engine не відповів. Дані сторінки можуть бути недоступні.'
-          : undefined
-      }
-    />
+    <>
+      <DropRecoveredMarker />
+      {view === 'denied' ? (
+        <AdminDenied />
+      ) : (
+        <AdminStatus
+          user={user}
+          notice={
+            view === 'unverified'
+              ? 'Не вдалося перевірити роль адміністратора: engine не відповів або відповів помилкою. Дані сторінки можуть бути недоступні.'
+              : undefined
+          }
+        />
+      )}
+    </>
   );
 }

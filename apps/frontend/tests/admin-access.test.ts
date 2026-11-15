@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import { adminAccess, adminView } from '../lib/admin-access';
+import { withoutRecoveredMarker } from '../lib/recovered-marker';
 import { recoverSession } from '../lib/client-api';
 
 const token = (claims: Record<string, unknown>) =>
@@ -88,6 +89,18 @@ describe('admin access check', () => {
     // Після вдалого оновлення сесії engine знову відповів 401: новий вхід, а не цикл.
     assert.equal(adminView('unauthenticated', true), 'login');
   });
+});
+
+it('drops the recovery marker so that it applies to one page load only', () => {
+  assert.equal(
+    withoutRecoveredMarker('http://localhost:3000/admin/status?recovered=1'),
+    '/admin/status',
+  );
+  assert.equal(
+    withoutRecoveredMarker('http://localhost:3000/admin/status?a=1&recovered=1#x'),
+    '/admin/status?a=1#x',
+  );
+  assert.equal(withoutRecoveredMarker('http://localhost:3000/admin/status'), undefined);
 });
 
 describe('session recovery after a rejected server-side check', () => {
