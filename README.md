@@ -530,6 +530,35 @@ DLQ — stream `exchange:dlq` і рядок у `settlement_failures` (`stream`, 
 `settlement_failures`. `GET /metrics` settlement віддає `settlement_trades_total{result}`,
 `settlement_dlq_total`, `settlement_trimmed_pending_total`, `settlement_pending`, `settlement_stream_lag`.
 Стан черги збирається через `prom-client`. Лічильники процесу лишаються доступними при збої Redis.
+Redis повертає `lag` групи як `null`, коли не може його порахувати (наприклад, після видалення
+недоставленого запису). `/admin/queue` показує тоді `null`, а `settlement_stream_lag` — NaN, а не 0.
+
+Метрики settlement зникають разом із ним, тож engine теж читає чергу: `GET /metrics` кожної
+репліки engine віддає `engine_settlement_stream_length`, `engine_settlement_group_pending` і
+`engine_settlement_group_lag` з міткою `stream`. Значення беруться з `XLEN` і `XINFO GROUPS` під час
+кожного scrape, через клієнт Redis outbox relay (таймаут команди 1 с, без черги офлайн), тож
+недоступний Redis не затримує `/metrics`. NaN означає «невідомо»: Redis не відповів, групи
+`settlement` немає (settlement жодного разу не запускався) або Redis не може порахувати lag. Обидві
+репліки читають той самий Redis, тож правила беруть `max`. Порівняння з NaN не спрацьовує, тому
+невідомий стан ловить окреме правило (`x != x` істинне лише для NaN):
+
+```yaml
+groups:
+  - name: settlement
+    rules:
+      - alert: SettlementBehind
+        expr: max by (stream) (engine_settlement_group_lag) > 1000
+        for: 5m
+      - alert: SettlementStalled
+        # Записи чекають доставки 10 хвилин поспіль: consumer не читає stream.
+        expr: min_over_time(max by (stream) (engine_settlement_group_lag)[10m:1m]) > 0
+      - alert: SettlementQueueUnknown
+        expr: max by (stream) (engine_settlement_group_lag != engine_settlement_group_lag) or
+          absent(engine_settlement_group_lag)
+        for: 5m
+```
+
+Межа 1000 — приклад: це близько 0,1 % `STREAM_MAXLEN`, далеко до обрізання непрочитаних подій.
 
 ### Звірка
 
@@ -1771,7 +1800,8 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
   багатьох адрес або другий екземпляр nginx ці ліміти не зупиняють: для публічного розгортання
   потрібен захист перед ingress або спільний лічильник. Користувачі за одним NAT ділять 100 читань
   за секунду.
-- Compose не запускає Alertmanager. Для локальної діагностики є метрики та журнали з `alert`.
+- Compose не запускає Prometheus і Alertmanager. Для локальної діагностики є метрики, журнали з
+  `alert` і правила з розділу [Розрахунок і DLQ](#розрахунок-і-dlq).
 - Frontend розраховано на Linux-контейнер Compose. Серверна оптимізація зображень вимкнена.
   `npm audit` позначає версії Next.js і транзитивного `tar`. Перед публічним
   розгортанням потрібна окрема перевірка залежностей і перехід на виправлені версії.
