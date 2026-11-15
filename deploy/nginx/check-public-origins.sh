@@ -13,7 +13,7 @@ fi
 if [ "${DEPLOYMENT_MODE:-local}" = remote ]; then
   case "$INGRESS_TOKEN $FRONTEND_PROXY_TOKEN" in *local-only*) echo 'Remote ingress credentials must not use local-only values' >&2; exit 1;; esac
 fi
-origins=${PUBLIC_ORIGIN:-${PUBLIC_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001}}
+origins=${PUBLIC_ORIGIN:-${PUBLIC_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}}
 ws=${ENGINE_PUBLIC_WS_URL:-ws://localhost:3001}
 case "$ws" in
   ws://*|wss://*|http://*|https://*) ;;
@@ -30,6 +30,7 @@ case "$ws" in
   ws://*|http://*) authority=${authority%:80} ;;
   wss://*|https://*) authority=${authority%:443} ;;
 esac
+authority=$(printf '%s' "$authority" | tr '[:upper:]' '[:lower:]')
 temporary=$(mktemp /etc/nginx/conf.d/.public-hosts.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 # Цей файл читається до інших map; збільшуємо bucket для довгих коректних DNS-імен.
@@ -51,6 +52,9 @@ done
 IFS=$old_ifs
 printf '}\n' >> "$temporary"
 printf 'map $http_host $exchange_ws_host {\n  default 0;\n  "127.0.0.1:3001" 1;\n' >> "$temporary"
+if [ "${DEPLOYMENT_MODE:-local}" = local ] && [ "$authority" != localhost:3001 ]; then
+  printf '  "localhost:3001" 1;\n' >> "$temporary"
+fi
 [ "$authority" = 127.0.0.1:3001 ] || printf '  "%s" 1;\n' "$authority" >> "$temporary"
 printf '}\nmap "$exchange_public_host:$exchange_ws_host" $exchange_engine_host {\n  default 1;\n  "0:0" 0;\n}\n' >> "$temporary"
 mv "$temporary" /etc/nginx/conf.d/10-public-hosts.conf
