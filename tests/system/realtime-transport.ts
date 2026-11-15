@@ -112,6 +112,15 @@ async function main() {
       async () => (await db.query('SELECT status FROM orders WHERE id=$1', [restingId])).rows[0],
       (row) => row?.status === 'open',
     );
+    const directMetrics = await request(
+      '/metrics',
+      'GET',
+      undefined,
+      undefined,
+      'http://matching-engine-1:3001',
+    );
+    assert.equal(directMetrics.status, 200);
+    await directMetrics.text();
     for (const base of ['http://engine-lb:3001', 'http://engine-lb:8080']) {
       const rest = await request('/instruments/ABC/book', 'GET', undefined, undefined, base);
       assert.equal(rest.status, 200);
@@ -124,7 +133,7 @@ async function main() {
         'The resting order must be in the book',
       );
       const metrics = await request('/metrics', 'GET', undefined, undefined, base);
-      assert.equal(metrics.status, base.endsWith(':3001') ? 404 : 200);
+      assert.equal(metrics.status, 404);
       await metrics.text();
       if (base.endsWith(':3001'))
         // Express віддає ці шляхи так само, як `/metrics`, тож nginx має закривати всі варіанти.

@@ -1851,6 +1851,7 @@ Frontend має окрему мережу з nginx. Engine, PostgreSQL, Redis і
 `INGRESS_TOKEN` знають лише nginx і engine: без нього engine ігнорує forwarded заголовки.
 Обидва маркери перезаписуються, не повертаються клієнту й приховані в журналах.
 Swagger і `/metrics` доступні напряму лише у backend-мережі; nginx не проксіює їх на `:8080`.
+Сценарій `realtime:transport` перевіряє 404 на обох listener і доступність метрик напряму з репліки.
 Frontend звертається до settlement через три дозволені маршрути внутрішнього nginx:
 wallets, admin queue і reconciliation. Маркери ingress до settlement не передаються.
 Healthcheck frontend читає `/login`, щоб старт remote не залежав від готовності зовнішнього TLS-проксі.
