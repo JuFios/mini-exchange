@@ -189,3 +189,7 @@ volumes:
 
 networks:
   frontend:
+    # Без шлюзу: інакше frontend досягав за IP контейнерів з опублікованими портами (PostgreSQL,
+    # settlement) у backend-мережі й мав вихід в інтернет. nginx у обох мережах лишається
+    # єдиним шляхом назовні.
+    internal: true

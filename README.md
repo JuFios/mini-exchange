@@ -1847,7 +1847,10 @@ volumes:
 ### Межі довіри й браузерна сесія
 
 Frontend має окрему мережу з nginx. Engine, PostgreSQL, Redis і settlement у ній не доступні
-за своїми service names. `FRONTEND_PROXY_TOKEN` знають лише frontend і nginx; лише з ним
+ні за service names, ні за IP: мережа `internal`, без шлюзу й виходу назовні. Без цього Docker
+пропускав з frontend з'єднання на IP контейнерів з опублікованими портами (PostgreSQL і
+settlement). `scripts/ci/check-frontend-isolation.sh` перевіряє адреси всіх backend-мереж
+напряму, а не лише імена. `FRONTEND_PROXY_TOKEN` знають лише frontend і nginx; лише з ним
 внутрішній listener приймає переданий IP клієнта. Інакше використовує адресу TCP-відправника.
 `INGRESS_TOKEN` знають лише nginx і engine: без нього engine ігнорує forwarded заголовки.
 Обидва маркери перезаписуються, не повертаються клієнту й приховані в журналах.
