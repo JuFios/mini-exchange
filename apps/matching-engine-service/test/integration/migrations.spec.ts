@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { advisoryLocks } from '../../src/database/advisory-lock';
 import { migrate } from '../../src/database/migrate';
+import { LIVE_ORDERS_SQL } from '../../src/outbox/internal-orders.controller';
 import { formatPrice, formatQuantity, parsePrice, parseQuantity } from '../../src/matching/decimal';
 import { testDatabase } from '../test-database';
 
@@ -84,6 +85,44 @@ it('applies, reverts, and reapplies the schema with database constraints', async
       { symbol: 'XYZ' },
     ]);
   }
+});
+
+it('pages the live book without scanning the terminal order history', async () => {
+  await migrate(source, 'run');
+  await source.query(`INSERT INTO orders
+      (owner_id, instrument, side, price, quantity, remaining_quantity, filled_quantity, status, created_at)
+    SELECT gen_random_uuid(), 'ABC', 'sell', 100, 1, 0, 1, 'filled', now()
+    FROM generate_series(1, 20000)`);
+  const live: { id: string }[] = await source.query(`INSERT INTO orders
+      (owner_id, instrument, side, price, quantity, remaining_quantity, status, priority_seq, created_at)
+    SELECT gen_random_uuid(), 'ABC', 'sell', 100 + i, 1, 1, 'open', i, now()
+    FROM generate_series(1, 50) i RETURNING id`);
+  await source.query(
+    `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status, reserved)
+     SELECT gen_random_uuid(), id::text, 'hash', id, 'accepted', true FROM unnest($1::uuid[]) id`,
+    [live.map(({ id }) => id)],
+  );
+  await source.query('ANALYZE orders');
+  await source.query('ANALYZE order_requests');
+  type PlanNode = {
+    'Node Type': string;
+    'Relation Name'?: string;
+    'Index Name'?: string;
+    Plans?: PlanNode[];
+  };
+  const first = ['00000000-0000-0000-0000-000000000000', null];
+  const [{ 'QUERY PLAN': plan }] = await source.query(
+    `EXPLAIN (FORMAT JSON) ${LIVE_ORDERS_SQL}`,
+    first,
+  );
+  const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+  // Частковий індекс книги має ті самі статуси, тож сторінка читає лише живі заявки.
+  expect(
+    nodes(plan[0].Plan)
+      .filter((node) => node['Relation Name'] === 'orders')
+      .map((node) => [node['Node Type'], node['Index Name']]),
+  ).toEqual([[expect.stringMatching(/Index/), 'orders_resting_idx']]);
+  expect(await source.query(LIVE_ORDERS_SQL, first)).toHaveLength(50);
 });
 
 it('serializes concurrent migrations on an empty schema', async () => {
