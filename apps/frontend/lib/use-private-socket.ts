@@ -56,8 +56,11 @@ interface SnapshotRead {
   onLimited(error: unknown): void;
 }
 
-// Ingress обмежує читання заявок на токен і повертає квоту щосекунди.
+// Ingress обмежує читання заявок на токен і повертає квоту щосекунди. Повтор розкидано на 1–2 с:
+// після failover термінали отримують 429 разом і не мають разом повторити.
 const READ_LIMIT_RETRY_MS = 1000;
+const readLimitRetryMs = () =>
+  READ_LIMIT_RETRY_MS + Math.floor(Math.random() * READ_LIMIT_RETRY_MS);
 const PARALLEL_ORDER_READS = 8;
 
 /**
@@ -75,7 +78,7 @@ async function readOrders<T>(path: string, read: SnapshotRead): Promise<T> {
       // Банер показує, чому знімок затримується; вдалий знімок його знімає.
       read.onLimited(error);
       await new Promise<void>((resolve) => {
-        const timer = clock.setTimeout(done, READ_LIMIT_RETRY_MS);
+        const timer = clock.setTimeout(done, readLimitRetryMs());
         function done() {
           signal.removeEventListener('abort', cancel);
           resolve();
