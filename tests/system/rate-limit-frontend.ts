@@ -6,7 +6,7 @@ import { createConnection } from 'node:net';
 import { hostname, networkInterfaces } from 'node:os';
 import type { Duplex } from 'node:stream';
 import { promisify } from 'node:util';
-import { docker, engine, request, until } from './helpers';
+import { container, docker, engine, request, until } from './helpers';
 
 const frontend = 'http://frontend:3000';
 const login = (base = frontend, headers: Record<string, string> = {}) =>
@@ -25,7 +25,7 @@ const login = (base = frontend, headers: Record<string, string> = {}) =>
 async function checkIngressCapacity() {
   // Повні заголовки й неповне тіло утримують слот nginx без навантаження на bcrypt або PG.
   const clients = Array.from({ length: 64 }, () =>
-    createConnection({ host: 'engine-lb', port: 3001 }),
+    createConnection({ host: 'engine-public', port: 3001 }),
   );
   try {
     await Promise.all(
@@ -35,7 +35,7 @@ async function checkIngressCapacity() {
             socket.on('error', reject);
             socket.once('connect', () => {
               socket.write(
-                'POST /auth/login HTTP/1.1\r\nHost: engine-lb\r\nContent-Length: 100\r\n\r\n{',
+                'POST /auth/login HTTP/1.1\r\nHost: engine-public:3001\r\nContent-Length: 100\r\n\r\n{',
               );
               resolve();
             });
@@ -118,9 +118,12 @@ async function main() {
   const network = docker(
     'inspect',
     '--format',
-    '{{range $name, $config := .NetworkSettings.Networks}}{{$name}}{{end}}',
+    '{{range $name, $config := .NetworkSettings.Networks}}{{$name}}{{"\\n"}}{{end}}',
     hostname(),
-  );
+  )
+    .split('\n')
+    .find((name) => name.endsWith('_frontend'));
+  assert(network, 'Missing frontend network');
   const peer = promisify(execFile)('docker', [
     'run',
     '--rm',
@@ -160,8 +163,25 @@ async function main() {
     { 'x-forwarded-for': result.ip },
   );
   assert.equal(forged.status, 429);
+  const networks = JSON.parse(
+    docker('inspect', '--format', '{{json .NetworkSettings.Networks}}', container('engine-lb')),
+  ) as Record<string, { IPAddress: string }>;
+  const internalSpoof = await fetch(`http://${networks[network].IPAddress}:8080/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': result.ip },
+    body: JSON.stringify({
+      email: `${randomUUID()}@system.test`,
+      password: 'invalid-test-password',
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+  assert.equal(internalSpoof.status, 429);
   assert.equal(
-    (await login('http://engine-lb:3000', { 'x-forwarded-for': result.ip })).status,
+    (
+      await login('http://engine-public:3000', {
+        'x-forwarded-for': result.ip,
+      })
+    ).status,
     429,
   );
   await checkIngressCapacity();

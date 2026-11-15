@@ -24,13 +24,36 @@ export class AdminSeedService implements OnApplicationBootstrap {
     // транзакція лише каже, яких хешів бракує, а рахуються вони між спробами.
     for (;;) {
       const unhashed = await this.seed(emails, hashes);
-      if (unhashed.length === 0) return;
+      if (unhashed.length === 0) {
+        await this.assertRemoteCredentials(emails);
+        return;
+      }
       const password = this.config.getOrThrow<string>('ADMIN_PASSWORD');
       // Кожен акаунт отримує окрему сіль, навіть зі спільним початковим паролем.
       await Promise.all(
         unhashed.map(async (email) => hashes.set(email, await bcrypt.hash(password, 10))),
       );
     }
+  }
+
+  private async assertRemoteCredentials(emails: string[]): Promise<void> {
+    if (this.config.getOrThrow<string>('DEPLOYMENT_MODE') !== 'remote') return;
+    const accounts = await this.users
+      .createQueryBuilder('account')
+      .select(['account.email', 'account.passwordHash'])
+      .where('LOWER(account.email COLLATE "C") IN (:...emails)', { emails })
+      .getMany();
+    const password = this.config.getOrThrow<string>('ADMIN_PASSWORD');
+    // Перевірка після TX: хеш першого старту не можна мовчки прийняти за новий remote-пароль.
+    await Promise.all(
+      accounts.map(async (account) => {
+        if (!(await bcrypt.compare(password, account.passwordHash))) {
+          throw new Error(
+            'Remote seeded admin credentials do not match ADMIN_PASSWORD; use a fresh remote database or rotate the stored password first',
+          );
+        }
+      }),
+    );
   }
 
   private seed(emails: string[], hashes: Map<string, string>): Promise<string[]> {

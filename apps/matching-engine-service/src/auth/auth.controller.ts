@@ -19,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { Roles, RolesGuard } from './guards/roles.guard';
+import { bearerToken } from './bearer-token';
 
 @Controller('auth')
 export class AuthController {
@@ -59,6 +60,14 @@ export class AuthController {
   @Header('Cache-Control', 'no-store')
   refresh(@Body() dto: RefreshTokenDto) {
     return this.auth.refresh(dto.refreshToken);
+  }
+
+  @Post('ws-token')
+  @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'no-store')
+  async webSocketToken(@Req() request: Request) {
+    await this.limits.webSocketTicket(request);
+    return this.auth.webSocketToken(bearerToken(request.headers.authorization) ?? '');
   }
 
   // Роль у claims лишається до `exp`; frontend показує «Стан системи» лише після цієї перевірки.

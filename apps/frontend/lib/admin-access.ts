@@ -1,4 +1,4 @@
-import { backendUrl } from './api';
+import { backendUrl, frontendProxyToken } from './api';
 import { claims } from './session';
 
 // Сторінка не має чекати engine довше за звичайну навігацію; без відповіді роль невідома.
@@ -16,7 +16,10 @@ export async function adminAccess(
   timeoutMs = ADMIN_CHECK_TIMEOUT_MS,
 ): Promise<AdminAccess> {
   if (!claims(accessToken)?.roles?.includes('admin')) return 'forbidden';
-  const headers = new Headers({ authorization: `Bearer ${accessToken}` });
+  const headers = new Headers({
+    authorization: `Bearer ${accessToken}`,
+    'x-frontend-proxy': frontendProxyToken(),
+  });
   if (address) headers.set('x-forwarded-for', address);
   try {
     const response = await fetch(backendUrl('engine') + '/auth/admin', {

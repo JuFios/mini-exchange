@@ -1,6 +1,9 @@
 # Віддалений запуск вимагає власних секретів на кожній репліці.
 x-remote-engine: &remote-engine
   environment:
+    DEPLOYMENT_MODE: remote
+    INGRESS_TOKEN: ${INGRESS_TOKEN:?Set a unique INGRESS_TOKEN}
+    REDIS_PASSWORD: ${REDIS_ENGINE_PASSWORD:?Set a unique REDIS_ENGINE_PASSWORD}
     JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
     JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set a unique JWT_REFRESH_SECRET}
     ADMIN_EMAILS: ${ADMIN_EMAILS:?Set ADMIN_EMAILS for the remote deployment}
@@ -14,10 +17,22 @@ services:
   matching-engine-2: *remote-engine
   redis:
     environment:
+      DEPLOYMENT_MODE: remote
       REDISCLI_AUTH: ${REDIS_PASSWORD:?Set a unique REDIS_PASSWORD}
+      REDIS_ENGINE_PASSWORD: ${REDIS_ENGINE_PASSWORD:?Set a unique REDIS_ENGINE_PASSWORD}
+      REDIS_SETTLEMENT_PASSWORD: ${REDIS_SETTLEMENT_PASSWORD:?Set a unique REDIS_SETTLEMENT_PASSWORD}
   exchange-db:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}
+    # Відхиляємо локальний пароль ще до ініціалізації тому та відкриття сокета.
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        case "$$POSTGRES_PASSWORD" in
+          exchange|*local-only*) echo 'Remote POSTGRES_PASSWORD must not use a demo value' >&2; exit 1 ;;
+        esac
+        exec docker-entrypoint.sh postgres
   postgres-bootstrap:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD}
@@ -31,19 +46,29 @@ services:
       LEDGER_DATABASE_PASSWORD: ${LEDGER_DB_PASSWORD:?Set a unique LEDGER_DB_PASSWORD}
   settlement-service:
     environment:
+      DEPLOYMENT_MODE: remote
+      REDIS_PASSWORD: ${REDIS_SETTLEMENT_PASSWORD:?Set a unique REDIS_SETTLEMENT_PASSWORD}
+      DEMO_INITIAL_BALANCES: ${DEMO_INITIAL_BALANCES:-USD:100000,ABC:1000,XYZ:1000}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set a unique JWT_ACCESS_SECRET}
       CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS for the remote frontend}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set a unique INTERNAL_API_TOKEN}
       LEDGER_DATABASE_PASSWORD: ${LEDGER_DB_PASSWORD:?Set a unique LEDGER_DB_PASSWORD}
   engine-lb:
     environment:
+      DEPLOYMENT_MODE: remote
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the HTTPS frontend origin}
+      ENGINE_PUBLIC_WS_URL: ${ENGINE_PUBLIC_WS_URL:?Set ENGINE_PUBLIC_WS_URL to the address browsers use}
+      INGRESS_TOKEN: ${INGRESS_TOKEN:?Set a unique INGRESS_TOKEN}
+      FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:?Set a unique FRONTEND_PROXY_TOKEN}
       TRUSTED_TLS_PROXY_IP: ${TRUSTED_TLS_PROXY_IP:?Set the TLS proxy address seen by nginx}
       CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS for the remote frontend}
-      NGINX_ENVSUBST_FILTER: '^(TRUSTED_TLS_PROXY_IP|CORS_ORIGINS)$'
+      NGINX_ENVSUBST_FILTER: '^(TRUSTED_TLS_PROXY_IP|CORS_ORIGINS|INGRESS_TOKEN|FRONTEND_PROXY_TOKEN)$'
     volumes:
       - './deploy/nginx/real-ip.conf.template:/etc/nginx/templates/real-ip.conf.template:ro'
       - './deploy/nginx/check-proxy-ip.sh:/docker-entrypoint.d/15-check-proxy-ip.sh:ro'
   frontend:
     environment:
       COOKIE_SECURE: 'true'
+      FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:?Set a unique FRONTEND_PROXY_TOKEN}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to the HTTPS frontend origin}
       ENGINE_PUBLIC_WS_URL: ${ENGINE_PUBLIC_WS_URL:?Set ENGINE_PUBLIC_WS_URL to the address browsers use}

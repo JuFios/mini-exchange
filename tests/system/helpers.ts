@@ -6,6 +6,7 @@ import { Client } from 'pg';
 import { ReferenceMatcher } from '../../apps/matching-engine-service/test/helpers/reference-matcher';
 
 export const engine = process.env.ENGINE_URL ?? 'http://engine-lb:3001';
+let frontendClientAddress: string | undefined;
 export function docker(...args: string[]) {
   return execFileSync('docker', args, { encoding: 'utf8' }).trim();
 }
@@ -77,10 +78,30 @@ export async function request(
   headers: Record<string, string> = {},
   timeoutMs = 15000,
 ) {
+  const target = new URL(base);
+  const forwarded = target.port === '8080' && target.hostname === 'engine-lb';
+  if (forwarded && !headers['x-forwarded-for']) {
+    if (!frontendClientAddress) {
+      const networks = JSON.parse(
+        docker('inspect', '--format', '{{json .NetworkSettings.Networks}}', hostname()),
+      ) as Record<string, { IPAddress: string }>;
+      frontendClientAddress = Object.entries(networks).find(([name]) =>
+        name.endsWith('_frontend'),
+      )?.[1].IPAddress;
+    }
+    assert(frontendClientAddress, 'Missing frontend address on the harness');
+    headers = { ...headers, 'x-forwarded-for': frontendClientAddress };
+  }
   return fetch(`${base}${path}`, {
     method,
     headers: {
       ...headers,
+      ...(forwarded
+        ? {
+            'x-frontend-proxy':
+              process.env.FRONTEND_PROXY_TOKEN ?? 'demo-frontend-proxy-local-only-000001',
+          }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },

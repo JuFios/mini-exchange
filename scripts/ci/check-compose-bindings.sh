@@ -14,11 +14,16 @@ export POSTGRES_PASSWORD=ci-only-postgres-password
 export ENGINE_DB_PASSWORD=ci-only-engine-password
 export LEDGER_DB_PASSWORD=ci-only-ledger-password
 export REDIS_PASSWORD=ci-only-redis-password
+export REDIS_ENGINE_PASSWORD=ci-only-redis-engine-password
+export REDIS_SETTLEMENT_PASSWORD=ci-only-redis-settlement-password
+export INGRESS_TOKEN=ci-only-ingress-token-value-000001
+export FRONTEND_PROXY_TOKEN=ci-only-frontend-token-value-00001
+export PUBLIC_ORIGIN=https://exchange.example.test
 export CORS_ORIGINS=https://exchange.example.test
 export TRUSTED_TLS_PROXY_IP=192.0.2.2
 export ADMIN_EMAILS=ci-admin@example.test
 export ADMIN_PASSWORD=ci-only-admin-password-000001
-export ENGINE_PUBLIC_WS_URL=wss://exchange.example.test
+export ENGINE_PUBLIC_WS_URL=wss://ws.exchange.example.test
 
 docker compose config --format json | jq -e '
   .services as $s |
@@ -55,7 +60,7 @@ expect_rejection JWT_ACCESS_SECRET \
 expect_rejection ADMIN_PASSWORD \
   env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
   ADMIN_PASSWORD= docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
-for variable in INTERNAL_API_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD TRUSTED_TLS_PROXY_IP; do
+for variable in INTERNAL_API_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD REDIS_ENGINE_PASSWORD REDIS_SETTLEMENT_PASSWORD INGRESS_TOKEN FRONTEND_PROXY_TOKEN PUBLIC_ORIGIN TRUSTED_TLS_PROXY_IP; do
   expect_rejection "$variable" env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
     "$variable=" docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
 done
@@ -69,12 +74,12 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
       .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh and
       .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password and
       .INTERNAL_API_TOKEN == $token and .DATABASE_PASSWORD == $engine and
-      .REDIS_PASSWORD == $ENV.REDIS_PASSWORD)) and
+      .REDIS_PASSWORD == $ENV.REDIS_ENGINE_PASSWORD)) and
     ($s["settlement-service"].environment |
       .JWT_ACCESS_SECRET == $access and .INTERNAL_API_TOKEN == $token and .LEDGER_DATABASE_PASSWORD == $ledger and
-      .REDIS_PASSWORD == $ENV.REDIS_PASSWORD) and
+      .REDIS_PASSWORD == $ENV.REDIS_SETTLEMENT_PASSWORD) and
     ($s.redis.environment.REDISCLI_AUTH == $ENV.REDIS_PASSWORD) and
-    ($s.redis.command[0] == "redis-server" and .services.redis.command[-1] == $ENV.REDIS_PASSWORD) and
+    ($s.redis.command[0] == "redis-server" and $s.redis.entrypoint == ["sh", "/usr/local/bin/exchange-redis"] and $s.redis.environment.REDIS_ENGINE_PASSWORD == $ENV.REDIS_ENGINE_PASSWORD and $s.redis.environment.REDIS_SETTLEMENT_PASSWORD == $ENV.REDIS_SETTLEMENT_PASSWORD) and
     ($s["exchange-db"].environment.POSTGRES_PASSWORD == $postgres) and
     ($s["postgres-bootstrap"].environment |
       .POSTGRES_PASSWORD == $postgres and .ENGINE_DB_PASSWORD == $engine and .LEDGER_DB_PASSWORD == $ledger) and
@@ -93,11 +98,13 @@ JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" re
     (["matching-engine-1","matching-engine-2"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and
     (($s.frontend.ports // []) | length == 0) and
     ($s.frontend.environment.COOKIE_SECURE == "true") and
-    ($s.frontend.environment.ENGINE_PUBLIC_WS_URL == "wss://exchange.example.test")'
+    ($s.frontend.environment.ENGINE_PUBLIC_WS_URL == $ENV.ENGINE_PUBLIC_WS_URL) and
+    ($s["engine-lb"].environment.ENGINE_PUBLIC_WS_URL == $ENV.ENGINE_PUBLIC_WS_URL)'
 
 # Test-overlay не публікує портів і не використовує локальні томи.
 docker compose -f docker-compose.yml -f docker-compose.test.yml config --format json | jq -e '
   .services as $s |
+  ($s.redis.volumes | any(.target == "/usr/local/bin/exchange-redis" and .read_only == true)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] |
     all(. as $name | ($s[$name].ports // []) | length == 0)) and
   (["exchange-db","redis","matching-engine-1","matching-engine-2","engine-lb","settlement-service","frontend"] |

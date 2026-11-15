@@ -31,6 +31,7 @@ it('stops waiting for a Redis that stays in LOADING', async () => {
     configuration({
       REDIS_HOST: '127.0.0.1',
       REDIS_PORT: port,
+      REDIS_USERNAME: 'default',
       REDIS_PASSWORD: 'test-redis-password',
       LEASE_TTL_MS: 300,
     }),

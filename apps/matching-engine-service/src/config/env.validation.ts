@@ -167,6 +167,17 @@ const reservationSchema = {
 };
 
 const schema = {
+  DEPLOYMENT_MODE: (value: unknown) => {
+    if (value === undefined || value === 'local') return 'local' as const;
+    if (value === 'remote') return 'remote' as const;
+    throw new Error('DEPLOYMENT_MODE must be local or remote');
+  },
+  REDIS_USERNAME: (value: unknown) => {
+    if (value === undefined || value === '') return 'default';
+    if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value))
+      throw new Error('Invalid REDIS_USERNAME');
+    return value;
+  },
   LEASE_TTL_MS: milliseconds,
   LEASE_RENEW_INTERVAL_MS: milliseconds,
   LEASE_SAFETY_MS: milliseconds,
@@ -193,6 +204,8 @@ const schema = {
   ORDER_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
   ORDER_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '1000', key),
   ORDER_RATE_LIMIT_MIN: (value: unknown, key: string) => positiveInteger(value ?? '300', key),
+  ORDER_WRITE_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '120', key),
+  ORDER_WRITE_RATE_TTL_MS: (value: unknown, key: string) => milliseconds(value ?? '1000', key),
   WS_SUBSCRIBE_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '20', key),
   CORS_ORIGINS: (value: unknown, key: string) =>
     required(value, key)
@@ -215,6 +228,11 @@ const schema = {
     httpOrigin(value ?? 'http://jaeger:4318', key),
   PORT: port,
   ...databaseSchema,
+  INGRESS_TOKEN: (value: unknown, key: string) => {
+    const token = jwtSecret(value ?? 'demo-ingress-token-local-only-00000001', key);
+    if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) throw new Error('Invalid INGRESS_TOKEN');
+    return token;
+  },
   REDIS_HOST: required,
   REDIS_PORT: port,
   REDIS_PASSWORD: (value: unknown, key: string) => {
@@ -248,6 +266,20 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
   const parsed = Object.fromEntries(
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as EngineEnv;
+  if (parsed.DEPLOYMENT_MODE === 'remote') {
+    for (const key of [
+      'JWT_ACCESS_SECRET',
+      'JWT_REFRESH_SECRET',
+      'ADMIN_PASSWORD',
+      'INTERNAL_API_TOKEN',
+      'REDIS_PASSWORD',
+      'DATABASE_PASSWORD',
+      'INGRESS_TOKEN',
+    ] as const) {
+      if (String(parsed[key] ?? input[key]).includes('local-only'))
+        throw new Error(`${key} must not use a local-only value in remote mode`);
+    }
+  }
   if (parsed.JWT_ACCESS_SECRET === parsed.JWT_REFRESH_SECRET) {
     throw new Error('JWT_REFRESH_SECRET must differ from JWT_ACCESS_SECRET');
   }

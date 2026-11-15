@@ -16,7 +16,13 @@ it.each(['after_writes_before_commit', 'after_commit_before_memory'])(
       providers: [
         ChaosHooks,
         RolesGuard,
-        { provide: ConfigService, useValue: { getOrThrow: () => true } },
+        {
+          provide: ConfigService,
+          useValue: {
+            getOrThrow: (key: string) =>
+              key === 'INGRESS_TOKEN' ? 'demo-ingress-token-local-only-00000001' : true,
+          },
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)

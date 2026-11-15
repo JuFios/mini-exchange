@@ -2,6 +2,9 @@ import { configureHttp } from './observability/http';
 import { DatabaseExceptionFilter } from './database/database-exception.filter';
 import { ReplicaIoAdapter } from './realtime/replica-io.adapter';
 import { RateLimitFilter } from './security/rate-limits';
+import { ConfigService } from '@nestjs/config';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import type { Request, Response, NextFunction } from 'express';
 import {
   ArgumentMetadata,
   BadRequestException,
@@ -36,6 +39,22 @@ class RequestValidationPipe extends ValidationPipe {
 }
 
 export function configureApp(app: INestApplication): void {
+  const expected = createHash('sha256')
+    .update(app.get(ConfigService).getOrThrow<string>('INGRESS_TOKEN'))
+    .digest();
+  app.use((request: Request, _response: Response, next: NextFunction) => {
+    const presented = request.headers['x-exchange-ingress'];
+    delete request.headers['x-exchange-ingress'];
+    if (
+      typeof presented !== 'string' ||
+      !timingSafeEqual(expected, createHash('sha256').update(presented).digest())
+    ) {
+      delete request.headers['x-forwarded-for'];
+      delete request.headers['x-real-ip'];
+      delete request.headers.forwarded;
+    }
+    next();
+  });
   configureHttp(app, 'Matching Engine');
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
   app.useGlobalPipes(

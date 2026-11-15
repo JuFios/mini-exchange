@@ -95,10 +95,15 @@ export class OrdersService {
               if (!order) throw new NotFoundException('Заявку не знайдено');
               const trades = await db.query(
                 `SELECT trade_id AS "tradeId",instrument,seq,price,quantity,
-          buyer_order_id AS "buyOrderId",seller_order_id AS "sellOrderId",taker_side AS "takerSide",executed_at AS "executedAt"
+          CASE WHEN buyer_order_id=$1 THEN buyer_order_id END AS "buyOrderId",
+          CASE WHEN seller_order_id=$1 THEN seller_order_id END AS "sellOrderId",taker_side AS "takerSide",executed_at AS "executedAt"
           FROM trades WHERE buyer_order_id=$1 OR seller_order_id=$1 ORDER BY seq,fill_index`,
                 [order.id],
               );
+              for (const trade of trades) {
+                if (trade.buyOrderId === null) delete trade.buyOrderId;
+                if (trade.sellOrderId === null) delete trade.sellOrderId;
+              }
               return { order, trades };
             }),
           );

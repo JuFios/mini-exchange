@@ -12,9 +12,13 @@ const SUBMITS = 30;
 const P50_BOUND_MS = 200;
 const P95_BOUND_MS = 600;
 const VICTIM_ADDRESS = '198.51.100.77';
+// Адреса з повним запасом для одного імпульсу: її ще не торкались попередні фази.
+const PULSE_ADDRESS = '198.51.100.88';
+const PULSE = 1000;
 
 type Counts = Record<string, number>;
-type Mode = 'delete' | 'replay' | 'accounts';
+type Mode = 'delete' | 'replay' | 'accounts' | 'pulse';
+type Report = { counts: Counts; elapsedMs: number };
 
 const percentile = (values: number[], share: number) =>
   [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * share))];
@@ -28,11 +32,14 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
   process.on('message', () => {
     running = false;
   });
+  const pulse = mode === 'pulse';
   const loop = async (index: number) => {
     // Обидва listener: на `:8080` без `X-Forwarded-For` ключ — адреса контейнера, як на `:3001`.
-    const base = index % 2 ? internal : engine;
+    // Імпульс — один запит на з'єднання з однієї нової адреси й різних токенів.
+    const base = pulse || index % 2 ? internal : engine;
+    const headers: Record<string, string> = pulse ? { 'x-forwarded-for': PULSE_ADDRESS } : {};
     const bearer = tokens[index % tokens.length];
-    while (running) {
+    for (let sent = false; running && !(pulse && sent); sent = true) {
       let key: string;
       try {
         const response =
@@ -45,7 +52,7 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
                 base,
                 { 'Idempotency-Key': replayKey },
               )
-            : await request(`/orders/${randomUUID()}`, 'DELETE', bearer, undefined, base);
+            : await request(`/orders/${randomUUID()}`, 'DELETE', bearer, undefined, base, headers);
         await response.arrayBuffer();
         key = String(response.status);
       } catch (error) {
@@ -54,8 +61,13 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
       counts[key] = (counts[key] ?? 0) + 1;
     }
   };
-  await Promise.all(Array.from({ length: CONNECTIONS }, (_, index) => loop(index)));
-  process.send!(counts, () => process.disconnect());
+  const started = performance.now();
+  process.send!({ type: 'started' });
+  await Promise.all(Array.from({ length: pulse ? PULSE : CONNECTIONS }, (_, index) => loop(index)));
+  const elapsedMs = performance.now() - started;
+  // Імпульс закінчується сам, але звіт чекає на `stop`, як і безперервний потік.
+  if (running) await new Promise((resolve) => process.once('message', resolve));
+  process.send!({ type: 'counts', counts, elapsedMs }, () => process.disconnect());
 }
 
 function startFlood(mode: Mode, accessTokens: string, replayKey: string) {
@@ -65,12 +77,21 @@ function startFlood(mode: Mode, accessTokens: string, replayKey: string) {
   });
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
   child.on('error', () => undefined);
-  return {
-    async stop(): Promise<Counts> {
-      const counts = new Promise<Counts>((resolve, reject) => {
-        child.once('message', (value) => resolve(value as Counts));
-        void exited.then(() => reject(new Error('Flood process exited before reporting')));
+  const messages = (type: string) =>
+    new Promise<Report>((resolve, reject) => {
+      child.on('message', (value: { type: string } & Report) => {
+        if (value.type === type) resolve(value);
       });
+      void exited.then(() => reject(new Error('Flood process exited before reporting')));
+    });
+  const started = messages('started');
+  const report = messages('counts');
+  // Після `kill` у прибиранні звіту не буде; відмова не має стати необробленою.
+  for (const pending of [started, report]) pending.catch(() => undefined);
+  return {
+    started,
+    async stop(): Promise<Report> {
+      const counts = report;
       if (child.connected) child.send('stop', () => undefined);
       const result = await counts;
       await exited;
@@ -111,8 +132,10 @@ async function main() {
     const started = startFlood(mode, accessTokens, replayKey);
     floods.push(started);
     const latencies: number[] = [];
-    // Потік має розігнатися й вичерпати запас адреси, перш ніж міряти заявки іншого користувача.
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await started.started;
+    // Безперервний потік має розігнатися й вичерпати запас, перш ніж міряти заявки іншого
+    // користувача. Імпульс міряється з першого запиту: він і є сплеском запасу адреси.
+    if (mode !== 'pulse') await new Promise((resolve) => setTimeout(resolve, 3000));
     // Жертва з іншої адреси: на `:8080` адресу клієнта передає frontend.
     for (let i = 0; i < SUBMITS; i++) {
       const started = performance.now();
@@ -129,9 +152,19 @@ async function main() {
       assert([201, 202].includes(response.status), `Victim submit: ${response.status} ${text}`);
       placed.push([victim, (JSON.parse(text) as { order: { id: string } }).order.id]);
     }
-    const counts = await started.stop();
+    const { counts, elapsedMs } = await started.stop();
     floods.pop();
     const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+    // Пропущене nginx не перевищує запасу й поповнення ключа, що обмежує цей режим: токена
+    // (100 + 20/с) для одного токена, адреси (1000 + 100/с) для багатьох.
+    const passed = total - (counts['429'] ?? 0);
+    const [burst, rate] = mode === 'delete' || mode === 'replay' ? [100, 20] : [1000, 100];
+    const allowance = (burst + (rate * elapsedMs) / 1000) * 1.1 + 20;
+    console.log(
+      `orders write flood mode=${mode} passed=${passed} allowance=${allowance.toFixed(0)} ` +
+        `elapsed=${elapsedMs.toFixed(0)}ms`,
+    );
+    assert(passed <= allowance, `${passed} ${mode} writes passed, more than ${allowance}`);
     const p50 = percentile(latencies, 0.5);
     const p95 = percentile(latencies, 0.95);
     console.log(
@@ -141,7 +174,8 @@ async function main() {
     assert(p50 <= P50_BOUND_MS, `Submit p50 ${p50.toFixed(0)} ms under a ${mode} write flood`);
     assert(p95 <= P95_BOUND_MS, `Submit p95 ${p95.toFixed(0)} ms under a ${mode} write flood`);
     const limited = counts['429'] ?? 0;
-    assert(limited > total / 2, `Only ${limited} of ${total} ${mode} writes were limited`);
+    if (mode !== 'pulse')
+      assert(limited > total / 2, `Only ${limited} of ${total} ${mode} writes were limited`);
     // Після потоку квота відновлюється, і той самий користувач знову подає й скасовує.
     await new Promise((resolve) => setTimeout(resolve, 6000));
     const own = await sell(accessTokens.split(',')[0]);
@@ -156,10 +190,7 @@ async function main() {
 
     // Сплеск легітимних скасувань: сто власних заявок одночасно вкладаються в запас токена.
     const burst: string[] = [];
-    for (let i = 0; i < 100; i++) {
-      burst.push((await sell(flooder)).id);
-      placed.pop();
-    }
+    for (let i = 0; i < 100; i++) burst.push((await sell(flooder)).id);
     await new Promise((resolve) => setTimeout(resolve, 6000));
     const cancels: Counts = {};
     await Promise.all(
@@ -167,6 +198,12 @@ async function main() {
         const response = await request(`/orders/${id}`, 'DELETE', flooder);
         await response.arrayBuffer();
         cancels[response.status] = (cancels[response.status] ?? 0) + 1;
+        // Нескасовану заявку прибере `cleanup`.
+        if (response.status === 200)
+          placed.splice(
+            placed.findIndex(([, placedId]) => placedId === id),
+            1,
+          );
       }),
     );
     console.log(`orders write flood cancelBurst=${JSON.stringify(cancels)}`);
@@ -191,6 +228,10 @@ async function main() {
     // Нові токени не дають нової квоти: ліміт на адресу тримає потік 20 акаунтів.
     const accounts = await Promise.all(Array.from({ length: 20 }, newToken));
     await underFlood('accounts', accounts.join(','));
+
+    // Запас адреси одним імпульсом з десяти токенів: nginx пропускає одразу лише частину, решту
+    // видає зі швидкістю ліміту, тож чужі заявки під імпульсом не сповільнюються.
+    await underFlood('pulse', accounts.slice(0, 10).join(','));
   } catch (error) {
     failure = error;
     throw error;

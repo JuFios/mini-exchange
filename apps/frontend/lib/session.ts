@@ -8,8 +8,10 @@ import {
   unavailable,
 } from './api';
 
-export const ACCESS_COOKIE = 'exchange_access';
-const REFRESH_COOKIE = 'exchange_refresh';
+export const ACCESS_COOKIE =
+  process.env.COOKIE_SECURE === 'true' ? '__Host-exchange_access' : 'exchange_access';
+const REFRESH_COOKIE =
+  process.env.COOKIE_SECURE === 'true' ? '__Host-exchange_refresh' : 'exchange_refresh';
 
 type Claims = { exp: number; sub?: string; sid?: string; roles?: string[] };
 type Tokens = { accessToken: string; refreshToken?: string };

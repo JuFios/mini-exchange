@@ -54,7 +54,7 @@ docker compose up --build
 ### Адреси й демо
 
 - Термінал (frontend): http://localhost:3000
-- Engine через nginx (`engine-lb`): http://localhost:3001, Swagger — http://localhost:3001/docs.
+- Engine через nginx (`engine-lb`): http://localhost:3001. Swagger доступний лише у внутрішній мережі.
   Для діагностики окремої репліки використовуйте `docker compose exec`.
 - Settlement: http://localhost:3002, Swagger — http://localhost:3002/docs
 - PostgreSQL: `127.0.0.1:5433`
@@ -789,10 +789,13 @@ namespace (`REPLICA_UNAVAILABLE`) бачить лише клієнт, чия р�
 ### `/private` (власник)
 
 Токен передається в handshake: `io(url + '/private', { transports: ['websocket'], auth: { token }
-})`. Це access-токен із тими ж перевірками,
-що й для HTTP (HS256, `typ=access`, `sub` — UUID). Без токена, з refresh-токеном, простроченим чи підробленим
+})`. Браузер отримує через `POST /api/auth/ws-token` окремий JWT (`typ=ws`, `aud=private`) до
+60 с для підключення. Він не працює в HTTP API. Access JWT лишається в HttpOnly cookie.
+Для прямих API-клієнтів handshake також приймає access JWT. Обидва мають HS256, UUID `sub` і чинний `sid`.
+Без токена, з refresh-токеном, простроченим чи підробленим
 підключення завершується `connect_error` з повідомленням `UNAUTHORIZED`. Кімнату `user:<sub>` визначає сервер.
-У `exp` токена сервер розриває сокет; клієнт бере новий access і підключається знову.
+Строк WS JWT перевіряється під час handshake. Уже відкритий сокет живе до `accessExp` вихідного
+access JWT, зі звіркою сесії нижче; клієнт отримує новий WS JWT після reconnect.
 Кожна репліка раз на 3 с одним запитом звіряє `sub` і `sid` своїх сокетів з активними сесіями
 й розриває сокети відкликаних: після виходу, повторного використання refresh чи нового входу.
 Репліка, яка прийняла logout, значення не має: звірка читає PostgreSQL.
@@ -1411,6 +1414,14 @@ Unit-тест «applies the address, token and listener read limits on both engi
 чекає ще два рядки лімітів записів у тому самому `location /`. Перевірки трьох лімітів читань і
 їхнього порядку не змінено.
 
+Тести frontend для `ws-token` тепер підставляють відповідь engine з WS JWT, бо access більше
+не повертається браузерному JavaScript. Фейк конфігурації chaos-тесту отримав рядок
+`INGRESS_TOKEN`; його перевірки DTO й kill збережено. HTTP-helper e2e моделює довірений ingress
+й додає маркер; окремий тест сирим HTTP перевіряє, що непідписаний forwarded IP ігнорується.
+Сценарій резервів після ввімкнення тепер чекає відмову репліки з `false`: спільний прапорець
+забороняє таке змішування. Cleanup ізольованої тестової БД скидає цей прапорець після закриття app.
+Фейки звірки відповідають і на `/internal/orders/live`; вони перевіряють новий клас розбіжностей.
+
 Два unit-тести frontend чекали `GET /orders?status=all&limit=100`. Тепер вони чекають
 `status=cancelled`, бо вкладку «Скасовані» наповнює окремий фільтр. Тест злиття за версією
 більше не повертає відкриту заявку з цього запиту, бо `cancelled` її не віддає. Злиття за
@@ -1418,7 +1429,8 @@ Unit-тест «applies the address, token and listener read limits on both engi
 
 ## API і зміни контрактів
 
-Обидва backend-сервіси публікують OpenAPI: Swagger UI на `/docs`, JSON на `/docs-json`.
+Обидва backend-сервіси мають OpenAPI: Swagger UI на `/docs`, JSON на `/docs-json`.
+Публічний listener engine повертає 404 на ці шляхи; вони доступні лише у внутрішній мережі.
 WebSocket-події описано в розділі [«Real-time і resync»](#real-time-і-resync). Нижче —
 відмінності від контрактів starter.
 
@@ -1444,12 +1456,18 @@ WebSocket-події описано в розділі [«Real-time і resync»](
   відрізняються лише регістром (створені до цієї зміни), лишаються: вхід бере точний збіг, а без
   нього до кількох таких акаунтів повертає 401.
   `POST /auth/refresh` з тілом `{"refreshToken":"..."}` повертає HTTP 200 і нову пару.
+  Ротація зберігає початковий `exp` refresh. Абсолютний строк сесії — `JWT_REFRESH_TTL` від
+  входу (типово 7 днів); access після входу й ротації не переживає цю межу. Після неї потрібен вхід.
   Повтор попереднього refresh у межах `REFRESH_REUSE_GRACE_MS` (типово 10 с) повертає
   лише `{accessToken}`. Клієнт у цьому випадку зберігає поточний refresh. Повтор після
   цього вікна або використання старішого refresh відкликає сесію і повертає 401.
   Відповіді з токенами мають `Cache-Control: no-store`. `POST /auth/logout` з тим самим
   форматом тіла відкликає сесію й повертає 204. `GET /auth/admin` з access-токеном повертає 204,
   якщо адреса зараз є в `ADMIN_EMAILS`, 403 — якщо ні, 401 — без чинної сесії.
+- `POST /auth/ws-token` з access JWT повертає `{token, userId}` з коротким WS JWT.
+  Окремий фіксований ліміт — 120 запитів за хвилину на IP до перевірки сесії; відмови його не подовжують.
+  Submit і replay повертають у кожному fill лише власний `buyOrderId` або `sellOrderId`.
+  `tradeId`, ціна, кількість, seq, сторона taker і час угоди збережені.
 - Engine приймає access-токен лише як `Authorization: Bearer <JWT>` (регістр слова `Bearer` будь-який,
   навколо нього пробіли або табуляції). Інші пробільні символи, зокрема U+00A0, дають 401.
 - Engine перевіряє тип токена і підпис окремим секретом для кожного типу. Access старого формату
@@ -1603,12 +1621,18 @@ EXPLAIN на 20 000 trades підтверджує використання об�
   `DELETE /orders/:id`) nginx обмежує на обох listener у власних зонах, окремо від читань: 20 за
   секунду з запасом 100 на bearer-токен (той самий ключ, що й для читань) і 100 за секунду з
   запасом 1000 на адресу клієнта (на `:8080` — адреса з `X-Forwarded-For` від frontend). Запас
-  токена пропускає одночасне скасування сотні власних заявок; запас адреси — сплеск 400 заявок
-  20 користувачів з однієї адреси, як у system concurrency і chaos. Стелі на listener для записів
+  токена пропускає одночасне скасування сотні власних заявок. Запас адреси не відмовляє сплеску
+  400 заявок 20 користувачів, але лише 200 понад поточний ліміт пропускає одразу (`delay=200`),
+  решту видає по 100 за секунду. Так повторювані імпульси не займають усі PG-слоти.
+  Refresh змінює access JWT і ключ ліміту токена; спільний ліміт адреси зберігається. Стелі на listener для записів
   немає: потік із багатьох адрес сповільнює чужі заявки, але не відмовляє їм. Без цих лімітів
   ~950 скасувань неіснуючих заявок за секунду від одного користувача піднімали медіану заявки
-  іншого з ~40 мс до ~1,2 с, а повтори завершеної заявки — з ~36 до ~680 мс. Engine цих запитів
-  окремо не рахує: скасування й повтор мають працювати й без Redis.
+  іншого з ~40 мс до ~1,2 с, а повтори завершеної заявки — з ~36 до ~680 мс.
+  Після перевірки JWT і сесії engine також обмежує всі POST/DELETE заявок на user ID:
+  `ORDER_WRITE_RATE_LIMIT=120` за `ORDER_WRITE_RATE_TTL_MS=1000`, спільно між репліками й токенами.
+  Відмова 429 не подовжує фіксоване вікно. Якщо Redis недоступний, цей додатковий ліміт пропускає
+  запит після дедлайну Redis до 1 с: скасування й завершений повтор лишаються доступними.
+  Нові заявки, як раніше, потребують обов’язкового ліміту intake; ingress продовжує обмежувати всі записи.
 - Інші відповіді, які на `:3001` формує сам nginx, теж мають JSON у формі помилок engine
   (`statusCode`, `message`, `error`) і ті самі CORS-заголовки, що й engine для того ж origin:
   502, якщо жодна репліка не приймає з'єднання; 504, якщо репліки не відповіли за
@@ -1625,7 +1649,7 @@ EXPLAIN на 20 000 trades підтверджує використання об�
   Compose на Linux відповідає помилкою, nginx лишає стару адресу, і замість 502 виходить 504.
 - `/health` перевіряє доступність процесу. `/ready` перевіряє міграції PostgreSQL і Redis з
   `maxmemory-policy=noeviction`; engine додатково перевіряє lag WebSocket. Обидва сервіси
-  публікують Swagger на `/docs` і `/docs-json`. `CORS_ORIGINS` задає дозволені HTTP origins; у Compose це змінна
+  мають внутрішній Swagger на `/docs` і `/docs-json`; публічний listener engine його не віддає. `CORS_ORIGINS` задає дозволені HTTP origins; у Compose це змінна
   оточення, типово `http://localhost:3000,http://127.0.0.1:3000`, спільна для engine і `engine-lb`.
 - Pino записує структуровані журнали з `trace_id` і `span_id`. Значення заголовків із токенами,
   cookies і паролі приховані. Одна W3C-траса пов'язує заявку, matching, угоду, outbox,
@@ -1723,6 +1747,11 @@ export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export ENGINE_DB_PASSWORD="$(openssl rand -hex 32)"
 export LEDGER_DB_PASSWORD="$(openssl rand -hex 32)"
 export REDIS_PASSWORD="$(openssl rand -hex 32)"
+export REDIS_ENGINE_PASSWORD="$(openssl rand -hex 32)"
+export REDIS_SETTLEMENT_PASSWORD="$(openssl rand -hex 32)"
+export INGRESS_TOKEN="$(openssl rand -hex 32)"
+export FRONTEND_PROXY_TOKEN="$(openssl rand -hex 32)"
+export PUBLIC_ORIGIN=https://exchange.example.com
 export CORS_ORIGINS=https://exchange.example.com
 export ENGINE_PUBLIC_WS_URL=wss://exchange.example.com
 export TRUSTED_TLS_PROXY_IP='<IP-адреса TLS-проксі, яку бачить nginx у Compose>'
@@ -1740,7 +1769,21 @@ TLS-проксі передає HTTPS до `127.0.0.1:3000` і WSS upgrade до 
 клієнта. `TRUSTED_TLS_PROXY_IP` — одна адреса TCP-відправника з боку nginx. Для проксі на хості
 за Docker NAT це адреса шлюзу, а не публічна адреса проксі. nginx бере адресу клієнта з цього
 заголовка лише для довіреного відправника. В інших з’єднаннях він бере адресу сокета.
-Доступ до loopback на цьому хості є частиною довіреної межі. Override вмикає `Secure` для cookies.
+Доступ до loopback на цьому хості є частиною довіреної межі. Override вмикає `Secure` і префікс `__Host-` для cookies. Після оновлення старі remote-cookie
+не використовуються, тож користувачі входять повторно. Frontend надсилає HSTS `max-age=31536000`;
+налаштуйте такий самий заголовок на TLS-проксі для відповідей, які він формує сам.
+
+`PUBLIC_ORIGIN` — точний HTTPS origin без шляху, query чи завершального `/`. BFF звіряє
+Origin і Host із цим значенням. nginx відхиляє невідомий Host кодом 421. Локально дозволено
+`localhost:3000` і `127.0.0.1:3000`; `PUBLIC_ORIGINS` задає додаткові origin у тестовому оточенні.
+Якщо `ENGINE_PUBLIC_WS_URL` має окремий хост, nginx дозволяє його лише на `:3001`.
+Remote відхиляє секрети з `local-only` і локальний пароль PostgreSQL `exchange`, а seeded admin повинен мати пароль, який відповідає
+`ADMIN_PASSWORD`. Зміна env не замінює старий хеш; використовуйте окремий свіжий remote-том або
+заздалегідь змініть пароль у БД контрольованою процедурою.
+
+Це демо й у remote: `DEMO_INITIAL_BALANCES` типово видає новому акаунту 100000 USD і по 1000 ABC/XYZ.
+Ці суми не є внесеними коштами. API поповнення немає. Для нульових стартових сум можна явно
+задати `DEMO_INITIAL_BALANCES=USD:0,ABC:0,XYZ:0`; тоді новий акаунт не зможе торгувати без фінансування.
 
 Для локального запуску frontend використовує `ws://localhost:3001`. `GET /api/config`
 читає `ENGINE_PUBLIC_WS_URL` у runtime. Для зміни адреси передайте нове значення через
@@ -1800,12 +1843,53 @@ volumes:
 `SIGKILL` або аварійну зупинку Docker, у томі лишається лише `.redis-import`. Повторний запуск
 видаляє цей каталог і виконує імпорт заново.
 
+### Межі довіри й браузерна сесія
+
+Frontend має окрему мережу з nginx. Engine, PostgreSQL, Redis і settlement у ній не доступні
+за своїми service names. `FRONTEND_PROXY_TOKEN` знають лише frontend і nginx; лише з ним
+внутрішній listener приймає переданий IP клієнта. Інакше використовує адресу TCP-відправника.
+`INGRESS_TOKEN` знають лише nginx і engine: без нього engine ігнорує forwarded заголовки.
+Обидва маркери перезаписуються, не повертаються клієнту й приховані в журналах.
+Swagger і `/metrics` доступні напряму лише у backend-мережі; nginx не проксіює їх на `:8080`.
+Frontend звертається до settlement через три дозволені маршрути внутрішнього nginx:
+wallets, admin queue і reconciliation. Маркери ingress до settlement не передаються.
+Healthcheck frontend читає `/login`, щоб старт remote не залежав від готовності зовнішнього TLS-проксі.
+
+Redis має різні `engine` і `settlement` ACL users та паролі. Engine працює з lease, лічильниками
+та своїми streams. Settlement читає й підтверджує settlement streams, а пише лише DLQ і
+`exchange:user-events`; підробити upstream `order.closed` або `trade.executed` цими правами не можна.
+Обидва users не мають `FLUSHALL`, `CONFIG SET` чи `ACL`. Окремий admin-пароль `REDIS_PASSWORD`
+лишається лише у Redis й операторських перевірках. Його значення не зберігається в `requirepass`;
+ACL містить SHA-256 хеші. Перезапуск генерує ACL атомарно з runtime env і не видаляє AOF.
+
+`order.closed` звіряє user і asset з резервом перед release. Звірка також порівнює живі заявки
+engine (`/internal/orders/live`) з активними резервами; `unreserved_order` означає живу заявку без
+забезпечення. Streams не підписані: Redis admin і host залишаються довіреною межею.
+
+CSP використовує окремий nonce для кожної HTML-відповіді за [документацією Next 14](https://nextjs.org/docs/14/app/building-your-application/configuring/content-security-policy).
+Inline JavaScript без nonce заборонено; HTML рендериться динамічно. `Permissions-Policy`
+вимикає camera, microphone і geolocation; `x-powered-by` вимкнено. Межа тіла на frontend ingress —
+64 КіБ, відповідь 413 має JSON. Не-JSON 5xx upstream BFF замінює на 503 JSON.
+На GET/HEAD refresh дозволено лише для `Sec-Fetch-Site: same-origin`, `none` або без заголовка.
+Cross-site і same-site перехід із простроченим access веде на login без ротації cookie.
+
+Реєстрація зберігає 409 для зайнятого email: це дозволяє визначити наявність акаунта під
+IP-лімітом. Підтвердження email у цьому демо немає. Bcrypt cost 10 збережено для сумісності
+зі старими хешами та однакової роботи порівняння для відомого й невідомого email.
+
 ### Резерви на історії без резервів
 
 Резерви можна вмикати лише на історії, де кожна жива або виконана заявка має резерв.
 Заявки й угоди з часів вимкнених резервів не потрапляють у ledger, тож engine з
 `RESERVATIONS_ENABLED=true` відмовляється стартувати, якщо знаходить такі заявки.
 Колонка `order_requests.reserved` позначає заявки, прийняті з реальним резервом.
+Після успішного ввімкнення `engine_settings.reservations_required` лишається `true` для цієї БД.
+Нова репліка з `false` відмовляється стартувати, а вже запущена — відхиляє нові submit з 503.
+Обидві транзакції прийняття перевіряють режим під row lock, тому старий запит, що чекав
+резервування під час переходу, теж не створить незабезпеченої заявки. Для повернення до `false`
+використовуйте окрему чисту БД. Скасування й читання не блокуються.
+Тригер PG також відхиляє INSERT незабезпеченої заявки після ввімкнення режиму: це захищає
+від старого процесу, який ще не знає про перевірку в intake. Міграцію застосовуйте до запуску реплік.
 Жива заявка без резерву: скасуйте її, коли `RESERVATIONS_ENABLED=false`. Якщо лишилися
 виконані заявки без резерву, пересоздайте том БД: `docker compose down -v`. Це видаляє дані.
 Якщо резерви працювали й до появи колонки `reserved` (власний запуск), заявки не мають позначки.

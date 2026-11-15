@@ -64,9 +64,11 @@ for (const scope of [
   'auth',
   'login_email',
   'login_email_total',
+  'ws_ticket',
   'public',
   'orders',
   'orders_minute',
+  'orders_write',
   'ws_subscribe',
 ]) {
   rateLimited.inc({ scope }, 0);

@@ -28,7 +28,7 @@ let source: ReturnType<typeof database.source>;
 function seeder() {
   return new AdminSeedService(
     source.getRepository(User),
-    new ConfigService({ ADMIN_EMAILS: emails, ADMIN_PASSWORD: password }),
+    new ConfigService({ ADMIN_EMAILS: emails, ADMIN_PASSWORD: password, DEPLOYMENT_MODE: 'local' }),
   );
 }
 

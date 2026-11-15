@@ -14,6 +14,8 @@ export const LoggingModule = LoggerModule.forRootAsync({
       redact: {
         paths: [
           'req.headers.authorization',
+          'req.headers["x-exchange-ingress"]',
+          'req.headers["x-frontend-proxy"]',
           'req.headers.cookie',
           'req.headers["x-internal-token"]',
           'res.headers["set-cookie"]',

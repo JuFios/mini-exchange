@@ -221,7 +221,11 @@ describe('failed logins per email', () => {
       const attempt = (ip: string) =>
         fetch(`${replicaUrl}/auth/login`, {
           method: 'POST',
-          headers: { ...from(ip), 'content-type': 'application/json' },
+          headers: {
+            ...from(ip),
+            'content-type': 'application/json',
+            'x-exchange-ingress': process.env.INGRESS_TOKEN!,
+          },
           body: JSON.stringify({ email, password: 'incorrect-password' }),
           signal: AbortSignal.timeout(5000),
         });

@@ -26,6 +26,7 @@
     "wallet:push": "ts-node wallet-push.ts",
     "orders:sync": "ts-node private-sync.ts",
     "trace": "ts-node trace.ts",
+    "security:boundaries": "ts-node security-boundaries.ts",
     "rate-limit": "ts-node rate-limit-frontend.ts",
     "orders:read-flood": "ts-node orders-read-flood.ts",
     "orders:write-flood": "ts-node orders-write-flood.ts",

@@ -38,7 +38,15 @@ interface Taken {
   window: number;
 }
 
-type Scope = 'auth' | 'login_email' | 'login_email_total' | 'public' | 'orders' | 'orders_minute';
+type Scope =
+  | 'auth'
+  | 'login_email'
+  | 'login_email_total'
+  | 'ws_ticket'
+  | 'orders_write'
+  | 'public'
+  | 'orders'
+  | 'orders_minute';
 
 // Невдалі входи рахуються у фіксованому вікні від першої спроби. Відхилена спроба не рахується
 // й не подовжує вікно, на відміну від скрипта бібліотеки: інакше потік відхилених запитів з
@@ -71,6 +79,7 @@ export class RateLimits implements OnModuleDestroy {
     this.storage = new ThrottlerStorageRedisService({
       host: config.getOrThrow('REDIS_HOST', { infer: true }),
       port: config.getOrThrow('REDIS_PORT', { infer: true }),
+      username: config.getOrThrow('REDIS_USERNAME', { infer: true }),
       password: config.getOrThrow('REDIS_PASSWORD', { infer: true }),
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,
@@ -129,6 +138,25 @@ export class RateLimits implements OnModuleDestroy {
       this.config.getOrThrow('PUBLIC_RATE_TTL_MS', { infer: true }),
       this.config.getOrThrow('PUBLIC_RATE_LIMIT', { infer: true }),
     );
+  }
+
+  async webSocketTicket(request: Request): Promise<void> {
+    await this.attempt('ws_ticket', this.ip(request), 60_000, 120);
+  }
+
+  async orderWrite(userId: string): Promise<void> {
+    try {
+      await this.attempt(
+        'orders_write',
+        userId,
+        this.config.getOrThrow('ORDER_WRITE_RATE_TTL_MS', { infer: true }),
+        this.config.getOrThrow('ORDER_WRITE_RATE_LIMIT', { infer: true }),
+      );
+    } catch (error) {
+      // Скасування й завершений повтор лишаються доступними без Redis. Нові заявки
+      // перевіряють обов’язковий ліміт у intake; ingress також обмежує всі записи.
+      if (!(error instanceof ServiceUnavailableException)) throw error;
+    }
   }
 
   async order(userId: string): Promise<void> {
