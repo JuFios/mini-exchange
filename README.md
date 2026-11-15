@@ -540,23 +540,21 @@ Redis повертає `lag` групи як `null`, коли не може йо
 недоступний Redis не затримує `/metrics`. NaN означає «невідомо»: Redis не відповів, групи
 `settlement` немає (settlement жодного разу не запускався) або Redis не може порахувати lag. Обидві
 репліки читають той самий Redis, тож правила беруть `max`. Порівняння з NaN не спрацьовує, тому
-невідомий стан ловить окреме правило (`x != x` істинне лише для NaN):
+невідомий стан ловить окреме правило (`x != x` істинне лише для NaN). Правила лежать у
+[`deploy/prometheus/settlement-alerts.yml`](deploy/prometheus/settlement-alerts.yml):
 
-```yaml
-groups:
-  - name: settlement
-    rules:
-      - alert: SettlementBehind
-        expr: max by (stream) (engine_settlement_group_lag) > 1000
-        for: 5m
-      - alert: SettlementLagging
-        # Lag не падав до нуля 10 хвилин: consumer не встигає або не читає. Під постійним
-        # навантаженням здоровий consumer теж може так виглядати; тоді правило лише попереджає.
-        expr: min_over_time(max by (stream) (engine_settlement_group_lag)[10m:1m]) > 0
-      - alert: SettlementQueueUnknown
-        expr: max by (stream) (engine_settlement_group_lag != engine_settlement_group_lag) or
-          absent(engine_settlement_group_lag)
-        for: 5m
+| Алерт | Умова |
+|---|---|
+| `SettlementBehind` | `max` lag понад 1000 протягом 5 хв |
+| `SettlementLagging` | lag не падав до нуля 10 хв (`for: 10m`; короткий backlog після старту не будить) |
+| `SettlementQueueUnknown` | lag NaN на якійсь репліці або метрик engine немає, 5 хв |
+
+Поведінку правил перевіряють тести `promtool` поряд (`settlement-alerts.test.yml`), CI запускає їх
+у job «Compose smoke»:
+
+```bash
+docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool \
+  prom/prometheus:v3.5.0 test rules settlement-alerts.test.yml
 ```
 
 Межа 1000 — приклад: це близько 0,1 % `STREAM_MAXLEN`, далеко до обрізання непрочитаних подій.
