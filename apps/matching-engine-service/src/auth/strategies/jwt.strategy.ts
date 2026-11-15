@@ -1,10 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ExtractJwt } from 'passport-jwt';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { isUUID } from 'class-validator';
 import { AuthService } from '../auth.service';
+import { bearerToken } from '../bearer-token';
 import type { Role } from '../guards/roles.guard';
 
 export interface JwtPayload {
@@ -29,7 +29,7 @@ export class JwtStrategy {
   }
 
   async authenticate(request: Request) {
-    const token = ExtractJwt.fromAuthHeaderAsBearerToken()(request);
+    const token = bearerToken(request.headers.authorization);
     if (!token) throw new UnauthorizedException();
     let payload: JwtPayload;
     try {
