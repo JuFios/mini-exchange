@@ -8,7 +8,9 @@ const frontend = 'http://engine-lb:3000';
 const link = 'href="/admin/status"';
 const statusPage = 'ОНОВЛЕННЯ · 2 С';
 const denied = 'Сторінка доступна лише адміністратору.';
-const unknown = 'Не вдалося перевірити роль адміністратора.';
+// Engine не відповів: сторінка відкривається з попередженням, бо її дані backend віддає лише адміну.
+const unverified = 'Не вдалося перевірити роль адміністратора: engine не відповів.';
+const recovering = 'Оновлюємо сесію…';
 const replicas = ['matching-engine-1', 'matching-engine-2'];
 // Дедлайн перевірки 1,5 с плюс рендер сторінки.
 const DEADLINE_BOUND_MS = 3000;
@@ -32,17 +34,21 @@ const unpause = (id: string) => {
   if (docker('inspect', '--format', '{{.State.Status}}', id) === 'paused') docker('unpause', id);
 };
 
-async function main() {
-  const ids = replicas.map(container);
-  // Прогін, убитий посеред паузи, не має ламати наступний.
-  for (const id of ids) unpause(id);
-  for (const service of replicas) await waitReady(service);
+async function adminLogin() {
   const login = await request('/auth/login', 'POST', undefined, {
     email: process.env.ADMIN_EMAIL,
     password: process.env.ADMIN_PASSWORD,
   });
   assert.equal(login.status, 201, await login.clone().text());
-  const admin = ((await login.json()) as { accessToken: string }).accessToken;
+  return ((await login.json()) as { accessToken: string }).accessToken;
+}
+
+async function main() {
+  const ids = replicas.map(container);
+  // Прогін, убитий посеред паузи, не має ламати наступний.
+  for (const id of ids) unpause(id);
+  for (const service of replicas) await waitReady(service);
+  const admin = await adminLogin();
   const user = await token('register', `${randomUUID()}@system.test`, 'system-user-password');
 
   const adminStatus = await page('/admin/status', admin);
@@ -66,16 +72,18 @@ async function main() {
     const pages = [];
     for (let i = 0; i < 6; i++) pages.push(await page('/admin/status', admin));
     unpause(ids[0]);
-    seen.oneStalled = [pages.filter(({ html }) => html.includes(statusPage)).length];
+    seen.oneStalled = [
+      pages.filter(({ html }) => html.includes(statusPage) && !html.includes(unverified)).length,
+    ];
     const slowest = Math.max(...pages.map(({ ms }) => ms));
 
-    // Обидві зависли: сторінка не відкривається, посилання немає, дедлайн тримається.
+    // Обидві зависли: сторінка з попередженням, посилання немає, дедлайн тримається.
     for (const id of ids) docker('pause', id);
     const stalled = await page('/admin/status', admin);
     const stalledTrade = await page('/exchange/ABC', admin);
     seen.stalled = [
       stalled.status,
-      stalled.html.includes(unknown),
+      stalled.html.includes(unverified),
       stalled.html.includes(statusPage),
     ];
     seen.stalledLink = [stalledTrade.status, stalledTrade.html.includes(link)];
@@ -89,14 +97,29 @@ async function main() {
     for (const id of ids) unpause(id);
   }
   for (const service of replicas) await waitReady(service);
+
+  // Новий вхід замінює сесію: старий JWT ще чинний, але engine відповідає 401. Сторінка оновлює
+  // сесію в браузері; після оновлення повторний 401 веде на вхід, а не в цикл.
+  await adminLogin();
+  const revoked = await page('/admin/status', admin);
+  const revokedAgain = await page('/admin/status?recovered=1', admin);
+  seen.revoked = [
+    revoked.status,
+    revoked.html.includes(recovering),
+    revoked.html.includes(statusPage),
+  ];
+  seen.revokedAgain = [revokedAgain.status, revokedAgain.location];
+  console.log(`admin page revoked=${JSON.stringify([seen.revoked, seen.revokedAgain])}`);
   assert.deepEqual(seen, {
     adminStatus: [200, true, false],
     adminLink: [200, true],
     userStatus: [307, `${frontend}/exchange/ABC`],
     userLink: [200, false],
     oneStalled: [6],
-    stalled: [200, true, false],
+    stalled: [200, true, true],
     stalledLink: [200, false],
+    revoked: [200, true, false],
+    revokedAgain: [307, '/login'],
   });
 }
 
