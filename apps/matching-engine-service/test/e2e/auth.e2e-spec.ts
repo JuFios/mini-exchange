@@ -181,6 +181,27 @@ it('drops the admin role of issued tokens once the address leaves ADMIN_EMAILS',
   expect(await internalCheck('admin')).toBe(204);
 });
 
+it('lets the frontend check the current admin role with the access token alone', async () => {
+  const email = process.env.ADMIN_EMAILS!;
+  const login = await post('login', { email, password: process.env.ADMIN_PASSWORD! });
+  expect(login.status).toBe(201);
+  const { accessToken } = (await login.json()) as Tokens;
+  const user = await registerAccount();
+  // Frontend не має внутрішнього токена: роль перевіряє звичайний маршрут за access JWT.
+  const check = async (token?: string) => {
+    const response = await request('/auth/admin', 'GET', token);
+    return { status: response.status, cache: response.headers.get('cache-control') };
+  };
+  expect(await check(accessToken)).toEqual({ status: 204, cache: 'no-store' });
+  expect((await check(user.tokens.accessToken)).status).toBe(403);
+  expect((await check()).status).toBe(401);
+
+  await restart({ ADMIN_EMAILS: [`other-${randomUUID()}@demo.local`] });
+  expect((await check(accessToken)).status).toBe(403);
+  await restart();
+  expect((await check(accessToken)).status).toBe(204);
+});
+
 it('accepts only the bearer header forms that the ingress read limit keys', async () => {
   const { tokens } = await registerAccount();
   const token = tokens.accessToken;
