@@ -45,7 +45,10 @@ export class FakeSettlement {
       }
       const [, id] = match;
       if (id === 'readiness-probe') {
-        this.respond(res, 400);
+        this.respond(res, 400, {
+          statusCode: 400,
+          message: 'Validation failed (uuid is expected)',
+        });
         return;
       }
       this.releaseIds.push(id);

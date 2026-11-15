@@ -84,12 +84,12 @@ export class AuthService {
   }
 
   /**
-   * `beforeSession` отримує `sub` перевіреного підпису до звірки сесії в PostgreSQL: ліміт на
-   * користувача захищає БД, а недійсний токен відхиляється без запиту до БД і без чужої квоти.
+   * `beforeSession` отримує перевірені claims до звірки сесії в PostgreSQL, щоб відкликаний
+   * sid не витрачав квоту нового входу.
    */
   async webSocketToken(
     token: string,
-    beforeSession: (userId: string) => Promise<void>,
+    beforeSession: (payload: JwtPayload) => Promise<void>,
   ): Promise<{ token: string; userId: string }> {
     let payload: JwtPayload;
     const secret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
@@ -98,9 +98,7 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Некоректний токен доступу');
     }
-    const { userId } = await accessPrincipal(payload, this, ({ sub }) =>
-      beforeSession(sub.toLowerCase()),
-    );
+    const { userId } = await accessPrincipal(payload, this, beforeSession);
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp <= now) throw new UnauthorizedException('Некоректний токен доступу');
     return {

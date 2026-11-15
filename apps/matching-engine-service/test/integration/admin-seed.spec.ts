@@ -25,10 +25,15 @@ const password = 'seed-password-0123456789';
 let database: ReturnType<typeof testDatabase>;
 let source: ReturnType<typeof database.source>;
 
-function seeder() {
+function seeder(overrides: Record<string, unknown> = {}) {
   return new AdminSeedService(
     source.getRepository(User),
-    new ConfigService({ ADMIN_EMAILS: emails, ADMIN_PASSWORD: password, DEPLOYMENT_MODE: 'local' }),
+    new ConfigService({
+      ADMIN_EMAILS: emails,
+      ADMIN_PASSWORD: password,
+      DEPLOYMENT_MODE: 'local',
+      ...overrides,
+    }),
   );
 }
 
@@ -111,6 +116,23 @@ it('keeps existing seed passwords and creates only the missing accounts', async 
   const rows = await accounts();
   expect(rows).toHaveLength(2);
   expect(rows[0].password_hash).toBe(before.password_hash);
+});
+
+it('leaves remote admin rows intact if an expanded seed list has the wrong password', async () => {
+  const remote = { DEPLOYMENT_MODE: 'remote' };
+  await seeder({ ...remote, ADMIN_EMAILS: [emails[0]] }).onModuleInit();
+  const before = await accounts();
+
+  await expect(
+    seeder({ ...remote, ADMIN_PASSWORD: 'incorrect-admin-password' }).onModuleInit(),
+  ).rejects.toThrow(/Remote seeded admin credentials/);
+  expect(await accounts()).toEqual(before);
+
+  await seeder(remote).onModuleInit();
+  const after = await accounts();
+  expect(after).toHaveLength(2);
+  expect(after[0]).toEqual(before[0]);
+  expect(await bcrypt.compare(password, after[1].password_hash)).toBe(true);
 });
 
 it('seeds accounts when hashing lasts longer than the idle transaction limit', async () => {

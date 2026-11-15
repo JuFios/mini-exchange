@@ -31,6 +31,10 @@ class LimiterUnavailable extends ServiceUnavailableException {
   }
 }
 
+function sessionIdentity(userId: string, sessionId: string): string {
+  return `${userId.toLowerCase()}:${sessionId.toLowerCase()}`;
+}
+
 @Catch(RateLimited)
 export class RateLimitFilter implements ExceptionFilter {
   catch(error: RateLimited, host: ArgumentsHost): void {
@@ -152,17 +156,16 @@ export class RateLimits implements OnModuleDestroy {
     );
   }
 
-  // На користувача, а не на адресу: клієнти за одним NAT і перепідключення після failover не
-  // забирають квоту одне одного. Кожен сокет бере один тікет на handshake.
-  async webSocketTicket(userId: string): Promise<void> {
-    await this.attempt('ws_ticket', userId, 60_000, 120);
+  // На сесію, щоб спільна адреса за NAT або відкликаний sid не забирали чужу квоту.
+  async webSocketTicket(userId: string, sessionId: string): Promise<void> {
+    await this.attempt('ws_ticket', sessionIdentity(userId, sessionId), 60_000, 120);
   }
 
   async orderWrite(userId: string, sessionId: string): Promise<void> {
     try {
       await this.attempt(
         'orders_write',
-        `${userId.toLowerCase()}:${sessionId.toLowerCase()}`,
+        sessionIdentity(userId, sessionId),
         this.config.getOrThrow('ORDER_WRITE_RATE_TTL_MS', { infer: true }),
         this.config.getOrThrow('ORDER_WRITE_RATE_LIMIT', { infer: true }),
       );

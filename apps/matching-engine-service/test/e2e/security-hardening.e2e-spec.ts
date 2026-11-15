@@ -263,6 +263,21 @@ it('limits websocket tickets per user before session validation, not per address
   expect((await ticket(second)).status).toBe(200);
 });
 
+it('keeps websocket tickets available to a new login after the old session exhausts its window', async () => {
+  const credentials = {
+    email: `${randomUUID()}@example.test`,
+    password: 'strong-test-password',
+  };
+  const registration = await api.request('/auth/register', 'POST', undefined, credentials);
+  const { accessToken: oldToken } = await registration.json();
+  const login = await api.request('/auth/login', 'POST', undefined, credentials);
+  const { accessToken: newToken } = await login.json();
+  const ticket = (token: string) => api.request('/auth/ws-token', 'POST', token);
+  for (let index = 0; index < 120; index++) expect((await ticket(oldToken)).status).toBe(401);
+  expect((await ticket(oldToken)).status).toBe(429);
+  expect((await ticket(newToken)).status).toBe(200);
+});
+
 it("rejects invalid websocket ticket requests without spending anyone's quota", async () => {
   const access = await api.register();
   const forged = access.slice(0, -4) + (access.endsWith('AAAA') ? 'BBBB' : 'AAAA');

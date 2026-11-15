@@ -48,8 +48,12 @@ export class HttpReservationClient extends ReservationClient {
     const response = await this.post('/internal/reservations/readiness-probe/release').catch(
       () => undefined,
     );
-    void response?.body?.cancel().catch(() => undefined);
-    if (response?.status !== 400)
+    const validation = await response?.json().catch(() => undefined);
+    if (
+      response?.status !== 400 ||
+      validation?.statusCode !== 400 ||
+      validation?.message !== 'Validation failed (uuid is expected)'
+    )
       throw new Error('Settlement did not accept the reservation credentials');
   }
 

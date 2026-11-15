@@ -66,8 +66,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   webSocketToken(@Req() request: Request) {
-    return this.auth.webSocketToken(bearerToken(request.headers.authorization) ?? '', (userId) =>
-      this.limits.webSocketTicket(userId),
+    return this.auth.webSocketToken(
+      bearerToken(request.headers.authorization) ?? '',
+      ({ sub, sid }) => this.limits.webSocketTicket(sub, sid),
     );
   }
 
