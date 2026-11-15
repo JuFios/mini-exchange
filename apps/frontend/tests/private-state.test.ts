@@ -464,6 +464,50 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
   assert.ok(peak <= 8, `Peak of ${peak} parallel order reads`);
 });
 
+it('spreads the retries of limited order reads instead of retrying after exactly one second', async () => {
+  const { startPrivateSocket } = require('../lib/use-private-socket');
+  // Після failover усі термінали отримують 429 разом; однаковий повтор знову вдарив би в ліміт разом.
+  mock.method(Math, 'random', () => 0.5);
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    if (path.startsWith('/api/engine/orders'))
+      return Response.json({ message: 'Забагато запитів' }, { status: 429 });
+    return Response.json([]);
+  });
+  const delays: number[] = [];
+  const socket = new EventEmitter();
+  const stop = startPrivateSocket(
+    'ws://localhost:3001',
+    {
+      onLoading() {},
+      onError() {},
+      onSnapshot() {},
+      knownOrderIds: () => [],
+      onOrder() {},
+      onWallet() {},
+    },
+    {
+      setTimeout(callback: () => void, ms: number) {
+        delays.push(ms);
+        return callback;
+      },
+      clearTimeout() {},
+    },
+    (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
+      Object.assign(socket, {
+        connect() {
+          options.auth(() => socket.emit('connect'));
+        },
+        disconnect() {},
+      }),
+  );
+  for (let tick = 0; tick < 50; tick++) await new Promise((resolve) => setImmediate(resolve));
+  stop();
+  // Квота повертається щосекунди: повтор не раніше ніж за 1 с і не пізніше ніж за 2 с.
+  assert.ok(delays.includes(1500), `Retry delays: ${delays.join(', ')}`);
+  assert.ok(!delays.includes(1000), `Retry delays: ${delays.join(', ')}`);
+});
+
 it('stops the remaining order reads of a snapshot attempt that already failed', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
   const known = Array.from({ length: 40 }, (_, i) => `known-${i}`);

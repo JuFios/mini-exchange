@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
-import { adminAccess } from '../lib/admin-access';
+import { adminAccess, adminView } from '../lib/admin-access';
+import { recoverSession } from '../lib/client-api';
 
 const token = (claims: Record<string, unknown>) =>
   'h.' +
@@ -39,9 +40,14 @@ describe('admin access check', () => {
     assert.equal(await adminAccess(admin), 'forbidden');
   });
 
+  it('reports a session that the engine no longer accepts apart from a failed check', async () => {
+    // Сесію відкликано, а JWT ще чинний: middleware його пропускає, engine відповідає 401.
+    mock.method(globalThis, 'fetch', async () => new Response('{}', { status: 401 }));
+    assert.equal(await adminAccess(admin), 'unauthenticated');
+  });
+
   it('reports an unknown role when the engine fails or does not answer in time', async () => {
-    // 401: сесія скінчилась після middleware; сторінка просить оновити її, а не каже «не адмін».
-    for (const status of [401, 429, 500, 502, 503, 504]) {
+    for (const status of [429, 500, 502, 503, 504]) {
       mock.method(globalThis, 'fetch', async () => new Response('{}', { status }));
       assert.equal(await adminAccess(admin), 'unknown', `status ${status}`);
       mock.restoreAll();
@@ -67,5 +73,58 @@ describe('admin access check', () => {
     assert.equal(await adminAccess(admin, undefined, 50), 'unknown');
     clearTimeout(keepAlive);
     assert.ok(performance.now() - started < 1000);
+  });
+
+  it('opens the status page for an admin and with a warning when the role is unknown', () => {
+    assert.equal(adminView('admin', false), 'status');
+    // Дані сторінки backend віддає лише адміну, тож без відповіді engine показ безпечний,
+    // а під час збою engine сторінка й потрібна.
+    assert.equal(adminView('unknown', false), 'unverified');
+    assert.equal(adminView('forbidden', false), 'denied');
+  });
+
+  it('recovers a rejected session once and then signs in again', () => {
+    assert.equal(adminView('unauthenticated', false), 'recover');
+    // Після вдалого оновлення сесії engine знову відповів 401: новий вхід, а не цикл.
+    assert.equal(adminView('unauthenticated', true), 'login');
+  });
+});
+
+describe('session recovery after a rejected server-side check', () => {
+  afterEach(() => {
+    mock.restoreAll();
+    Reflect.deleteProperty(globalThis, 'window');
+  });
+  const browser = () => {
+    const assign = mock.fn();
+    Object.assign(globalThis, { window: { location: { assign } } });
+    return assign;
+  };
+
+  it('refreshes the session with the same request as the API reads', async () => {
+    const assign = browser();
+    const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }));
+    assert.equal(await recoverSession(), 'refreshed');
+    assert.equal(fetch.mock.calls[0].arguments[0], '/api/auth/refresh');
+    assert.equal(assign.mock.callCount(), 0);
+  });
+
+  it('sends a revoked session to the login page', async () => {
+    const assign = browser();
+    mock.method(globalThis, 'fetch', async () => new Response(null, { status: 401 }));
+    assert.equal(await recoverSession(), 'signed-out');
+    assert.deepEqual(assign.mock.calls[0].arguments, ['/login']);
+  });
+
+  it('keeps the session when the refresh fails for another reason', async () => {
+    const assign = browser();
+    mock.method(globalThis, 'fetch', async () => new Response(null, { status: 503 }));
+    assert.equal(await recoverSession(), 'failed');
+    mock.restoreAll();
+    mock.method(globalThis, 'fetch', async () => {
+      throw new TypeError('fetch failed');
+    });
+    assert.equal(await recoverSession(), 'failed');
+    assert.equal(assign.mock.callCount(), 0);
   });
 });
