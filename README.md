@@ -1146,6 +1146,7 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose run --rm system-tests npm run wallet:push
   docker compose run --rm system-tests npm run orders:sync
   docker compose run --rm system-tests npm run orders:read-flood
+  docker compose run --rm system-tests npm run engine-lb:errors
 )
 ```
 
@@ -1491,9 +1492,7 @@ EXPLAIN на 20 000 trades підтверджує використання об�
   з новими токенами після refresh: кожен такий токен мав би власний ключ першого ліміту. nginx
   перевіряє адресу першою, тож відхилений нею запит не займає місця в зоні токенів. Решту nginx відхиляє з 429, `Retry-After: 1` і
   JSON `{"statusCode":429,"message":"Забагато запитів"}`; так само тепер виглядає 429 від
-  `limit_conn` на HTTP-маршрутах. Відмову `/socket.io/` понад ліміт з'єднань nginx повертає
-  стандартною сторінкою 429 без CORS: upgrade WebSocket CORS не перевіряє, а long-polling
-  термінал не використовує. На `:3001` відповідь 429 має ті самі CORS-заголовки, що й
+  `limit_conn` на HTTP-маршрутах і `/socket.io/`. На `:3001` відповідь 429 має ті самі CORS-заголовки, що й
   engine: Compose передає `engine-lb` той самий `CORS_ORIGINS`, і для origin зі списку nginx
   додає `Access-Control-Allow-Origin` та відкриває `Retry-After`. Збіг списків перевіряє
   `scripts/ci/check-compose-bindings.sh`. nginx порівнює origin як текст, тож записуйте їх у
@@ -1501,6 +1500,18 @@ EXPLAIN на 20 000 trades підтверджує використання об�
   `/health`, `/ready` і внутрішня перевірка сесії `:8080` під ці ліміти не потрапляють. Без лімітів
   300 з'єднань читань від одного клієнта піднімали медіану заявки іншого користувача з ~40 мс до
   ~450 мс (сценарій `orders:read-flood`).
+- Інші відповіді, які на `:3001` формує сам nginx, теж мають JSON у формі помилок engine
+  (`statusCode`, `message`, `error`) і ті самі CORS-заголовки, що й engine для того ж origin:
+  502, якщо жодна репліка не приймає з'єднання; 504, якщо репліки не відповіли за
+  `proxy_read_timeout`; 413 для тіла понад 1 МБ; 400 для заголовка понад 8 КБ; 404 для
+  `/internal/*` і `/metrics`. Відповіді engine з тими самими кодами nginx не змінює
+  (`proxy_intercept_errors` вимкнено), тож `Access-Control-Allow-Origin` у них один. Дві межі:
+  414 (рядок запиту понад 8 КБ) не має `Access-Control-Allow-Origin`, бо nginx відхиляє запит
+  раніше, ніж читає заголовки; так само 400, якщо задовгий заголовок стоїть перед `Origin`.
+  Браузер у цих випадках бачить мережеву помилку; маршрути engine таких адрес не потребують.
+  Preflight (`OPTIONS`) відповідає engine, тож коли обидві репліки недоступні, браузер не
+  надішле запит із `Authorization` і теж побачить мережеву помилку, а не 502. Перевіряє
+  сценарій `engine-lb:errors`: він ставить репліки на паузу (504) і зупиняє їх (502).
 - `/health` перевіряє доступність процесу. `/ready` перевіряє міграції PostgreSQL і Redis з
   `maxmemory-policy=noeviction`; engine додатково перевіряє lag WebSocket. Обидва сервіси
   публікують Swagger на `/docs` і `/docs-json`. `CORS_ORIGINS` задає дозволені HTTP origins; у Compose це змінна
