@@ -304,7 +304,29 @@ async function main() {
     // Потік із багатьох адрес і токенів: кожен ключ лишається під своїм лімітом, і без стелі
     // listener engine отримував би всі читання.
     const many = await Promise.all(Array.from({ length: 50 }, newToken));
-    await underFlood('addresses', undefined, many.join(','));
+    // Стеля окрема для кожного listener: потік на `:8080` не забирає квоту `:3001`.
+    const publicReader = await newToken();
+    const publicCounts: Counts = {};
+    await underFlood(
+      'addresses',
+      async () => {
+        for (let i = 0; i < 20; i++) {
+          const started = performance.now();
+          const response = await request('/orders?limit=1', 'GET', publicReader);
+          await response.arrayBuffer();
+          publicCounts[response.status] = (publicCounts[response.status] ?? 0) + 1;
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, 100 - (performance.now() - started))),
+          );
+        }
+      },
+      many.join(','),
+    );
+    console.log(`orders read flood publicUnderInternalFlood=${JSON.stringify(publicCounts)}`);
+    assert(
+      (publicCounts['200'] ?? 0) >= 16,
+      'A flood on the internal listener took the read quota of the public one',
+    );
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal((await request('/orders?limit=1', 'GET', fresh)).status, 200);
   } catch (error) {
