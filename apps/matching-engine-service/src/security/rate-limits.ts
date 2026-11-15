@@ -158,11 +158,11 @@ export class RateLimits implements OnModuleDestroy {
     await this.attempt('ws_ticket', userId, 60_000, 120);
   }
 
-  async orderWrite(userId: string): Promise<void> {
+  async orderWrite(userId: string, sessionId: string): Promise<void> {
     try {
       await this.attempt(
         'orders_write',
-        userId,
+        `${userId.toLowerCase()}:${sessionId.toLowerCase()}`,
         this.config.getOrThrow('ORDER_WRITE_RATE_TTL_MS', { infer: true }),
         this.config.getOrThrow('ORDER_WRITE_RATE_LIMIT', { infer: true }),
       );

@@ -3,6 +3,8 @@ import type { Socket } from 'node:net';
 import { engineApp } from './engine-app';
 import fc from 'fast-check';
 import { Redis, ReplyError } from 'ioredis';
+import { JwtService } from '@nestjs/jwt';
+import { AuthService } from '../../src/auth/auth.service';
 import { engineMetrics } from '../../src/observability/metrics';
 import { RateLimits } from '../../src/security/rate-limits';
 
@@ -66,6 +68,35 @@ it('keeps cancellation and completed replay available when the write limiter is 
     200,
   );
   expect((await api.submit(token)).status).toBe(503);
+});
+
+it('rejects over-budget submits and cancels before PostgreSQL and isolates the next session', async () => {
+  await api.restart({ ORDER_WRITE_RATE_LIMIT: 1, ORDER_WRITE_RATE_TTL_MS: 60_000 });
+  const email = `${randomUUID()}@example.test`;
+  const password = 'strong-test-password';
+  const credentials = { email, password };
+  const registered = await api.request('/auth/register', 'POST', undefined, credentials);
+  const { accessToken: oldToken } = await registered.json();
+  const checks = jest.spyOn(api.app().get(AuthService), 'isSessionActive');
+  const cancel = (token: string) =>
+    api.request(`/orders/${randomUUID()}?instrument=ABC`, 'DELETE', token);
+  try {
+    expect((await cancel(oldToken)).status).toBe(404);
+    expect(checks).toHaveBeenCalledTimes(1);
+    expect((await api.submit(oldToken)).status).toBe(429);
+    expect((await cancel(oldToken)).status).toBe(429);
+    expect(checks).toHaveBeenCalledTimes(1);
+
+    const loggedIn = await api.request('/auth/login', 'POST', undefined, credentials);
+    const { accessToken: newToken } = await loggedIn.json();
+    expect(claims(newToken).sid).not.toBe(claims(oldToken).sid);
+    expect((await cancel(oldToken)).status).toBe(429);
+    expect((await api.submit(newToken)).status).toBe(201);
+    expect((await cancel(newToken)).status).toBe(429);
+    expect(checks).toHaveBeenCalledTimes(2);
+  } finally {
+    checks.mockRestore();
+  }
 });
 
 it('keeps cancellation and completed replay available after a stalled write limiter times out', async () => {
@@ -175,6 +206,50 @@ it('issues a websocket token that cannot authenticate an HTTP request', async ()
   expect(payload).toMatchObject({ sub: userId, typ: 'ws', aud: 'private' });
   expect(payload.exp * 1000 - Date.now()).toBeLessThanOrEqual(60_000);
   expect((await api.request('/orders', 'GET', token)).status).toBe(401);
+});
+
+it('rejects signed non-access claims before charging the websocket ticket quota', async () => {
+  const access = await api.register();
+  const ticket = (token: string) => api.request('/auth/ws-token', 'POST', token);
+  const issued = await ticket(access);
+  const { token: ws } = await issued.json();
+  const jwt = new JwtService({ secret: process.env.JWT_ACCESS_SECRET });
+  const invalidClaims = [{ sid: 'invalid' }, { roles: 'admin' }].map((claimsOverride) =>
+    jwt.sign({ ...claims(access), ...claimsOverride }, { algorithm: 'HS256' }),
+  );
+  const limits = jest.spyOn(api.app().get(RateLimits), 'webSocketTicket');
+  const checks = jest.spyOn(api.app().get(AuthService), 'isSessionActive');
+  try {
+    for (const token of [ws, ...invalidClaims]) {
+      expect((await ticket(token)).status).toBe(401);
+      expect((await api.submit(token)).status).toBe(401);
+    }
+    expect(limits).not.toHaveBeenCalled();
+    expect(checks).not.toHaveBeenCalled();
+    expect((await ticket(access)).status).toBe(200);
+    expect(limits).toHaveBeenCalledTimes(1);
+    expect(checks).toHaveBeenCalledTimes(1);
+  } finally {
+    limits.mockRestore();
+    checks.mockRestore();
+  }
+});
+
+it('rejects explicit null before rotating the refresh token', async () => {
+  const register = await api.request('/auth/register', 'POST', undefined, {
+    email: `${randomUUID()}@example.test`,
+    password: 'strong-test-password',
+  });
+  const { refreshToken } = await register.json();
+  const refresh = (body: Record<string, unknown>) =>
+    api.request('/auth/refresh', 'POST', undefined, body);
+  expect((await refresh({ refreshToken, rotate: null })).status).toBe(400);
+  const accessOnly = await refresh({ refreshToken, rotate: false });
+  expect(accessOnly.status).toBe(200);
+  expect(await accessOnly.json()).not.toHaveProperty('refreshToken');
+  const rotated = await refresh({ refreshToken, rotate: true });
+  expect(rotated.status).toBe(200);
+  expect((await rotated.json()).refreshToken).not.toBe(refreshToken);
 });
 
 it('limits websocket tickets per user before session validation, not per address', async () => {

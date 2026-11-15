@@ -44,23 +44,31 @@ if ! public_hosts=$(printf '%s\n' "$origins" | LC_ALL=C awk -F, -v mode="${DEPLO
   echo 'PUBLIC_ORIGIN(S) must contain HTTP origins without paths or credentials (HTTPS in remote mode)' >&2
   exit 1
 fi
-ws=${ENGINE_PUBLIC_WS_URL:-ws://localhost:3001}
+ws=$(printf '%s' "${ENGINE_PUBLIC_WS_URL:-ws://localhost:3001}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
 case "$ws" in
-  ws://*|wss://*|http://*|https://*) ;;
+  ws://*|http://*) default_port=80 ;;
+  wss://*|https://*) default_port=443 ;;
   *) echo 'Invalid public WebSocket URL' >&2; exit 1 ;;
 esac
 authority=${ws#*://}
 authority=${authority%%[/?#]*}
-if ! printf '%s' "$authority" | grep -Eq '^([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])(:[0-9]{1,5})?$'; then
+# Браузер прибирає початкові нулі, а порт за замовчуванням узагалі не надсилає в Host.
+if ! authority=$(printf '%s\n' "$authority" | LC_ALL=C awk -v default_port="$default_port" '
+  NR != 1 || $0 !~ /^([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(:[0-9]+)?$/ { exit 1 }
+  {
+    host = $0
+    if (match(host, /:[0-9]+$/)) {
+      port = substr(host, RSTART + 1) + 0
+      if (port < 1 || port > 65535) exit 1
+      host = substr(host, 1, RSTART - 1)
+      if (port != default_port) host = host ":" port
+    }
+    print host
+  }
+'); then
   echo 'Invalid public WebSocket host' >&2
   exit 1
 fi
-# URL браузера не надсилає порт за замовчуванням у Host.
-case "$ws" in
-  ws://*|http://*) authority=${authority%:80} ;;
-  wss://*|https://*) authority=${authority%:443} ;;
-esac
-authority=$(printf '%s' "$authority" | tr '[:upper:]' '[:lower:]')
 temporary=$(mktemp /etc/nginx/conf.d/.public-hosts.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 # Цей файл читається до інших map; збільшуємо bucket для довгих коректних DNS-імен.

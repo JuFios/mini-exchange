@@ -11,7 +11,6 @@ import { ChaosHooks } from '../chaos/chaos-hooks';
 import { ChaosController } from '../chaos/chaos.controller';
 import { PgNotifications } from '../engine/pg-notifications';
 import { HttpReservationClient } from '../intake/http-reservation.client';
-import { ReservationFundingCheck } from '../intake/reservation-funding.check';
 import { ReservationSweeper } from '../intake/reservation-sweeper';
 import { InternalOrdersController } from '../outbox/internal-orders.controller';
 import { InternalTradesController } from '../outbox/internal-trades.controller';
@@ -63,7 +62,6 @@ import { TerminusModule } from '@nestjs/terminus';
     PgNotifications,
     IntakeService,
     ReservationSweeper,
-    ReservationFundingCheck,
     {
       provide: ReservationClient,
       inject: [ConfigService],

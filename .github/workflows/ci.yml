@@ -180,6 +180,7 @@ jobs:
     timeout-minutes: 15
     env:
       ENGINE_PUBLIC_WS_URL: wss://exchange.example.test
+      PUBLIC_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://exchange-extra.example.test:3000
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       # Правила алертів живуть поза стеком; promtool перевіряє і синтаксис, і поведінку.
@@ -208,6 +209,11 @@ jobs:
             test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q "$service")")" = 0
           done
           curl -fsS http://127.0.0.1:3000/api/config | jq -e --arg url "$ENGINE_PUBLIC_WS_URL" '.wsUrl == $url'
+          curl -fsS -H 'Host: exchange-extra.example.test:3000' http://127.0.0.1:3000/login >/dev/null
+          status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/auth/login \
+            -H 'Host: exchange-extra.example.test:3000' -H 'Origin: http://exchange-extra.example.test:3000' \
+            -H 'Content-Type: application/json' -d '{}')
+          test "$status" = 400
           curl -fsS -H 'Host: localhost:3001' http://127.0.0.1:3001/health >/dev/null
           test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:3001' http://127.0.0.1:3000/login)" = 421
           # Заголовки безпеки frontend: відсутній заголовок інакше ніхто не помітить.

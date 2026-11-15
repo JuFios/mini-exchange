@@ -1,4 +1,4 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
@@ -11,13 +11,13 @@ const seedStatementTimeoutMs = seedLockTimeoutMs + 5_000;
 const adminEmailCollision = 'ADMIN_EMAILS contains an address registered by a regular account';
 
 @Injectable()
-export class AdminSeedService implements OnApplicationBootstrap {
+export class AdminSeedService implements OnModuleInit {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly config: ConfigService,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  async onModuleInit(): Promise<void> {
     const emails = this.config.getOrThrow<string[]>('ADMIN_EMAILS');
     const hashes = new Map<string, string>();
     // Хешування триває секунди, а сесія з відкритою транзакцією живе 2 с простою. Тому

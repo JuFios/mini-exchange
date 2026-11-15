@@ -59,7 +59,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
   refresh(@Body() dto: RefreshSessionDto) {
-    return this.auth.refresh(dto.refreshToken, dto.rotate ?? true);
+    return this.auth.refresh(dto.refreshToken, dto.rotate);
   }
 
   @Post('ws-token')

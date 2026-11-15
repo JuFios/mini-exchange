@@ -29,7 +29,7 @@ export class JwtStrategy {
     this.secret = config.getOrThrow<string>('JWT_ACCESS_SECRET');
   }
 
-  async authenticate(request: Request) {
+  async authenticate(request: Request, beforeSession?: (payload: JwtPayload) => Promise<void>) {
     const token = bearerToken(request.headers.authorization);
     if (!token) throw new UnauthorizedException();
     let payload: JwtPayload;
@@ -41,6 +41,6 @@ export class JwtStrategy {
     } catch {
       throw new UnauthorizedException();
     }
-    return accessPrincipal(payload, this.auth);
+    return accessPrincipal(payload, this.auth, beforeSession);
   }
 }

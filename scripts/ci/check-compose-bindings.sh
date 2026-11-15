@@ -25,6 +25,11 @@ export ADMIN_EMAILS=ci-admin@example.test
 export ADMIN_PASSWORD=ci-only-admin-password-000001
 export ENGINE_PUBLIC_WS_URL=wss://ws.exchange.example.test
 
+PUBLIC_ORIGIN= PUBLIC_ORIGINS=http://localhost:3000,http://exchange-extra.example.test:3000 \
+  docker compose config --format json | jq -e --arg origins 'http://localhost:3000,http://exchange-extra.example.test:3000' '
+    .services as $s |
+    (["frontend","engine-lb"] | all(. as $name | $s[$name].environment.PUBLIC_ORIGINS == $origins))'
+
 docker compose config --format json | jq -e '
   .services as $s |
   (["matching-engine-1","matching-engine-2"] | all(. as $name | ($s[$name].ports // []) | length == 0)) and

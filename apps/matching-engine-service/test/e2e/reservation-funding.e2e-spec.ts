@@ -1,8 +1,59 @@
+import { DataSource } from 'typeorm';
 import { engineApp } from './engine-app';
 import { FakeSettlement } from './fakes/settlement.fake';
 import { ReservationClient, Reservation } from '../../src/intake/reservation.client';
 
 const api = engineApp();
+
+it('preserves unfunded intake if the first funded replica fails startup validation', async () => {
+  const token = await api.register();
+  await expect(
+    api.build({
+      RESERVATIONS_ENABLED: true,
+      DEPLOYMENT_MODE: 'remote',
+      ADMIN_PASSWORD: 'different-remote-password',
+    }),
+  ).rejects.toThrow(/Remote seeded admin credentials/);
+
+  expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual([
+    { reservations_required: false },
+  ]);
+  expect((await api.submit(token)).status).toBe(201);
+});
+
+it('scans the history once when funded replicas race on first startup', async () => {
+  const query = DataSource.prototype.query;
+  let reads = 0;
+  let scans = 0;
+  let releaseReads!: () => void;
+  const bothRead = new Promise<void>((resolve) => (releaseReads = resolve));
+  const spy = jest.spyOn(DataSource.prototype, 'query').mockImplementation(async function (
+    this: DataSource,
+    sql,
+    ...args
+  ) {
+    const result = await query.call(this, sql, ...args);
+    if (sql === 'SELECT reservations_required FROM engine_settings WHERE id=true') {
+      if (++reads === 2) releaseReads();
+      await bothRead;
+    }
+    if (sql.includes('SELECT EXISTS (SELECT 1 FROM orders o WHERE o.status')) scans++;
+    return result;
+  });
+  const starts = [enabled(), enabled()];
+  try {
+    await Promise.all(starts);
+    expect(reads).toBe(2);
+    expect(scans).toBe(1);
+    expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual(
+      [{ reservations_required: true }],
+    );
+  } finally {
+    releaseReads();
+    await Promise.allSettled(starts);
+    spy.mockRestore();
+  }
+});
 
 it('rejects an unfunded insert from a writer that does not know the application guard', async () => {
   const token = await api.register();

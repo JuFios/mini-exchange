@@ -56,7 +56,7 @@ afterEach(async () => {
 });
 
 it('lets two replicas seed the same accounts at startup without errors or duplicates', async () => {
-  await Promise.all([seeder().onApplicationBootstrap(), seeder().onApplicationBootstrap()]);
+  await Promise.all([seeder().onModuleInit(), seeder().onModuleInit()]);
 
   const rows = await accounts();
   expect(rows.map((row) => [row.email, row.admin_seeded])).toEqual(
@@ -76,7 +76,7 @@ it('rolls back the whole seed when a regular account takes an address between th
     await runner.query("INSERT INTO users (email, password_hash) VALUES ($1, 'regular-hash')", [
       emails[1],
     ]);
-    seeding = seeder().onApplicationBootstrap();
+    seeding = seeder().onModuleInit();
     seeding.catch(() => undefined);
 
     for (let attempt = 0; ; attempt++) {
@@ -103,11 +103,11 @@ it('rolls back the whole seed when a regular account takes an address between th
 });
 
 it('keeps existing seed passwords and creates only the missing accounts', async () => {
-  await seeder().onApplicationBootstrap();
+  await seeder().onModuleInit();
   const [before] = await accounts();
   await source.query('DELETE FROM users WHERE email = $1', [emails[1]]);
 
-  await seeder().onApplicationBootstrap();
+  await seeder().onModuleInit();
   const rows = await accounts();
   expect(rows).toHaveLength(2);
   expect(rows[0].password_hash).toBe(before.password_hash);
@@ -116,7 +116,7 @@ it('keeps existing seed passwords and creates only the missing accounts', async 
 it('seeds accounts when hashing lasts longer than the idle transaction limit', async () => {
   mockHashDelayMs = 2500;
 
-  await seeder().onApplicationBootstrap();
+  await seeder().onModuleInit();
 
   expect((await accounts()).map((row) => row.email)).toEqual(emails);
 }, 15000);
@@ -128,7 +128,7 @@ it('waits for another seeding replica longer than the default statement limit', 
   let seeding: Promise<void> | undefined;
   try {
     await runner.query('SELECT pg_advisory_lock($1, $2)', [...advisoryLocks.adminSeed.key]);
-    seeding = seeder().onApplicationBootstrap();
+    seeding = seeder().onModuleInit();
     seeding.catch(() => undefined);
     await new Promise((resolve) => setTimeout(resolve, 5500));
     await runner.query('SELECT pg_advisory_unlock($1, $2)', [...advisoryLocks.adminSeed.key]);

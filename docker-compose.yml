@@ -111,6 +111,7 @@ services:
     environment:
       CORS_ORIGINS: *cors-origins
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-}
       ENGINE_PUBLIC_WS_URL: ${ENGINE_PUBLIC_WS_URL:-${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}}
       INGRESS_TOKEN: ${INGRESS_TOKEN:-demo-ingress-token-local-only-00000001}
       FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:-demo-frontend-proxy-local-only-000001}
@@ -175,6 +176,7 @@ services:
       MATCHING_ENGINE_URL: http://engine-lb:8080
       SETTLEMENT_URL: http://engine-lb:8080/settlement
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      PUBLIC_ORIGINS: ${PUBLIC_ORIGINS:-}
       ENGINE_PUBLIC_WS_URL: ${ENGINE_PUBLIC_WS_URL:-${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}}
       FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:-demo-frontend-proxy-local-only-000001}
     networks: [frontend]

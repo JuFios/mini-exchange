@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsString, MaxLength, ValidateIf } from 'class-validator';
 
 export class RefreshTokenDto {
   @IsString({ message: 'Некоректний токен оновлення' })
@@ -12,7 +12,7 @@ export class RefreshSessionDto extends RefreshTokenDto {
    * може обірвати чужа сторінка: обірвана ротація лишила б у клієнта старий refresh, і його
    * наступне використання після grace відкликало б сесію.
    */
-  @IsOptional()
+  @ValidateIf((_, value: unknown) => value !== undefined)
   @IsBoolean({ message: 'Некоректний параметр ротації' })
   rotate?: boolean;
 }

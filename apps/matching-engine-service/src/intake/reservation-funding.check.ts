@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
 
@@ -7,13 +7,13 @@ import { DataSource } from 'typeorm';
  * Інакше угоди без резервів не розрахувати, а звірка показувала б їх як пропуски.
  */
 @Injectable()
-export class ReservationFundingCheck implements OnModuleInit {
+export class ReservationFundingCheck {
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
   ) {}
 
-  async onModuleInit(): Promise<void> {
+  async ensureMode(): Promise<void> {
     const enabled = this.config.getOrThrow<boolean>('RESERVATIONS_ENABLED');
     // Після першого ввімкнення інваріант тримає тригер, а прапорець назад не змінюється. Тож
     // повторний старт не сканує всю історію й не блокує рядок режиму, на якому чекають заявки.
@@ -37,6 +37,7 @@ export class ReservationFundingCheck implements OnModuleInit {
           );
         return;
       }
+      if (settings.reservations_required) return;
       const [found]: { live: boolean; traded: boolean }[] = await db.query(
         `SELECT EXISTS (SELECT 1 FROM orders o WHERE o.status IN ('pending','open','partially_filled')
           AND NOT EXISTS (SELECT 1 FROM order_requests r WHERE r.order_id=o.id AND r.reserved)) AS live,

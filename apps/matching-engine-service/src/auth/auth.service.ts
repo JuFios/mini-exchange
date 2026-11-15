@@ -98,10 +98,9 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Некоректний токен доступу');
     }
-    if (typeof payload.sub !== 'string')
-      throw new UnauthorizedException('Некоректний токен доступу');
-    await beforeSession(payload.sub.toLowerCase());
-    const { userId } = await accessPrincipal(payload, this);
+    const { userId } = await accessPrincipal(payload, this, ({ sub }) =>
+      beforeSession(sub.toLowerCase()),
+    );
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp <= now) throw new UnauthorizedException('Некоректний токен доступу');
     return {
