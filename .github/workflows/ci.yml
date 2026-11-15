@@ -245,6 +245,8 @@ jobs:
         run: docker compose run --rm --no-deps system-tests npm run trace
       - name: Check session revocation across HTTP and WebSocket
         run: docker compose run --rm --no-deps system-tests npm run session:revocation
+      - name: Check that the admin page waits for the engine role check
+        run: docker compose run --rm --no-deps system-tests npm run frontend:admin
       - name: Check WebSocket transport through both listeners
         run: docker compose run --rm system-tests npm run realtime:transport
       - name: Check graceful ownership transfer
