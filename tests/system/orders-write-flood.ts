@@ -6,6 +6,9 @@ import { cancelOrder, cleanup, engine, request, submit, token, waitReady } from 
 const internal = 'http://engine-lb:8080';
 const instrument = 'XYZ';
 const CONNECTIONS = 300;
+// За delay=200 до 800 запитів чекають усередині nginx: 300 активних з'єднань вже не
+// заповнюють адресний запас 1000. Фаза з різними токенами має перевищити весь запас.
+const ACCOUNT_CONNECTIONS = 1500;
 const SUBMITS = 30;
 // Без потоку заявка проходить за десятки мілісекунд, а без ліміту ~950 скасувань за секунду
 // піднімали медіану до ~1,2 с. Межа та сама, що й у сценарії потоку читань.
@@ -63,7 +66,8 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
   };
   const started = performance.now();
   process.send!({ type: 'started' });
-  await Promise.all(Array.from({ length: pulse ? PULSE : CONNECTIONS }, (_, index) => loop(index)));
+  const connections = pulse ? PULSE : mode === 'accounts' ? ACCOUNT_CONNECTIONS : CONNECTIONS;
+  await Promise.all(Array.from({ length: connections }, (_, index) => loop(index)));
   const elapsedMs = performance.now() - started;
   // Імпульс закінчується сам, але звіт чекає на `stop`, як і безперервний потік.
   if (running) await new Promise((resolve) => process.once('message', resolve));
@@ -168,7 +172,7 @@ async function main() {
     const p50 = percentile(latencies, 0.5);
     const p95 = percentile(latencies, 0.95);
     console.log(
-      `orders write flood mode=${mode} connections=${CONNECTIONS} writes=${total} ` +
+      `orders write flood mode=${mode} writes=${total} ` +
         `statuses=${JSON.stringify(counts)} p50=${p50.toFixed(0)}ms p95=${p95.toFixed(0)}ms`,
     );
     assert(p50 <= P50_BOUND_MS, `Submit p50 ${p50.toFixed(0)} ms under a ${mode} write flood`);
