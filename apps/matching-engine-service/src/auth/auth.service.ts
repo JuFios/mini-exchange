@@ -111,10 +111,15 @@ export class AuthService {
     };
   }
 
-  async refresh(token: string): Promise<TokenPair | { accessToken: string }> {
+  async refresh(token: string, rotate = true): Promise<TokenPair | { accessToken: string }> {
     const claims = readRefreshClaims(this.jwt, token, this.refreshSecret());
     const presentedHash = hashRefreshToken(token);
     let session = await this.readSession(claims);
+    // Без ротації чинний токен лише подовжує доступ до того самого абсолютного строку сесії.
+    // Викрадений токен так не сховати: перша ж ротація клієнта робить його попереднім, і його
+    // використання після grace відкликає сесію, як і з ротацією.
+    if (!rotate && matchesRefreshHash(session.user.refreshTokenHash, presentedHash))
+      return { accessToken: this.issueAccessToken(session.user, claims.sid, claims.exp) };
     if (matchesRefreshHash(session.user.refreshTokenHash, presentedHash)) {
       const refreshToken = this.issueRefreshToken(claims.sub, claims.sid, claims.exp);
       const update = await this.users.update(
