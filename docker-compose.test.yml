@@ -5,6 +5,9 @@ x-test-engine: &test-engine
   environment:
     NODE_OPTIONS: --require=/app/system-crash.cjs
     SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
+    # Ключ і записи stream для фікстури crash недоступні ролі сервісу в ACL Redis: фікстура
+    # відкриває власне з'єднання користувачем default. Лише в тестовому стеку.
+    SYSTEM_CRASH_REDIS_PASSWORD: ${REDIS_PASSWORD:-exchange-redis-local-only}
     CHAOS_ENABLED: 'true'
     ADMIN_EMAILS: admin@system.test
     ADMIN_PASSWORD: system-test-password-only
@@ -48,6 +51,7 @@ services:
     environment:
       NODE_OPTIONS: --require=/app/system-crash.cjs
       SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
+      SYSTEM_CRASH_REDIS_PASSWORD: ${REDIS_PASSWORD:-exchange-redis-local-only}
       # Коротка пауза дає звірці побачити втрачену угоду без очікування 30 с.
       SETTLEMENT_GRACE_MS: '1000'
   frontend:
