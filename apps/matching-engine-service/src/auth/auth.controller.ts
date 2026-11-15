@@ -65,9 +65,10 @@ export class AuthController {
   @Post('ws-token')
   @HttpCode(HttpStatus.OK)
   @Header('Cache-Control', 'no-store')
-  async webSocketToken(@Req() request: Request) {
-    await this.limits.webSocketTicket(request);
-    return this.auth.webSocketToken(bearerToken(request.headers.authorization) ?? '');
+  webSocketToken(@Req() request: Request) {
+    return this.auth.webSocketToken(bearerToken(request.headers.authorization) ?? '', (userId) =>
+      this.limits.webSocketTicket(userId),
+    );
   }
 
   // Роль у claims лишається до `exp`; frontend показує «Стан системи» лише після цієї перевірки.

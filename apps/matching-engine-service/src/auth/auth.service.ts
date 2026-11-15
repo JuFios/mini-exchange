@@ -83,7 +83,14 @@ export class AuthService {
     return this.startSession(user);
   }
 
-  async webSocketToken(token: string): Promise<{ token: string; userId: string }> {
+  /**
+   * `beforeSession` отримує `sub` перевіреного підпису до звірки сесії в PostgreSQL: ліміт на
+   * користувача захищає БД, а недійсний токен відхиляється без запиту до БД і без чужої квоти.
+   */
+  async webSocketToken(
+    token: string,
+    beforeSession: (userId: string) => Promise<void>,
+  ): Promise<{ token: string; userId: string }> {
     let payload: JwtPayload;
     const secret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
     try {
@@ -91,6 +98,9 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Некоректний токен доступу');
     }
+    if (typeof payload.sub !== 'string')
+      throw new UnauthorizedException('Некоректний токен доступу');
+    await beforeSession(payload.sub.toLowerCase());
     const { userId } = await accessPrincipal(payload, this);
     const now = Math.floor(Date.now() / 1000);
     if (payload.exp <= now) throw new UnauthorizedException('Некоректний токен доступу');

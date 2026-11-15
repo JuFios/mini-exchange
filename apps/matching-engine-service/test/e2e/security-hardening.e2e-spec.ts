@@ -143,24 +143,25 @@ it('issues a websocket token that cannot authenticate an HTTP request', async ()
   expect((await api.request('/orders', 'GET', token)).status).toBe(401);
 });
 
-it('limits websocket token issuance before session validation and keeps another address available', async () => {
-  const headers = { 'x-forwarded-for': '192.0.2.150' };
-  for (let index = 0; index < 120; index++) {
-    expect(
-      (await api.request('/auth/ws-token', 'POST', undefined, undefined, headers)).status,
-    ).toBe(401);
-  }
-  const denied = await api.request('/auth/ws-token', 'POST', undefined, undefined, headers);
+it('limits websocket tickets per user before session validation, not per address', async () => {
+  const [first, second] = await Promise.all([api.register(), api.register()]);
+  const ticket = (access?: string) => api.request('/auth/ws-token', 'POST', access);
+  for (let index = 0; index < 120; index++) expect((await ticket(first)).status).toBe(200);
+  const denied = await ticket(first);
   expect(denied.status).toBe(429);
   expect(Number(denied.headers.get('retry-after'))).toBeGreaterThan(0);
+  // Той самий клієнт і адреса: інший користувач за тим самим NAT не втрачає свою квоту.
+  expect((await ticket(second)).status).toBe(200);
+});
+
+it("rejects invalid websocket ticket requests without spending anyone's quota", async () => {
   const access = await api.register();
-  expect(
-    (
-      await api.request('/auth/ws-token', 'POST', access, undefined, {
-        'x-forwarded-for': '192.0.2.151',
-      })
-    ).status,
-  ).toBe(200);
+  const forged = access.slice(0, -4) + (access.endsWith('AAAA') ? 'BBBB' : 'AAAA');
+  for (let index = 0; index < 150; index++) {
+    const response = await api.request('/auth/ws-token', 'POST', index % 2 ? forged : undefined);
+    expect(response.status).toBe(401);
+  }
+  expect((await api.request('/auth/ws-token', 'POST', access)).status).toBe(200);
 });
 
 it('never extends the session deadline through a generated sequence of rotations', async () => {

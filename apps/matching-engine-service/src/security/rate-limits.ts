@@ -151,8 +151,10 @@ export class RateLimits implements OnModuleDestroy {
     );
   }
 
-  async webSocketTicket(request: Request): Promise<void> {
-    await this.attempt('ws_ticket', this.ip(request), 60_000, 120);
+  // На користувача, а не на адресу: клієнти за одним NAT і перепідключення після failover не
+  // забирають квоту одне одного. Кожен сокет бере один тікет на handshake.
+  async webSocketTicket(userId: string): Promise<void> {
+    await this.attempt('ws_ticket', userId, 60_000, 120);
   }
 
   async orderWrite(userId: string): Promise<void> {
