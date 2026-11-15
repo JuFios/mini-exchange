@@ -246,7 +246,8 @@ async function main() {
       ...placed.map(
         ([owner, id]) =>
           () =>
-            cancelOrder(owner, id),
+            // Жертва подала ~130 заявок одним токеном: більше за запас токена.
+            cancelOrder(owner, id, true),
       ),
     );
   }

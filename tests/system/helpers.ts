@@ -179,9 +179,19 @@ export async function cleanup(failure: unknown, ...steps: (() => unknown)[]): Pr
   throw problems.length === 1 ? problems[0] : new AggregateError(problems, 'Cleanup failed');
 }
 
-/** Скасовує заявку. Виконана (409 `ORDER_ALREADY_FILLED`) теж годиться: залишку в неї немає. */
-export async function cancelOrder(accessToken: string, id: string) {
-  const response = await request(`/orders/${id}`, 'DELETE', accessToken);
+/**
+ * Скасовує заявку. Виконана (409 `ORDER_ALREADY_FILLED`) теж годиться: залишку в неї немає.
+ * `waitLimited` — для прибирання, що скасовує понад запас токена в nginx: після 429 чекає
+ * `Retry-After`, як клієнт, до 30 спроб. Решта сценаріїв вважає 429 помилкою.
+ */
+export async function cancelOrder(accessToken: string, id: string, waitLimited = false) {
+  let response = await request(`/orders/${id}`, 'DELETE', accessToken);
+  for (let attempt = 1; waitLimited && response.status === 429 && attempt < 30; attempt++) {
+    await response.arrayBuffer();
+    const seconds = Number(response.headers.get('retry-after')) || 1;
+    await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+    response = await request(`/orders/${id}`, 'DELETE', accessToken);
+  }
   const body = await response.text();
   const filled = response.status === 409 && body.includes('ORDER_ALREADY_FILLED');
   assert(
