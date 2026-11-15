@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { engineApp } from './engine-app';
 import fc from 'fast-check';
+import { ReplyError } from 'ioredis';
+import { engineMetrics } from '../../src/observability/metrics';
 import { RateLimits } from '../../src/security/rate-limits';
 
 const api = engineApp();
@@ -55,6 +57,39 @@ it('keeps cancellation and completed replay available when the write limiter is 
     200,
   );
   expect((await api.submit(token)).status).toBe(503);
+});
+
+it('refuses writes when Redis answers the write limiter with an error and counts each bypass', async () => {
+  await api.restart();
+  const token = await api.register();
+  const { order } = await (await api.submit(token)).json();
+  const limits = api.app().get(RateLimits) as unknown as {
+    storage: { redis: { eval: (...args: unknown[]) => Promise<unknown> } };
+  };
+  const bypassed = async () =>
+    (await engineMetrics.getSingleMetricAsString('rate_limit_bypassed_total')).match(
+      /scope="orders_write"} (\d+)/,
+    )?.[1];
+  const before = Number(await bypassed());
+  // Відповідь Redis (тут — помилка прав ACL) не схожа на недоступний Redis: ліміт не вимикається.
+  const denied = jest
+    .spyOn(limits.storage.redis, 'eval')
+    .mockRejectedValue(new ReplyError('NOPERM this user has no permissions to run the command'));
+  try {
+    expect((await api.request(`/orders/${order.id}`, 'DELETE', token)).status).toBe(503);
+  } finally {
+    denied.mockRestore();
+  }
+  expect(Number(await bypassed())).toBe(before);
+  const offline = jest
+    .spyOn(limits.storage.redis, 'eval')
+    .mockRejectedValue(new Error('Connection is closed.'));
+  try {
+    expect((await api.request(`/orders/${order.id}`, 'DELETE', token)).status).toBe(200);
+  } finally {
+    offline.mockRestore();
+  }
+  expect(Number(await bypassed())).toBe(before + 1);
 });
 
 it('refuses remote startup when an existing seeded admin keeps another password', async () => {

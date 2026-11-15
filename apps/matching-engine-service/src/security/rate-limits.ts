@@ -5,20 +5,29 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import type { Request, Response } from 'express';
+import { ReplyError } from 'ioredis';
 import { createHash } from 'node:crypto';
-import { rateLimited } from '../observability/metrics';
+import { rateLimitBypassed, rateLimited } from '../observability/metrics';
 import type { EngineEnv } from '../config/env.validation';
 import { asciiLowerCase } from '../auth/auth.service';
 
 class RateLimited extends HttpException {
   constructor(readonly retryAfter: number) {
     super('Забагато запитів', HttpStatus.TOO_MANY_REQUESTS);
+  }
+}
+
+// Збій обмежувача з первинною помилкою: відмову Redis можна відрізнити від недоступного Redis.
+class LimiterUnavailable extends ServiceUnavailableException {
+  constructor(cause: unknown) {
+    super('Обмежувач запитів тимчасово недоступний', { cause });
   }
 }
 
@@ -73,6 +82,8 @@ return 0`;
 export class RateLimits implements OnModuleDestroy {
   private readonly storage: ThrottlerStorageRedisService;
   private readonly prefix: string;
+  private readonly logger = new Logger(RateLimits.name);
+  private bypassLoggedAt = 0;
 
   constructor(private readonly config: ConfigService<EngineEnv, true>) {
     this.prefix = 'exchange:limit:' + config.getOrThrow('DATABASE_NAME', { infer: true });
@@ -154,8 +165,16 @@ export class RateLimits implements OnModuleDestroy {
       );
     } catch (error) {
       // Скасування й завершений повтор лишаються доступними без Redis. Нові заявки
-      // перевіряють обов’язковий ліміт у intake; ingress також обмежує всі записи.
-      if (!(error instanceof ServiceUnavailableException)) throw error;
+      // перевіряють обов’язковий ліміт у intake; ingress також обмежує всі записи. Пропуск лише
+      // для недоступного Redis: відповідь Redis (`NOPERM` після помилки в ACL тощо) означає
+      // зламану конфігурацію, і тихо вимкнений ліміт її б сховав.
+      if (!(error instanceof LimiterUnavailable) || error.cause instanceof ReplyError) throw error;
+      rateLimitBypassed.inc({ scope: 'orders_write' });
+      const now = Date.now();
+      if (now - this.bypassLoggedAt >= 60_000) {
+        this.bypassLoggedAt = now;
+        this.logger.warn({ event: 'rate_limit.bypassed', scope: 'orders_write' });
+      }
     }
   }
 
@@ -188,8 +207,8 @@ export class RateLimits implements OnModuleDestroy {
     let result: unknown;
     try {
       result = await this.storage.redis.eval(LOGIN_ATTEMPT, 1, key, ttl, limit);
-    } catch {
-      throw new ServiceUnavailableException('Обмежувач запитів тимчасово недоступний');
+    } catch (error) {
+      throw new LimiterUnavailable(error);
     }
     const [allowed, remaining, window] = result as [number, number, number];
     if (allowed === 1) return { key, window };
