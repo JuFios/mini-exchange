@@ -40,23 +40,25 @@ interface Taken {
 
 type Scope = 'auth' | 'login_email' | 'login_email_total' | 'public' | 'orders' | 'orders_minute';
 
-// Невдалі входи рахуються у фіксованому вікні від першої невдачі. Відхилена спроба не рахується
+// Невдалі входи рахуються у фіксованому вікні від першої спроби. Відхилена спроба не рахується
 // й не подовжує вікно, на відміну від скрипта бібліотеки: інакше потік відхилених запитів з
-// однієї адреси тримав би блок безстроково. Повертає {дозволено, мс до кінця вікна}.
+// однієї адреси тримав би блок безстроково. Повертає {дозволено, мс до кінця, точний кінець вікна}.
 const LOGIN_ATTEMPT = `local hits = tonumber(redis.call('GET', KEYS[1]) or '0')
 local ttl = redis.call('PTTL', KEYS[1])
 if ttl <= 0 then
   redis.call('SET', KEYS[1], 1, 'PX', ARGV[1])
-  return {1, tonumber(ARGV[1])}
+  return {1, tonumber(ARGV[1]), redis.call('PEXPIRETIME', KEYS[1])}
 end
-if hits >= tonumber(ARGV[2]) then return {0, ttl} end
+if hits >= tonumber(ARGV[2]) then return {0, ttl, 0} end
 redis.call('INCR', KEYS[1])
-return {1, ttl}`;
-// Повертає спробу лише в її вікні: у новому вікні PTTL більший, ніж був під час спроби, і чужа
-// невдача не стирається. DECR не змінює TTL.
-const LOGIN_REFUND = `local ttl = redis.call('PTTL', KEYS[1])
+return {1, ttl, redis.call('PEXPIRETIME', KEYS[1])}`;
+// Точний кінець вікна визначає покоління ключа: залишковий TTL нового вікна теж зменшується
+// й не дозволяє відрізнити його від старого. DECR не змінює строк завершення ключа.
+const LOGIN_REFUND = `local expiresAt = redis.call('PEXPIRETIME', KEYS[1])
 local hits = tonumber(redis.call('GET', KEYS[1]) or '0')
-if ttl > 0 and ttl <= tonumber(ARGV[1]) and hits > 0 then return redis.call('DECR', KEYS[1]) end
+if expiresAt > 0 and expiresAt == tonumber(ARGV[1]) and hits > 0 then
+  return redis.call('DECR', KEYS[1])
+end
 return 0`;
 
 @Injectable()
@@ -161,10 +163,10 @@ export class RateLimits implements OnModuleDestroy {
     } catch {
       throw new ServiceUnavailableException('Обмежувач запитів тимчасово недоступний');
     }
-    const [allowed, window] = result as [number, number];
+    const [allowed, remaining, window] = result as [number, number, number];
     if (allowed === 1) return { key, window };
     rateLimited.inc({ scope });
-    throw new RateLimited(Math.max(1, Math.ceil(window / 1000)));
+    throw new RateLimited(Math.max(1, Math.ceil(remaining / 1000)));
   }
 
   // Повернення — best effort: якщо Redis недоступний, спроба лишиться списаною до кінця вікна.

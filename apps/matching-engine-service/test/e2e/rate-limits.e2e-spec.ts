@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { AuthService } from '../../src/auth/auth.service';
+import type { Request } from 'express';
+import Redis from 'ioredis';
+import fc from 'fast-check';
+import { RateLimits } from '../../src/security/rate-limits';
 import { connect, disconnected, emitWithAck } from '../helpers/websocket';
 import { engineApp } from './engine-app';
 
@@ -106,8 +110,7 @@ describe('failed logins per email', () => {
     const blocked = await login('203.0.113.100', email);
     expect(blocked.status).toBe(429);
     expect(Number(blocked.headers.get('retry-after'))).toBeGreaterThan(0);
-    // Ціна розподіленого перебору: після межі чекає й власник, але для цього потрібно
-    // щонайменше LOGIN_EMAIL_TOTAL_RATE_LIMIT / LOGIN_EMAIL_RATE_LIMIT адрес.
+    // Після загальної межі чекає й власник. Кількість адрес залежить від початку вікон пар.
     expect((await login('203.0.113.101', email, password)).status).toBe(429);
     expect((await login('203.0.113.101', `${randomUUID()}@example.test`)).status).toBe(401);
   });
@@ -240,6 +243,65 @@ describe('failed logins per email', () => {
         await pending.catch(() => undefined);
         delayed.mockRestore();
         await replica.close();
+      }
+    },
+  );
+
+  it.each(['address', 'total'] as const)(
+    'preserves failed logins for any refund order across %s windows',
+    async (scope) => {
+      const limit = 7;
+      await api.restart({
+        LOGIN_EMAIL_RATE_LIMIT: scope === 'address' ? limit : 1000,
+        LOGIN_EMAIL_TOTAL_RATE_LIMIT: scope === 'total' ? limit : 1000,
+        LOGIN_EMAIL_RATE_TTL_MS: 60_000,
+      });
+      const limits = api.app().get(RateLimits);
+      const redis = new Redis({
+        host: process.env.REDIS_HOST,
+        port: Number(process.env.REDIS_PORT),
+        password: process.env.REDIS_PASSWORD,
+        connectTimeout: 1000,
+        commandTimeout: 1000,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null,
+      });
+      try {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.integer({ min: 1, max: 3 }),
+            fc.integer({ min: 1, max: 3 }),
+            fc.integer({ min: 1, max: 3 }),
+            fc.shuffledSubarray([0, 1, 2, 3, 4, 5], { minLength: 6, maxLength: 6 }),
+            async (oldHeld, currentHeld, failed, order) => {
+              const email = `${randomUUID()}@example.test`;
+              const take = (ip = '192.0.2.80') => limits.loginAttempt(email, { ip } as Request);
+              const old = [];
+              for (let index = 0; index < oldHeld; index++) old.push(await take());
+              // Redis завершує старі вікна примусово: генератор не чекає по хвилині на історію.
+              const keys = await redis.keys(
+                `exchange:limit:${api.database().options.database}:login_email*`,
+              );
+              expect(keys.length).toBeGreaterThan(0);
+              await Promise.all(keys.map((key) => redis.pexpireat(key, 1)));
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              const current = [];
+              for (let index = 0; index < currentHeld; index++) current.push(await take());
+              for (let index = 0; index < failed; index++) await take();
+              const refunds = [...old, ...current];
+              for (const index of order) await refunds[index]?.();
+              // Після повернення всіх успішних входів лишається рівно failed невдач.
+              for (let index = failed; index < limit; index++) await take();
+              await expect(take()).rejects.toMatchObject({ status: 429 });
+              if (scope === 'total')
+                await expect(take('192.0.2.81')).rejects.toMatchObject({ status: 429 });
+              else await expect(take('192.0.2.81')).resolves.toEqual(expect.any(Function));
+            },
+          ),
+          { numRuns: 20, seed: 20261115 },
+        );
+      } finally {
+        redis.disconnect();
       }
     },
   );
