@@ -1166,6 +1166,7 @@ Runner має Docker CLI і socket для керування контейнер�
   docker compose up -d --wait --force-recreate --no-deps engine-lb
   docker compose run --rm --no-deps system-tests npm run trace
   docker compose run --rm --no-deps system-tests npm run session:revocation
+  docker compose run --rm --no-deps system-tests npm run frontend:admin
   docker compose run --rm system-tests npm run realtime:transport
   docker compose run --rm system-tests npm run chaos:sigterm
   docker compose run --rm system-tests npm run ownership:kill
@@ -1429,7 +1430,8 @@ WebSocket-події описано в розділі [«Real-time і resync»](
   лише `{accessToken}`. Клієнт у цьому випадку зберігає поточний refresh. Повтор після
   цього вікна або використання старішого refresh відкликає сесію і повертає 401.
   Відповіді з токенами мають `Cache-Control: no-store`. `POST /auth/logout` з тим самим
-  форматом тіла відкликає сесію й повертає 204.
+  форматом тіла відкликає сесію й повертає 204. `GET /auth/admin` з access-токеном повертає 204,
+  якщо адреса зараз є в `ADMIN_EMAILS`, 403 — якщо ні, 401 — без чинної сесії.
 - Engine приймає access-токен лише як `Authorization: Bearer <JWT>` (регістр слова `Bearer` будь-який,
   навколо нього пробіли або табуляції). Інші пробільні символи, зокрема U+00A0, дають 401.
 - Engine перевіряє тип токена і підпис окремим секретом для кожного типу. Access старого формату
@@ -1450,7 +1452,12 @@ WebSocket-події описано в розділі [«Real-time і resync»](
   питає engine через внутрішній `GET /internal/auth/admin` (204, 403 або 401). Тож після вилучення
   адреси з `ADMIN_EMAILS` і перезапуску engine старі токени дають 403 на адмін-маршрутах обох
   сервісів, а звичайні запити тієї ж сесії працюють. Frontend показує посилання на «Стан системи»
-  за claims, тому сторінка відкриється, але її запити отримають 403.
+  і саму сторінку лише після `GET /auth/admin` engine (204, 403 або 401 за access JWT; внутрішнього
+  токена frontend не має). Запит робиться лише для токена з роллю в claims, з дедлайном 1,5 с.
+  Після 401/403 посилання немає, а сторінка пише, що доступна лише адміністратору. Якщо engine не
+  відповів, посилання теж немає, а сторінка просить оновити її пізніше. Токен без ролі в claims
+  middleware, як і раніше, переводить зі сторінки на `/exchange/ABC`. Сценарій `frontend:admin`
+  перевіряє обидва випадки й дедлайн на стеку.
 - `GET /instruments` публічно повертає символи, активи, тики, лоти й межі заявок. Перелік
   читається з таблиці `instruments`. Міграція додає `ABC,XYZ` з котируванням в USD.
   Тик, лот і межі кількості та ціни закріплені CHECK-обмеженнями на значення, які
