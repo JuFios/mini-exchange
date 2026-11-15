@@ -98,18 +98,46 @@ async function main() {
   } finally {
     socket.disconnect();
   }
-  const page = await fetch(frontend + '/login', { signal: AbortSignal.timeout(5000) });
-  const scripts =
-    (page.headers.get('content-security-policy') ?? '')
-      .split(';')
-      .find((rule) => rule.trim().startsWith('script-src')) ?? '';
-  const nonce = /'nonce-([^']+)'/.exec(scripts)?.[1];
-  assert(nonce);
-  assert.doesNotMatch(scripts, /unsafe-inline/);
-  assert((await page.text()).includes(`nonce="${nonce}"`));
-  assert.equal(page.headers.get('x-powered-by'), null);
-  assert(page.headers.has('permissions-policy'));
-  console.log('security boundaries docs=404 host=421 wsHttp=401 wsConnect=ok nonce=ok headers=ok');
+  const nonces = new Set<string>();
+  let verifiedScripts = 0;
+  for (const path of ['/login', '/register', '/exchange/ABC']) {
+    const page = await fetch(frontend + path, {
+      headers: { cookie },
+      redirect: 'error',
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(page.status, 200, path);
+    const scriptPolicy =
+      (page.headers.get('content-security-policy') ?? '')
+        .split(';')
+        .find((rule) => rule.trim().startsWith('script-src ')) ?? '';
+    const nonce = /'nonce-([^']+)'/.exec(scriptPolicy)?.[1];
+    assert(nonce, `Missing CSP nonce on ${path}`);
+    assert.doesNotMatch(scriptPolicy, /unsafe-inline/, path);
+    assert(!nonces.has(nonce), `Reused CSP nonce on ${path}`);
+    nonces.add(nonce);
+    const html = await page.text();
+    const scripts = [
+      ...html.matchAll(/<script(?=[\s>])((?:"[^"]*"|'[^']*'|[^'">])*)>[\s\S]*?<\/script\s*>/gi),
+    ];
+    assert(scripts.length > 0, `No script elements on ${path}`);
+    for (const [index, [, attributes]] of scripts.entries()) {
+      const nonceAttribute = [
+        ...attributes.matchAll(/\s+([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g),
+      ].find(([, name]) => name.toLowerCase() === 'nonce');
+      assert.equal(
+        nonceAttribute?.[2] ?? nonceAttribute?.[3] ?? nonceAttribute?.[4],
+        nonce,
+        `${path} script ${index + 1}`,
+      );
+    }
+    verifiedScripts += scripts.length;
+    assert.equal(page.headers.get('x-powered-by'), null);
+    assert(page.headers.has('permissions-policy'));
+  }
+  console.log(
+    `security boundaries docs=404 host=421 wsHttp=401 wsConnect=ok noncePages=${nonces.size} nonceScripts=${verifiedScripts} headers=ok`,
+  );
 }
 
 main().catch((error) => {

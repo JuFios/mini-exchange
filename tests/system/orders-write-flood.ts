@@ -27,6 +27,8 @@ const VICTIM_ADDRESS = '198.51.100.77';
 // Адреса з повним запасом для одного імпульсу: її ще не торкались попередні фази.
 const PULSE_ADDRESS = '198.51.100.88';
 const PULSE = 1000;
+const ADDRESS_RATE = 100;
+const IMMEDIATE_EXCESS = 200;
 
 type Counts = Record<string, number>;
 type Mode = 'delete' | 'replay' | 'accounts' | 'pulse';
@@ -36,7 +38,7 @@ const percentile = (values: number[], share: number) =>
   [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * share))];
 
 /** Потік в окремому процесі, щоб його цикл подій не впливав на виміри заявок. */
-async function flood(mode: Mode, accessTokens: string, replayKey: string) {
+async function flood(mode: Mode, accessTokens: string, replayKey: string, pulseId: string) {
   // У режимі `accounts` — токени кількох акаунтів однієї адреси через кому.
   const tokens = accessTokens.split(',');
   const counts: Counts = {};
@@ -49,7 +51,9 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
     // Обидва listener: на `:8080` без `X-Forwarded-For` ключ — адреса контейнера, як на `:3001`.
     // Імпульс — один запит на з'єднання з однієї нової адреси й різних токенів.
     const base = pulse || index % 2 ? internal : engine;
-    const headers: Record<string, string> = pulse ? { 'x-forwarded-for': PULSE_ADDRESS } : {};
+    const headers: Record<string, string> = pulse
+      ? { 'x-forwarded-for': PULSE_ADDRESS, 'x-exchange-test-pulse': pulseId }
+      : {};
     const bearer = tokens[index % tokens.length];
     for (let sent = false; running && !(pulse && sent); sent = true) {
       let key: string;
@@ -83,11 +87,15 @@ async function flood(mode: Mode, accessTokens: string, replayKey: string) {
   process.send!({ type: 'counts', counts, elapsedMs }, () => process.disconnect());
 }
 
-function startFlood(mode: Mode, accessTokens: string, replayKey: string) {
-  const child: ChildProcess = fork(__filename, ['--flood', mode, accessTokens, replayKey], {
-    execArgv: ['--require', 'ts-node/register'],
-    env: { ...process.env, TS_NODE_TRANSPILE_ONLY: 'true' },
-  });
+function startFlood(mode: Mode, accessTokens: string, replayKey: string, pulseId: string) {
+  const child: ChildProcess = fork(
+    __filename,
+    ['--flood', mode, accessTokens, replayKey, pulseId],
+    {
+      execArgv: ['--require', 'ts-node/register'],
+      env: { ...process.env, TS_NODE_TRANSPILE_ONLY: 'true' },
+    },
+  );
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
   child.on('error', () => undefined);
   const messages = (type: string) =>
@@ -114,18 +122,53 @@ function startFlood(mode: Mode, accessTokens: string, replayKey: string) {
   };
 }
 
-/**
- * Нестачу з'єднань nginx пише лише в error log (stderr контейнера), а клієнт бачить обрив, який
- * у фазах потоку рахується як звичайна помилка. Без цієї перевірки сценарій міг би пройти на
- * nginx, що вже відмовляє.
- */
-function connectionShortage(since: string) {
+function nginxLogs(since: string) {
   const logs = spawnSync('docker', ['logs', '--since', since, container('engine-lb')], {
     encoding: 'utf8',
     maxBuffer: 512 * 1024 * 1024,
   });
+  if (logs.error) throw logs.error;
   assert.equal(logs.status, 0, logs.stderr);
-  return /worker_connections are not enough/.test(logs.stderr);
+  return logs;
+}
+
+function assertPulse(since: string, pulseId: string, counts: Counts) {
+  const prefix = `write-pulse ${pulseId} `;
+  const samples = nginxLogs(since)
+    .stdout.split('\n')
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => {
+      const [status, finished, duration] = line.slice(prefix.length).split(' ');
+      return { status, arrived: Math.round((Number(finished) - Number(duration)) * 1000) };
+    })
+    .sort((a, b) => a.arrived - b.arrived);
+  assert.equal(samples.length, PULSE, 'Missing nginx limit decisions for the pulse');
+  const first = samples[0].arrived;
+  let immediate = 0;
+  let delayed = 0;
+  let immediateExcess = 0;
+  for (const { status, arrived } of samples) {
+    assert(Number.isFinite(arrived), 'Invalid nginx arrival time');
+    assert(['PASSED', 'DELAYED'].includes(status), `Unexpected nginx pulse decision: ${status}`);
+    if (status === 'DELAYED') {
+      delayed++;
+    } else {
+      immediate++;
+      // Перший запит і поповнення під час приймання імпульсу вкладаються у звичайну
+      // швидкість. Решта негайних запитів витрачає запас delay=200.
+      const withinRate = 1 + Math.floor(((arrived - first) * ADDRESS_RATE) / 1000);
+      immediateExcess = Math.max(immediateExcess, immediate - withinRate);
+    }
+  }
+  console.log(
+    `orders write pulse immediate=${immediate} excess=${immediateExcess} delayed=${delayed}`,
+  );
+  assert(
+    immediateExcess <= IMMEDIATE_EXCESS,
+    `Too many immediate pulse writes: ${immediateExcess}`,
+  );
+  assert(delayed > 0, 'nginx did not delay the rest of the pulse');
+  assert.equal(counts['404'], PULSE, 'The entire pulse should reach the engine');
 }
 
 async function main() {
@@ -157,7 +200,9 @@ async function main() {
   };
 
   async function underFlood(mode: Mode, accessTokens: string, replayKey = '') {
-    const started = startFlood(mode, accessTokens, replayKey);
+    const pulseId = mode === 'pulse' ? randomUUID() : '';
+    const since = new Date().toISOString();
+    const started = startFlood(mode, accessTokens, replayKey, pulseId);
     floods.push(started);
     const latencies: number[] = [];
     await started.started;
@@ -183,16 +228,20 @@ async function main() {
     const { counts, elapsedMs } = await started.stop();
     floods.pop();
     const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-    // Пропущене nginx не перевищує запасу й поповнення ключа, що обмежує цей режим: токена
-    // (100 + 20/с) для одного токена, адреси (1000 + 100/с) для багатьох.
-    const passed = total - (counts['429'] ?? 0);
-    const [burst, rate] = mode === 'delete' || mode === 'replay' ? [100, 20] : [1000, 100];
-    const allowance = (burst + (rate * elapsedMs) / 1000) * 1.1 + 20;
-    console.log(
-      `orders write flood mode=${mode} passed=${passed} allowance=${allowance.toFixed(0)} ` +
-        `elapsed=${elapsedMs.toFixed(0)}ms`,
-    );
-    assert(passed <= allowance, `${passed} ${mode} writes passed, more than ${allowance}`);
+    if (mode === 'pulse') {
+      assertPulse(since, pulseId, counts);
+    } else {
+      // Для безперервного потоку перевіряємо запас і поповнення квоти токена або адреси.
+      const passed = total - (counts['429'] ?? 0);
+      const [burst, rate] =
+        mode === 'delete' || mode === 'replay' ? [100, 20] : [1000, ADDRESS_RATE];
+      const allowance = (burst + (rate * elapsedMs) / 1000) * 1.1 + 20;
+      console.log(
+        `orders write flood mode=${mode} passed=${passed} allowance=${allowance.toFixed(0)} ` +
+          `elapsed=${elapsedMs.toFixed(0)}ms`,
+      );
+      assert(passed <= allowance, `${passed} ${mode} writes passed, more than ${allowance}`);
+    }
     const p50 = percentile(latencies, 0.5);
     const p95 = percentile(latencies, 0.95);
     console.log(
@@ -260,7 +309,11 @@ async function main() {
     // Запас адреси одним імпульсом з десяти токенів: nginx пропускає одразу лише частину, решту
     // видає зі швидкістю ліміту, тож чужі заявки під імпульсом не сповільнюються.
     await underFlood('pulse', accounts.slice(0, 10).join(','));
-    assert(!connectionShortage(startedAt), 'nginx ran out of worker connections during the flood');
+    // Нестачу з’єднань nginx пише лише в error log. Клієнт бачить обрив як звичайну помилку.
+    assert(
+      !/worker_connections are not enough/.test(nginxLogs(startedAt).stderr),
+      'nginx ran out of worker connections during the flood',
+    );
   } catch (error) {
     failure = error;
     throw error;
@@ -278,8 +331,8 @@ async function main() {
   }
 }
 
-const [flag, mode, accessTokens, replayKey] = process.argv.slice(2);
-void (flag === '--flood' ? flood(mode as Mode, accessTokens, replayKey) : main()).catch(
+const [flag, mode, accessTokens, replayKey, pulseId] = process.argv.slice(2);
+void (flag === '--flood' ? flood(mode as Mode, accessTokens, replayKey, pulseId) : main()).catch(
   (error: unknown) => {
     console.error(error);
     process.exit(1);

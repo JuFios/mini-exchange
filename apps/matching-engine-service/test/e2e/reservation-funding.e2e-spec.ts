@@ -1,7 +1,6 @@
 import { engineApp } from './engine-app';
 import { FakeSettlement } from './fakes/settlement.fake';
 import { ReservationClient, Reservation } from '../../src/intake/reservation.client';
-import fc from 'fast-check';
 
 const api = engineApp();
 
@@ -24,54 +23,57 @@ it('rejects an unfunded insert from a writer that does not know the application 
   }
 });
 
-it('never commits an unfunded order for any completion order across reservation enablement', async () => {
-  const count = 4;
-  const releases: (() => void)[] = [];
-  let arrived = 0;
-  let entered!: () => void;
-  const waiting = new Promise<void>((resolve) => (entered = resolve));
-  await api.restart({ RESERVATIONS_ENABLED: false }, (builder) => {
-    builder.overrideProvider(ReservationClient).useValue({
-      reserve: (reservation: Reservation) =>
-        new Promise<'accepted'>((resolve) => {
-          releases[Number(reservation.limitPrice) - 100] = () => resolve('accepted');
-          if (++arrived === count) entered();
-        }),
-      release: async () => undefined,
-    });
-  });
-  const token = await api.register();
-  const pending = Array.from({ length: count }, (_, index) =>
-    api.submit(token, { price: 100 + index }),
+function permutations(values: number[]): number[][] {
+  if (values.length === 0) return [[]];
+  return values.flatMap((value) =>
+    permutations(values.filter((other) => other !== value)).map((tail) => [value, ...tail]),
   );
-  for (const response of pending) void response.catch(() => undefined);
-  let funded: Awaited<ReturnType<typeof api.build>> | undefined;
-  try {
-    await Promise.race([
-      waiting,
-      Promise.all(pending).then(() => {
-        throw new Error('Submits completed before the reservation barrier');
-      }),
-    ]);
-    funded = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
-    const [order] = fc.sample(
-      fc.shuffledSubarray(
-        Array.from({ length: count }, (_, index) => index),
-        { minLength: count, maxLength: count },
-      ),
-      { numRuns: 1, seed: 20261115 },
+}
+
+it.each(permutations([0, 1, 2, 3]).map((order) => ({ order, completion: order.join(', ') })))(
+  'never commits an unfunded order across reservation enablement with completion order $completion',
+  async ({ order }) => {
+    const count = order.length;
+    const releases: (() => void)[] = [];
+    let arrived = 0;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => (entered = resolve));
+    await api.restart({ RESERVATIONS_ENABLED: false }, (builder) => {
+      builder.overrideProvider(ReservationClient).useValue({
+        reserve: (reservation: Reservation) =>
+          new Promise<'accepted'>((resolve) => {
+            releases[Number(reservation.limitPrice) - 100] = () => resolve('accepted');
+            if (++arrived === count) entered();
+          }),
+        release: async () => undefined,
+      });
+    });
+    const token = await api.register();
+    const pending = Array.from({ length: count }, (_, index) =>
+      api.submit(token, { price: 100 + index }),
     );
-    for (const index of order) {
-      releases[index]();
-      expect((await pending[index]).status).toBe(503);
-      expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+    for (const response of pending) void response.catch(() => undefined);
+    let funded: Awaited<ReturnType<typeof api.build>> | undefined;
+    try {
+      await Promise.race([
+        waiting,
+        Promise.all(pending).then(() => {
+          throw new Error('Submits completed before the reservation barrier');
+        }),
+      ]);
+      funded = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+      for (const index of order) {
+        releases[index]();
+        expect((await pending[index]).status).toBe(503);
+        expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+      }
+    } finally {
+      for (const release of releases) release?.();
+      await Promise.allSettled(pending);
+      await funded?.close();
     }
-  } finally {
-    for (const release of releases) release?.();
-    await Promise.allSettled(pending);
-    await funded?.close();
-  }
-});
+  },
+);
 
 it('refuses an unfunded replica and its writes after another replica requires reservations', async () => {
   const token = await api.register();

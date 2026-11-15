@@ -18,6 +18,7 @@ export class RedisLockService implements OnModuleDestroy {
       host: config.getOrThrow<string>('REDIS_HOST'),
       port: config.getOrThrow<number>('REDIS_PORT'),
       username: config.getOrThrow<string>('REDIS_USERNAME'),
+      disableClientInfo: true,
       password: config.getOrThrow<string>('REDIS_PASSWORD'),
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,

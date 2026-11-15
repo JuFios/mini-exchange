@@ -6,31 +6,30 @@ export function backendUrl(service: Service) {
     : (process.env.SETTLEMENT_URL ?? 'http://localhost:3002');
 }
 
+function parsePublicOrigin(value: string, key: 'PUBLIC_ORIGIN' | 'PUBLIC_ORIGINS'): URL {
+  const origin = value.replace(/^[ \t]+|[ \t]+$/g, '');
+  const authority = /^https?:\/\/([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(?::([0-9]+))?$/i.exec(origin);
+  if (authority) {
+    const url = URL.canParse(origin) ? new URL(origin) : undefined;
+    if (url?.hostname === authority[1].toLowerCase() && url.port !== '0') return url;
+  }
+  throw new Error(key + ' must contain HTTP origins without paths or credentials');
+}
+
 export function requestOrigin(request: Request) {
   const configured = process.env.PUBLIC_ORIGIN;
   if (configured) {
-    const url = new URL(configured);
-    if (
-      !['http:', 'https:'].includes(url.protocol) ||
-      url.origin !== configured ||
-      (process.env.COOKIE_SECURE === 'true' && url.protocol !== 'https:')
-    ) {
-      throw new Error('PUBLIC_ORIGIN must be an HTTP origin without a path');
-    }
-    return configured;
+    const url = parsePublicOrigin(configured, 'PUBLIC_ORIGIN');
+    if (process.env.COOKIE_SECURE === 'true' && url.protocol !== 'https:')
+      throw new Error('Remote PUBLIC_ORIGIN must use HTTPS');
+    return url.origin;
   }
   if (process.env.COOKIE_SECURE === 'true') throw new Error('PUBLIC_ORIGIN is required');
   const host = (request.headers.get('host') ?? new URL(request.url).host).toLowerCase();
   const origins = (process.env.PUBLIC_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
     .split(',')
-    .map((origin) => origin.trim());
-  for (const origin of origins) {
-    const url = new URL(origin);
-    if (url.origin !== origin || !['http:', 'https:'].includes(url.protocol))
-      throw new Error('PUBLIC_ORIGINS must contain HTTP origins');
-    if (url.host === host) return origin;
-  }
-  return origins[0];
+    .map((origin) => parsePublicOrigin(origin, 'PUBLIC_ORIGINS'));
+  return (origins.find((origin) => origin.host === host) ?? origins[0]).origin;
 }
 
 export function sameOrigin(request: Request) {
@@ -40,7 +39,14 @@ export function sameOrigin(request: Request) {
 }
 
 export function frontendProxyToken() {
-  return process.env.FRONTEND_PROXY_TOKEN ?? 'demo-frontend-proxy-local-only-000001';
+  const token = process.env.FRONTEND_PROXY_TOKEN;
+  if (
+    process.env.COOKIE_SECURE === 'true' &&
+    (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token) || token.includes('local-only'))
+  ) {
+    throw new Error('FRONTEND_PROXY_TOKEN must be a non-demo base64url token in remote mode');
+  }
+  return token ?? 'demo-frontend-proxy-local-only-000001';
 }
 
 export function backendHeaders(request: Request, service: Service = 'engine') {

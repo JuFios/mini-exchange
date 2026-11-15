@@ -27,6 +27,14 @@ if [ "${DEPLOYMENT_MODE:-local}" = remote ]; then
     case "$secret" in *local-only*) echo 'Remote Redis credentials must not use local-only values' >&2; exit 1;; esac
   done
 fi
+# Те саме блокування тому, що й під час імпорту. Воно захищає тимчасовий файл
+# від другого запуску й знімається ядром навіть після SIGKILL.
+exec 9</data
+if ! flock -n 9; then
+  echo 'Another Redis startup or import is using the data volume' >&2
+  exit 1
+fi
+rm -f /data/.users-acl.*
 temporary=$(mktemp /data/.users-acl.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 printf 'user default reset on #%s ~* &* +@all\n' "$(hash "$REDISCLI_AUTH")" > "$temporary"
@@ -35,4 +43,5 @@ printf 'user engine reset on #%s -@all +ping +info +quit +config|get (~exchange:
 printf 'user settlement reset on #%s -@all +ping +info +quit +config|get (~exchange:settlement:* ~exchange:dlq +eval +xreadgroup +xgroup|create +xautoclaim +xack +xpending +xinfo +xlen) (~exchange:dlq ~exchange:user-events +xadd +xlen)\n' "$(hash "$REDIS_SETTLEMENT_PASSWORD")" >> "$temporary"
 if [ "$(id -u)" -eq 0 ]; then chown redis:redis "$temporary"; fi
 mv "$temporary" /data/users.acl
+exec 9<&-
 exec /usr/local/bin/docker-entrypoint.sh "$@" --aclfile /data/users.acl

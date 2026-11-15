@@ -91,6 +91,7 @@ export class RateLimits implements OnModuleDestroy {
       host: config.getOrThrow('REDIS_HOST', { infer: true }),
       port: config.getOrThrow('REDIS_PORT', { infer: true }),
       username: config.getOrThrow('REDIS_USERNAME', { infer: true }),
+      disableClientInfo: true,
       password: config.getOrThrow('REDIS_PASSWORD', { infer: true }),
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,

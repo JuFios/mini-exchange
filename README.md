@@ -1800,9 +1800,12 @@ TLS-проксі передає HTTPS до `127.0.0.1:3000` і WSS upgrade до 
 не використовуються, тож користувачі входять повторно. Frontend надсилає HSTS `max-age=31536000`;
 налаштуйте такий самий заголовок на TLS-проксі для відповідей, які він формує сам.
 
-`PUBLIC_ORIGIN` — точний HTTPS origin без шляху, query чи завершального `/`. BFF звіряє
-Origin і Host із цим значенням. nginx відхиляє невідомий Host кодом 421. Локально дозволено
-`localhost:3000` і `127.0.0.1:3000`; `PUBLIC_ORIGINS` задає додаткові origin у тестовому оточенні.
+`PUBLIC_ORIGIN` — один HTTPS origin без шляху, query чи завершального `/`. BFF і nginx
+зводять регістр схеми та хоста до нижнього й прибирають порт за замовчуванням
+(`HTTPS://EXCHANGE.EXAMPLE.COM:443` стає `https://exchange.example.com`). BFF звіряє
+Origin і Host, а nginx відхиляє невідомий Host кодом 421. Локально дозволено
+`localhost:3000` і `127.0.0.1:3000`. `PUBLIC_ORIGINS` задає список origin через кому.
+nginx об’єднує дублікати хоста, зберігаючи окремі нестандартні порти.
 Якщо `ENGINE_PUBLIC_WS_URL` має окремий хост, nginx дозволяє його лише на `:3001`.
 Remote відхиляє секрети з `local-only` і локальний пароль PostgreSQL `exchange`, а seeded admin повинен мати пароль, який відповідає
 `ADMIN_PASSWORD`. Зміна env не замінює старий хеш; використовуйте окремий свіжий remote-том або
@@ -1884,14 +1887,17 @@ Swagger і `/metrics` доступні напряму лише у backend-мер
 Сценарій `realtime:transport` перевіряє 404 на обох listener і доступність метрик напряму з репліки.
 Frontend звертається до settlement через три дозволені маршрути внутрішнього nginx:
 wallets, admin queue і reconciliation. Маркери ingress до settlement не передаються.
-Healthcheck frontend читає `/login`, щоб старт remote не залежав від готовності зовнішнього TLS-проксі.
+Remote frontend вимагає `FRONTEND_PROXY_TOKEN` під час старту. Healthcheck читає `/login`,
+щоб старт remote не залежав від готовності зовнішнього TLS-проксі.
 
 Redis має різні `engine` і `settlement` ACL users та паролі. Engine працює з lease, лічильниками
 та своїми streams. Settlement читає й підтверджує settlement streams, а пише лише DLQ і
 `exchange:user-events`; підробити upstream `order.closed` або `trade.executed` цими правами не можна.
 Обидва users не мають `FLUSHALL`, `CONFIG SET` чи `ACL`. Окремий admin-пароль `REDIS_PASSWORD`
 лишається лише у Redis й операторських перевірках. Його значення не зберігається в `requirepass`;
-ACL містить SHA-256 хеші. Перезапуск генерує ACL атомарно з runtime env і не видаляє AOF.
+ACL містить SHA-256 хеші. У remote engine і settlement відхиляють `REDIS_USERNAME=default`
+під час старту. Перезапуск прибирає тимчасові ACL-файли, які лишилися після аварійної зупинки,
+і публікує новий ACL атомарно. AOF зберігається.
 
 `order.closed` звіряє user і asset з резервом перед release. Звірка також порівнює живі заявки
 engine (`/internal/orders/live`) з активними резервами; `unreserved_order` означає живу заявку без
@@ -1919,6 +1925,8 @@ IP-лімітом. Підтвердження email у цьому демо не�
 Колонка `order_requests.reserved` позначає заявки, прийняті з реальним резервом.
 Після успішного ввімкнення `engine_settings.reservations_required` лишається `true` для цієї БД.
 Нова репліка з `false` відмовляється стартувати, а вже запущена — відхиляє нові submit з 503.
+Режим `RESERVATIONS_ENABLED=false` призначено для тестів і старих інсталяцій. Під час переходу
+кожна транзакція прийняття чекає на блокування рядка режиму до 3 с. Таймаут дає 503.
 Обидві транзакції прийняття перевіряють режим під row lock, тому старий запит, що чекав
 резервування під час переходу, теж не створить незабезпеченої заявки. Для повернення до `false`
 використовуйте окрему чисту БД. Скасування й читання не блокуються.

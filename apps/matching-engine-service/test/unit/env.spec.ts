@@ -4,6 +4,18 @@ import { parseEnv } from 'node:util';
 import { validateEnv } from '../../src/config/env.validation';
 
 const example = parseEnv(readFileSync(join(__dirname, '../../.env.example'), 'utf8'));
+const remote = {
+  ...example,
+  DEPLOYMENT_MODE: 'remote',
+  JWT_ACCESS_SECRET: 'remote-access-secret-value-000001',
+  JWT_REFRESH_SECRET: 'remote-refresh-secret-value-00001',
+  ADMIN_PASSWORD: 'remote-admin-password-only',
+  DATABASE_PASSWORD: 'remote-database-password-only',
+  REDIS_USERNAME: 'engine',
+  REDIS_PASSWORD: 'remote-redis-password-only',
+  INTERNAL_API_TOKEN: 'remote-internal-token-value-00001',
+  INGRESS_TOKEN: 'remote-ingress-token-value-000001',
+};
 
 it.each([
   'JWT_ACCESS_SECRET',
@@ -14,19 +26,12 @@ it.each([
   'INTERNAL_API_TOKEN',
   'INGRESS_TOKEN',
 ] as const)('rejects the demo %s in remote mode', (key) => {
-  const remote = {
-    ...example,
-    DEPLOYMENT_MODE: 'remote',
-    JWT_ACCESS_SECRET: 'remote-access-secret-value-000001',
-    JWT_REFRESH_SECRET: 'remote-refresh-secret-value-00001',
-    ADMIN_PASSWORD: 'remote-admin-password-only',
-    DATABASE_PASSWORD: 'remote-database-password-only',
-    REDIS_PASSWORD: 'remote-redis-password-only',
-    INTERNAL_API_TOKEN: 'remote-internal-token-value-00001',
-    INGRESS_TOKEN: 'remote-ingress-token-value-000001',
-  };
   expect(() => validateEnv(remote)).not.toThrow();
   expect(() => validateEnv({ ...remote, [key]: example[key] })).toThrow(key);
+});
+
+it.each(['default', '', undefined])('rejects remote Redis username %j', (username) => {
+  expect(() => validateEnv({ ...remote, REDIS_USERNAME: username })).toThrow('REDIS_USERNAME');
 });
 
 it('accepts the example and declares exactly the same keys', () => {

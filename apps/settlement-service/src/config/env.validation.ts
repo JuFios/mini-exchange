@@ -149,6 +149,8 @@ export function validateEnv(input: Record<string, unknown>): SettlementEnv {
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as SettlementEnv;
   if (parsed.DEPLOYMENT_MODE === 'remote') {
+    if (parsed.REDIS_USERNAME === 'default')
+      throw new Error('REDIS_USERNAME must identify a restricted role in remote mode');
     for (const key of [
       'JWT_ACCESS_SECRET',
       'INTERNAL_API_TOKEN',

@@ -18,6 +18,7 @@ export class WalletPublisher implements OnModuleDestroy {
       host: config.getOrThrow<string>('REDIS_HOST'),
       port: config.getOrThrow<number>('REDIS_PORT'),
       username: config.getOrThrow<string>('REDIS_USERNAME'),
+      disableClientInfo: true,
       password: config.getOrThrow<string>('REDIS_PASSWORD'),
       commandTimeout: 1000,
       connectTimeout: 1000,

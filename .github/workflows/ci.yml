@@ -195,6 +195,13 @@ jobs:
         run: scripts/ci/check-postgres-bootstrap.sh
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Verify remote frontend startup requires a proxy token
+        run: |
+          status=0
+          output=$(docker compose run --rm --no-deps -T -e COOKIE_SECURE=true -e FRONTEND_PROXY_TOKEN= frontend timeout 20 node server.js 2>&1) || status=$?
+          printf '%s\n' "$output"
+          test "$status" = 1
+          printf '%s\n' "$output" | grep -qF 'FRONTEND_PROXY_TOKEN must be a non-demo base64url token in remote mode'
       - name: Verify the frontend address and Redis port
         run: |
           for service in postgres-bootstrap engine-migrate settlement-migrate; do

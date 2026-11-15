@@ -1,13 +1,21 @@
 import { randomUUID } from 'node:crypto';
+import type { Socket } from 'node:net';
 import { engineApp } from './engine-app';
 import fc from 'fast-check';
-import { ReplyError } from 'ioredis';
+import { Redis, ReplyError } from 'ioredis';
 import { engineMetrics } from '../../src/observability/metrics';
 import { RateLimits } from '../../src/security/rate-limits';
 
 const api = engineApp();
 const claims = (token: string) =>
   JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+
+function limiterRedis() {
+  const limits = api.app().get(RateLimits) as unknown as {
+    storage: { redis: Redis & { stream: Socket } };
+  };
+  return limits.storage.redis;
+}
 
 it('shares the write quota across tokens, addresses and replicas without blocking another user', async () => {
   const options = { ORDER_WRITE_RATE_LIMIT: 3, ORDER_WRITE_RATE_TTL_MS: 60_000 };
@@ -29,6 +37,7 @@ it('shares the write quota across tokens, addresses and replicas without blockin
           method: 'DELETE',
           headers: {
             authorization: 'Bearer ' + (index % 2 ? nextToken : accessToken),
+            'x-exchange-ingress': process.env.INGRESS_TOKEN!,
             'x-forwarded-for': `192.0.2.${index + 1}`,
           },
           signal: AbortSignal.timeout(5000),
@@ -59,13 +68,40 @@ it('keeps cancellation and completed replay available when the write limiter is 
   expect((await api.submit(token)).status).toBe(503);
 });
 
+it('keeps cancellation and completed replay available after a stalled write limiter times out', async () => {
+  const token = await api.register();
+  const key = randomUUID();
+  const body = { instrument: 'ABC', side: 'sell', price: '100', quantity: '1' };
+  const submit = () =>
+    api.request('/orders', 'POST', token, body, { 'idempotency-key': key }, 3000);
+  const initial = await submit();
+  expect(initial.status).toBe(201);
+  const { order } = await initial.json();
+  const cancel = () => api.request(`/orders/${order.id}`, 'DELETE', token, undefined, {}, 3000);
+
+  // Затримуємо запис у сокет лише клієнта лімітів. Його власний commandTimeout має
+  // спрацювати без відповіді Redis, поки клієнти lease та outbox продовжують роботу.
+  const socket = limiterRedis().stream;
+  socket.cork();
+  try {
+    for (const [request, status] of [
+      [submit, 200],
+      [cancel, 200],
+    ] as const) {
+      const started = performance.now();
+      expect((await request()).status).toBe(status);
+      expect(performance.now() - started).toBeGreaterThanOrEqual(950);
+    }
+  } finally {
+    socket.uncork();
+  }
+});
+
 it('refuses writes when Redis answers the write limiter with an error and counts each bypass', async () => {
   await api.restart();
   const token = await api.register();
   const { order } = await (await api.submit(token)).json();
-  const limits = api.app().get(RateLimits) as unknown as {
-    storage: { redis: { eval: (...args: unknown[]) => Promise<unknown> } };
-  };
+  const redis = limiterRedis();
   const bypassed = async () =>
     (await engineMetrics.getSingleMetricAsString('rate_limit_bypassed_total')).match(
       /scope="orders_write"} (\d+)/,
@@ -73,7 +109,7 @@ it('refuses writes when Redis answers the write limiter with an error and counts
   const before = Number(await bypassed());
   // Відповідь Redis (тут — помилка прав ACL) не схожа на недоступний Redis: ліміт не вимикається.
   const denied = jest
-    .spyOn(limits.storage.redis, 'eval')
+    .spyOn(redis, 'eval')
     .mockRejectedValue(new ReplyError('NOPERM this user has no permissions to run the command'));
   try {
     expect((await api.request(`/orders/${order.id}`, 'DELETE', token)).status).toBe(503);
@@ -81,9 +117,7 @@ it('refuses writes when Redis answers the write limiter with an error and counts
     denied.mockRestore();
   }
   expect(Number(await bypassed())).toBe(before);
-  const offline = jest
-    .spyOn(limits.storage.redis, 'eval')
-    .mockRejectedValue(new Error('Connection is closed.'));
+  const offline = jest.spyOn(redis, 'eval').mockRejectedValue(new Error('Connection is closed.'));
   try {
     expect((await api.request(`/orders/${order.id}`, 'DELETE', token)).status).toBe(200);
   } finally {

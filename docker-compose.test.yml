@@ -38,6 +38,8 @@ services:
   engine-lb:
     restart: 'no'
     ports: !reset []
+    volumes:
+      - './tests/system/fixtures/write-pulse.conf:/etc/nginx/conf.d/90-write-pulse.conf:ro'
     environment:
       PUBLIC_ORIGINS: http://engine-lb:3001,http://engine-public:3001,http://engine-lb:3000,http://engine-public:3000,http://frontend:3000,http://localhost:3000,http://127.0.0.1:3000
     networks:

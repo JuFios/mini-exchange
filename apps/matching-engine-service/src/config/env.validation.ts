@@ -267,6 +267,8 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as EngineEnv;
   if (parsed.DEPLOYMENT_MODE === 'remote') {
+    if (parsed.REDIS_USERNAME === 'default')
+      throw new Error('REDIS_USERNAME must identify a restricted role in remote mode');
     for (const key of [
       'JWT_ACCESS_SECRET',
       'JWT_REFRESH_SECRET',

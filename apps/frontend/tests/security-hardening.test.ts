@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, it, mock } from 'node:test';
 import { NextRequest, NextResponse } from 'next/server';
-import { backendResponse, sameOrigin } from '../lib/api';
+import { backendResponse, frontendProxyToken, requestOrigin, sameOrigin } from '../lib/api';
 import { middleware } from '../middleware';
 
 afterEach(() => {
@@ -19,15 +19,50 @@ it('does not accept a rebinding host as the trusted origin', () => {
 });
 
 it('uses the configured public origin behind the TLS proxy', () => {
-  process.env.PUBLIC_ORIGIN = 'https://exchange.example.test';
+  process.env.PUBLIC_ORIGIN = 'HTTPS://EXCHANGE.Example.Test:443';
   assert.equal(
     sameOrigin(
       new Request('http://frontend:3000/api/auth/login', {
-        headers: { host: 'exchange.example.test', origin: process.env.PUBLIC_ORIGIN },
+        headers: { host: 'exchange.example.test', origin: 'https://exchange.example.test' },
       }),
     ),
     true,
   );
+});
+
+it('canonicalizes the local allowlist and keeps non-default ports distinct', () => {
+  const previous = process.env.PUBLIC_ORIGINS;
+  try {
+    process.env.PUBLIC_ORIGINS = ' HTTP://LOCALHOST:80, http://localhost, http://LOCALHOST:3000 ';
+    for (const origin of ['http://localhost', 'http://localhost:3000']) {
+      const request = new Request(origin);
+      assert.equal(requestOrigin(request), origin);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PUBLIC_ORIGINS;
+    else process.env.PUBLIC_ORIGINS = previous;
+  }
+});
+
+it('rejects an invalid or demo proxy token in remote mode', () => {
+  const secure = process.env.COOKIE_SECURE;
+  const proxyToken = process.env.FRONTEND_PROXY_TOKEN;
+  try {
+    process.env.COOKIE_SECURE = 'true';
+    delete process.env.FRONTEND_PROXY_TOKEN;
+    assert.throws(frontendProxyToken, /FRONTEND_PROXY_TOKEN/);
+    for (const token of ['', 'invalid', 'demo-frontend-proxy-local-only-000001']) {
+      process.env.FRONTEND_PROXY_TOKEN = token;
+      assert.throws(frontendProxyToken, /FRONTEND_PROXY_TOKEN/);
+    }
+    process.env.FRONTEND_PROXY_TOKEN = 'remote-frontend-proxy-token-000001';
+    assert.equal(frontendProxyToken(), process.env.FRONTEND_PROXY_TOKEN);
+  } finally {
+    if (secure === undefined) delete process.env.COOKIE_SECURE;
+    else process.env.COOKIE_SECURE = secure;
+    if (proxyToken === undefined) delete process.env.FRONTEND_PROXY_TOKEN;
+    else process.env.FRONTEND_PROXY_TOKEN = proxyToken;
+  }
 });
 
 it('replaces upstream HTML errors with a bounded JSON response', async () => {
@@ -118,21 +153,25 @@ it('uses a fresh script nonce and passes it to the renderer', async () => {
 });
 
 it('uses host-only secure cookies and HSTS in remote mode', async () => {
-  const path = require.resolve('../lib/session');
-  const cached = require.cache[path];
+  const paths = [require.resolve('../lib/session'), require.resolve('../middleware')];
+  const cached = paths.map((path) => require.cache[path]);
   const secure = process.env.COOKIE_SECURE;
   const ws = process.env.ENGINE_PUBLIC_WS_URL;
+  const proxyToken = process.env.FRONTEND_PROXY_TOKEN;
   try {
     process.env.COOKIE_SECURE = 'true';
     process.env.PUBLIC_ORIGIN = 'https://exchange.example.test';
     process.env.ENGINE_PUBLIC_WS_URL = 'wss://exchange.example.test';
-    delete require.cache[path];
+    process.env.FRONTEND_PROXY_TOKEN = 'remote-frontend-proxy-token-000001';
+    for (const path of paths) delete require.cache[path];
     const { setTokens } = require('../lib/session') as {
       setTokens: (
         response: NextResponse,
         tokens: { accessToken: string; refreshToken: string },
       ) => void;
     };
+    const { middleware: remoteMiddleware } =
+      require('../middleware') as typeof import('../middleware');
     const response = new NextResponse();
     const token =
       'h.' +
@@ -152,21 +191,32 @@ it('uses host-only secure cookies and HSTS in remote mode', async () => {
       assert.equal(cookie.path, '/');
       assert.equal(cookie.domain, undefined);
     }
-    const page = await middleware(new NextRequest('https://exchange.example.test/'));
+    const page = await remoteMiddleware(new NextRequest('https://exchange.example.test/'));
     assert.equal(page.headers.get('strict-transport-security'), 'max-age=31536000');
-    mock.method(globalThis, 'fetch', async () => Response.json({}, { status: 503 }));
-    const failure = await middleware(
+    const fetch = mock.method(globalThis, 'fetch', async () => Response.json({}, { status: 503 }));
+    const failure = await remoteMiddleware(
       new NextRequest('https://exchange.example.test/exchange/ABC', {
-        headers: { cookie: 'exchange_refresh=expired-session', 'sec-fetch-site': 'same-origin' },
+        headers: {
+          cookie: '__Host-exchange_refresh=expired-session',
+          'sec-fetch-site': 'same-origin',
+        },
       }),
     );
+    assert.equal(fetch.mock.callCount(), 1);
+    assert.deepEqual(JSON.parse(String(fetch.mock.calls[0].arguments[1]?.body)), {
+      refreshToken: 'expired-session',
+    });
     assert.equal(failure.status, 503);
     assert.equal(failure.headers.get('strict-transport-security'), 'max-age=31536000');
   } finally {
-    require.cache[path] = cached;
+    paths.forEach((path, index) => {
+      require.cache[path] = cached[index];
+    });
     if (secure === undefined) delete process.env.COOKIE_SECURE;
     else process.env.COOKIE_SECURE = secure;
     if (ws === undefined) delete process.env.ENGINE_PUBLIC_WS_URL;
     else process.env.ENGINE_PUBLIC_WS_URL = ws;
+    if (proxyToken === undefined) delete process.env.FRONTEND_PROXY_TOKEN;
+    else process.env.FRONTEND_PROXY_TOKEN = proxyToken;
   }
 });

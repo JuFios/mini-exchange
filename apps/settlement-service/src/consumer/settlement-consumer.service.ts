@@ -51,6 +51,7 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
       host: config.getOrThrow('REDIS_HOST'),
       port: config.getOrThrow('REDIS_PORT'),
       username: config.getOrThrow<string>('REDIS_USERNAME'),
+      disableClientInfo: true,
       password: config.getOrThrow<string>('REDIS_PASSWORD'),
       maxRetriesPerRequest: 1,
       commandTimeout: REDIS_COMMAND_TIMEOUT_MS,

@@ -2,6 +2,7 @@
 const nextConfig = {
   output: 'standalone',
   poweredByHeader: false,
+  experimental: { instrumentationHook: true },
   // Термінал не потребує серверної оптимізації зображень.
   images: { unoptimized: true },
   async headers() {
