@@ -64,7 +64,7 @@ const readLimitRetryMs = () =>
 const PARALLEL_ORDER_READS = 8;
 
 /**
- * Читання заявки для знімка. На 429 повторює лише цей запит, коли квота відновиться: повтор
+ * Читання для знімка (заявки й гаманці). На 429 повторює лише цей запит, коли квота відновиться: повтор
  * усього знімка знову витратив би квоту на вже прочитане і не завершився б, якщо знімок
  * потребує більше читань, ніж вміщує квота.
  */
@@ -234,7 +234,8 @@ export function startPrivateSocket(
       readOrders<Order[]>('/api/engine/orders?status=filled&limit=100', read),
       // Окремий фільтр: серед останніх 100 будь-якого статусу скасованих могло й не бути.
       readOrders<Order[]>('/api/engine/orders?status=cancelled&limit=100', read),
-      apiJson<Wallet[]>('/api/settlement/wallets', { signal }),
+      // Ingress обмежує й гаманці: 429 повторює лише це читання, а не весь знімок.
+      readOrders<Wallet[]>('/api/settlement/wallets', read),
     ])
       .then(async ([active, filled, cancelled, wallets]) => {
         if (signal.aborted) return;

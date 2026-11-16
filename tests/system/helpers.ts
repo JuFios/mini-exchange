@@ -201,7 +201,19 @@ export async function cancelOrder(accessToken: string, id: string, waitLimited =
 }
 
 export async function token(path: string, email: string, password: string) {
-  const response = await request(`/auth/${path}`, 'POST', undefined, { email, password });
+  // nginx допускає 16 одночасних запитів поза заявками з однієї адреси, а сценарії реєструють
+  // десятки користувачів паралельно. Відмову з'єднань повторюємо за `Retry-After`.
+  const deadline = performance.now() + 30000;
+  let response = await request(`/auth/${path}`, 'POST', undefined, { email, password });
+  while (response.status === 429 && performance.now() < deadline) {
+    await response.arrayBuffer();
+    // Не раніше за `Retry-After`, крім останньої спроби перед дедлайном; випадкова добавка
+    // розводить паралельні реєстрації в часі.
+    const retry = Number(response.headers.get('retry-after')) || 1;
+    const pause = Math.min(retry * 1000 + Math.random() * 1000, deadline - performance.now());
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, pause)));
+    response = await request(`/auth/${path}`, 'POST', undefined, { email, password });
+  }
   assert.equal(response.status, 201, await response.clone().text());
   return ((await response.json()) as { accessToken: string }).accessToken;
 }

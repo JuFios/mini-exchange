@@ -32,7 +32,8 @@
     "orders:write-flood": "ts-node orders-write-flood.ts",
     "engine-lb:errors": "ts-node edge-errors.ts",
     "session:revocation": "ts-node session-revocation.ts",
-    "frontend:admin": "ts-node admin-page.ts"
+    "frontend:admin": "ts-node admin-page.ts",
+    "ingress:client-limits": "ts-node ingress-client-limits.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",

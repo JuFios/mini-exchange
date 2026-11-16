@@ -118,7 +118,7 @@ export function Exchange({ symbol }: { symbol: string }) {
             <p className="message error" role="alert">
               {error}
             </p>
-            {/* Layout не перемонтовується, тож невдале завантаження конфігу повторює лише перезавантаження. */}
+            {/* Layout не перемонтовується: 429 він повторює сам, а іншу помилку конфігу — лише перезавантаження. */}
             <button type="button" className="secondary" onClick={() => window.location.reload()}>
               Спробувати ще раз
             </button>
