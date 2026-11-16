@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, it, mock } from 'node:test';
 
 const input = { instrument: 'ABC', side: 'buy' as const, price: '100', quantity: '1' };
 const keys: string[] = [];
+const firstId = randomUUID();
+const secondId = randomUUID();
+const ownerId = randomUUID();
 let answers: (() => Response)[] = [];
 
 beforeEach(() => {
@@ -32,7 +36,7 @@ const pending = (id: string) => () =>
     {
       order: {
         id,
-        ownerId: 'owner',
+        ownerId,
         instrument: input.instrument,
         side: input.side,
         status: 'pending',
@@ -43,19 +47,19 @@ const pending = (id: string) => () =>
   );
 
 it('sends an identical second order with its own key after a pending acceptance', async () => {
-  answers = [pending('first'), pending('second')];
+  answers = [pending(firstId), pending(secondId)];
 
   const first = await send();
   const second = await send();
 
   assert.deepEqual([first.status, second.status], ['pending', 'pending']);
-  assert.deepEqual([first.id, second.id], ['first', 'second']);
+  assert.deepEqual([first.id, second.id], [firstId, secondId]);
   assert.equal(keys.length, 2);
   assert.notEqual(keys[0], keys[1]);
 });
 
 it('repeats the key after a gateway failure and drops it once the order is accepted', async () => {
-  answers = [() => new Response('{}', { status: 503 }), pending('first'), pending('second')];
+  answers = [() => new Response('{}', { status: 503 }), pending(firstId), pending(secondId)];
 
   await assert.rejects(send());
   await send();
@@ -66,7 +70,7 @@ it('repeats the key after a gateway failure and drops it once the order is accep
 });
 
 it('drops the key when the request was refused', async () => {
-  answers = [() => new Response('{}', { status: 422 }), pending('first')];
+  answers = [() => new Response('{}', { status: 422 }), pending(firstId)];
 
   await assert.rejects(send());
   await send();
@@ -84,7 +88,7 @@ it('keeps a separate retry key for each different order after a gateway failure'
     { ...input, quantity: '1.5' },
   ];
   const failed = () => new Response('{}', { status: 503 });
-  answers = [failed, ...others.map(() => failed), pending('first')];
+  answers = [failed, ...others.map(() => failed), pending(firstId)];
 
   await assert.rejects(send());
   for (const order of others) await assert.rejects(sendWith(order));
@@ -99,30 +103,33 @@ it('retains the same key after an incomplete successful acknowledgement', async 
   answers = [
     () =>
       Response.json(
-        { order: { id: 'incomplete', instrument: 'ABC', side: 'buy' }, trades: [] },
+        { order: { id: firstId, instrument: 'ABC', side: 'buy' }, trades: [] },
         { status: 201 },
       ),
     () =>
       Response.json(
         {
           order: {
-            id: 'other',
+            id: secondId,
             instrument: 'XYZ',
             side: 'buy',
             status: 'pending',
-            ownerId: 'owner',
+            ownerId,
           },
           trades: [],
         },
         { status: 202 },
       ),
-    pending('accepted'),
+    pending('invalid-id'),
+    pending(firstId),
   ];
+  await assert.rejects(send());
   await assert.rejects(send());
   await assert.rejects(send());
   await send();
   assert.equal(keys[0], keys[1]);
   assert.equal(keys[0], keys[2]);
+  assert.equal(keys[0], keys[3]);
 });
 
 it('retains a retry key when sessionStorage is unavailable', async () => {
@@ -131,7 +138,7 @@ it('retains a retry key when sessionStorage is unavailable', async () => {
     () => {
       throw new Error('Connection reset after acceptance');
     },
-    pending('accepted'),
+    pending(firstId),
   ];
   await assert.rejects(send());
   await send();

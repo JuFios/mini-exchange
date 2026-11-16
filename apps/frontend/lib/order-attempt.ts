@@ -3,6 +3,7 @@ import type { OrderInput } from './decimal';
 import { type Order, acceptedOrder, attemptKey } from './private-state';
 
 const memoryAttempts = new Map<string, { idempotencyKey: string }>();
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 // sessionStorage може бути недоступний (приватний режим, заблоковані дані сайту).
 function readAttempt(key: string) {
@@ -47,7 +48,7 @@ export async function sendOrder(input: OrderInput) {
       !Array.isArray(trades) ||
       !order ||
       typeof order.id !== 'string' ||
-      !order.id ||
+      !UUID.test(order.id) ||
       order.instrument !== input.instrument ||
       order.side !== input.side ||
       (response.status === 202 && order.status !== 'pending') ||
@@ -61,7 +62,7 @@ export async function sendOrder(input: OrderInput) {
         'version' in order ||
         order.status !== 'pending' ||
         typeof order.ownerId !== 'string' ||
-        !order.ownerId ||
+        !UUID.test(order.ownerId) ||
         trades.length !== 0)
     )
       throw new Error('Invalid pending order acknowledgement');

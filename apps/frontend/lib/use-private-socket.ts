@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { type Clock, type SocketLike, realClock, RETRY_MIN_MS, RETRY_MAX_MS } from './book-session';
-import { readActiveOrders } from './active-orders';
+import { type ActiveOrderScan, readActiveOrders } from './active-orders';
 import { apiJson, ApiError, errorMessage } from './client-api';
 import { bindSession } from './session-binding';
 import { startWalletRefresh } from './wallet-refresh';
@@ -121,8 +121,16 @@ async function readOrdersById(
   return ids.map((id) => resolved.get(id));
 }
 
-function readActive(read: SnapshotRead) {
-  return readActiveOrders((query) => readOrders<Order[]>('/api/engine/orders?' + query, read));
+function readActive(read: SnapshotRead, scan: ActiveOrderScan<Order>) {
+  return readActiveOrders(
+    async (query) => {
+      const page = await readOrders<Order[]>('/api/engine/orders?' + query, read);
+      read.signal.throwIfAborted();
+      return page;
+    },
+    100,
+    scan,
+  );
 }
 
 interface OrderRead {
@@ -234,7 +242,11 @@ export function startPrivateSocket(
     delay = Math.min(delay * 2, RETRY_MAX_MS);
   }
 
-  function load(session: AbortSignal, resolved: Map<string, Order | null>) {
+  function load(
+    session: AbortSignal,
+    resolved: Map<string, Order | null>,
+    activeScan: ActiveOrderScan<Order>,
+  ) {
     // Своя спроба на кожне читання знімка: після збою її запити зупиняються, а не конкурують
     // за квоту читань із наступною спробою.
     const attempt = new AbortController();
@@ -257,7 +269,7 @@ export function startPrivateSocket(
     };
     const signal = attempt.signal;
     void Promise.all([
-      readActive(read),
+      readActive(read, activeScan),
       readOrders<Order[]>('/api/engine/orders?status=filled&limit=100', read),
       // Окремий фільтр: серед останніх 100 будь-якого статусу скасованих могло й не бути.
       readOrders<Order[]>('/api/engine/orders?status=cancelled&limit=100', read),
@@ -295,7 +307,7 @@ export function startPrivateSocket(
         if (!transient(failure)) return;
         clock.clearTimeout(loadRetry);
         loadRetry = clock.setTimeout(() => {
-          if (!session.aborted) load(session, resolved);
+          if (!session.aborted) load(session, resolved, activeScan);
         }, loadDelay);
         loadDelay = Math.min(loadDelay * 2, RETRY_MAX_MS);
       })
@@ -326,7 +338,7 @@ export function startPrivateSocket(
       clock,
     );
     view.onLoading();
-    load(signal, new Map());
+    load(signal, new Map(), { rows: [], cursor: '', complete: false });
   });
   socket.on('disconnect', (reason: string) => {
     session?.abort();
@@ -377,6 +389,7 @@ export function usePrivateSocket(url: string | undefined) {
   useEffect(() => {
     if (!url) return;
     let loading = true;
+    let orderOverflow = false;
     let known: string | undefined;
     const orders = new Map<string, Order>();
     const wallets = new Map<string, Wallet>();
@@ -468,6 +481,7 @@ export function usePrivateSocket(url: string | undefined) {
     const stop = startPrivateSocket(url, {
       onLoading() {
         loading = true;
+        orderOverflow = false;
         reads.clear();
         pendingWallets.clear();
         setStatus('loading');
@@ -505,6 +519,13 @@ export function usePrivateSocket(url: string | undefined) {
           if (!reads.has(id)) pendingOrders.delete(id);
         }
         pendingWallets.clear();
+        if (orderOverflow) {
+          // Спершу завершити snapshot, інакше повний буфер скасовує кожен новий запуск.
+          pendingOrders.clear();
+          publish();
+          stop.resync();
+          return;
+        }
         shown = undefined;
         setError('');
         setStatus('live');
@@ -522,7 +543,11 @@ export function usePrivateSocket(url: string | undefined) {
           const previous = pendingOrders.get(update.orderId);
           if (previous && previous.version >= update.version) return;
           if (!pendingOrders.has(update.orderId) && pendingOrders.size >= 1000) {
-            stop.resync();
+            if (loading) orderOverflow = true;
+            else {
+              pendingOrders.clear();
+              stop.resync();
+            }
             return;
           }
           pendingOrders.set(update.orderId, update);

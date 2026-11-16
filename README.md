@@ -928,7 +928,7 @@ Snapshot читається з PostgreSQL після кожної delta, яку 
 | Подія | Зміст |
 |---|---|
 | `order.updated` | `{orderId, instrument, version, status, remainingQuantity, filledQuantity, cancelReason?}` |
-| `wallet.updated` | `{asset, available, reserved, version}`; settlement пише її після кожного руху коштів (резерв, угода, release); для HTTP-резерву й release сапера — best effort |
+| `wallet.updated` | `{asset, available, reserved, version}`. Settlement публікує перед Redis ACK; HTTP-резерв і release сапера публікують best effort. Для втраченого stream термінал звіряє гаманці з REST. |
 
 **Автентифікація.** Токен передається в handshake:
 `io(url + '/private', { transports: ['websocket'], auth: { token } })`. Браузер отримує через
@@ -1410,7 +1410,7 @@ snapshot. При замороженому читачі перехід у `stale`
 
 | Сценарій | Що перевіряє |
 |---|---|
-| `settlement:redrive` | Призупиняє власника й settlement, щоб угода з'явилася без розрахунку, видаляє її stream, перевіряє `missing` у звірці й код виходу 1 зі звітом CLI, де є ця угода, робить redrive і перевіряє `ok` і код 0. Далі скасовує заявку при призупиненому settlement, видаляє stream з її `order.closed`, перевіряє `stuck_reservation` і код 1, робить redrive за `orderIds` і перевіряє `ok` і код 0 |
+| `settlement:redrive` | Видаляє Redis stream для окремої угоди, закриття та часткового виконання із закриттям. У кожному випадку вимагає автоматичного recovery з committed outbox, а ручний повтор має зберегти чисту звірку та код CLI 0. |
 | `wallet:push` | Покупець, продавець і сторонній користувач підключені до `/private` через `engine-lb`. Після угоди перші двоє отримують `wallet.updated` для base і quote зі зростаючою `version`, остання подія збігається з `GET /wallets`, а сторонній не отримує нічого |
 | `orders:sync` | Процедура синхронізації `/private` з цього README: 60 активних заявок читаються сторінками за курсором тим самим `apps/frontend/lib/active-orders.ts`, що й термінал, а заявка, що стала `filled` під час розриву, береться за `GET /orders/:id` і не воскресає з буфера |
 | `realtime-replicas.spec.ts` (інтеграційний) | Заморожує читач однієї з двох реплік. Клієнт замороженої репліки бачить розбіжність у heartbeat, `/ready` стає 503, сокети розірвано, нові підключення відхилено, а друга репліка весь час `live`. Також порівнює послідовності двох клієнтів на різних репліках і 100 snapshot, зроблених під час 150 команд, з незалежним replay |
@@ -2391,6 +2391,10 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
   недоступний, підключений термінал звіряє гаманці з REST кожні 10 с.
   Позиція `settlement_position` незмінна, навіть коли redrive змінює relay id. Падіння перед
   checkpoint означає повтор. Дві recovery-спроби підтверджують лише власний оброблений префікс.
+  Якщо committed подію обробити не вдалося, курсор її інструмента лишається перед подією.
+  Інші інструменти й Redis consumer продовжують роботу. Алерт `settlement_recovery_failed`
+  вказує інструмент. Перед повтором збережіть узгоджені копії БД та розберіть фінансову
+  розбіжність. Не просувайте курсор вручну.
   Outbox не можна очищати без окремого протоколу retention і перевіреного архіву.
 - Сокет `/private` відкликаної сесії закривається звіркою раз на 3 с, до 13 с. Спільний Socket.IO
   adapter між репліками дав би миттєве закриття, але це ще одна залежність.
@@ -2451,6 +2455,8 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
   Перед створенням нового резерву settlement перевіряє scoped outbox API та реальний доступ
   consumer до Redis group. Успішна перевірка спільна для конкурентних запитів і кешується 1 с.
   Нова заявка відмовляє при збої; читання й скасування не залежать від цієї перевірки.
+  Внутрішній committed outbox має 8 окремих слотів і власну ротацію engine. Перевірка
+  access-сесії завершується з 503 після 2 с недоступності PostgreSQL, щоб клієнт міг повторити запит.
 - `RESERVATION_API_TOKEN` відкриває фінансовий API settlement; `RECONCILIATION_TOKEN` — engine
   читання для звірки й перевірку сесії; `OUTBOX_READ_TOKEN` — тільки committed outbox і дозвіл
   компенсації. Старий `INTERNAL_API_TOKEN` не підтримується. Повний release через HTTP потребує
@@ -2474,8 +2480,9 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
   instrument. Під час cutover перезапустіть reader; приватний REST snapshot відновлює стан.
   Snapshot і читання невідомої заявки мають бюджет 15 с, черга pending — максимум 1000,
   паралельні невідомі ID — максимум 8. Переповнення або дедлайн дочитування починає resync,
-  завершені ID lookup зберігаються між обмеженими спробами одного з’єднання. Остаточний 404 вилучає
-  лише відсутню заявку. Авторитетний reconnect snapshot замінює wallet cache.
+  завершені ID lookup і сторінки активних заявок зберігаються між спробами одного з’єднання.
+  Переповнення під час завантаження дає поточному snapshot завершитися перед новим resync.
+  Остаточний 404 вилучає лише відсутню заявку. Reconnect snapshot замінює wallet cache.
 - За відсутності book heartbeat клієнт показує stale через 8 с і починає reconnect ще через
   2 с зі штатним backoff. WS snapshot включно з pool/чергою обмежений 3 с; завислий PG client
   знищується. Наступна спроба може перейти на здорову репліку.

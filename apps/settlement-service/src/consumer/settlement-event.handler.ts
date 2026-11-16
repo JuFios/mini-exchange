@@ -26,29 +26,39 @@ export class SettlementEventHandler {
 
   async recover(stopped: () => boolean): Promise<void> {
     this.stats.durableBacklog = 0;
+    const failures: string[] = [];
     for (const instrument of ASSETS.filter((asset) => asset !== 'USD')) {
       if (stopped()) return;
-      const [progress]: { position: string }[] = await this.source.query(
-        'SELECT position FROM settlement_progress WHERE instrument=$1',
-        [instrument],
-      );
-      const events = await this.outbox.page(instrument, progress?.position ?? '0');
-      this.stats.durableBacklog += events.length;
-      for (const event of events) {
-        if (stopped()) return;
-        await this.handle(`outbox:${event.position}`, event.envelope, 'recovery');
-        // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
-        // Кожен прохід підтверджує лише свій повністю оброблений префікс.
-        await this.source.query(
-          `INSERT INTO settlement_progress(instrument,position) VALUES($1,$2)
-           ON CONFLICT(instrument) DO UPDATE
-           SET position=GREATEST(settlement_progress.position,EXCLUDED.position),
-               updated_at=clock_timestamp()`,
-          [instrument, event.position],
-        );
+      try {
+        await this.recoverInstrument(instrument, stopped);
+      } catch (error) {
+        // Курсор цього інструмента лишається перед проблемою; інші інструменти просуваються.
+        failures.push(`${instrument}: ${(error as Error).message}`);
       }
     }
-    this.stats.recoveryLastSuccess = Date.now() / 1000;
+    if (failures.length) throw new Error(failures.join('; '));
+    if (!stopped()) this.stats.recoveryLastSuccess = Date.now() / 1000;
+  }
+
+  private async recoverInstrument(instrument: string, stopped: () => boolean): Promise<void> {
+    const [progress]: { position: string }[] = await this.source.query(
+      'SELECT position FROM settlement_progress WHERE instrument=$1',
+      [instrument],
+    );
+    const events = await this.outbox.page(instrument, progress?.position ?? '0');
+    this.stats.durableBacklog += events.length;
+    for (const event of events) {
+      if (stopped()) return;
+      await this.handle(`outbox:${event.position}`, event.envelope, 'recovery');
+      // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
+      await this.source.query(
+        `INSERT INTO settlement_progress(instrument,position) VALUES($1,$2)
+         ON CONFLICT(instrument) DO UPDATE
+         SET position=GREATEST(settlement_progress.position,EXCLUDED.position),
+             updated_at=clock_timestamp()`,
+        [instrument, event.position],
+      );
+    }
   }
 
   /** Redis delivery публікує wallet.updated до ACK. Recovery читає вже перевірену сторінку outbox. */

@@ -140,7 +140,13 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
     while (!this.stopped) {
       try {
         // Recovery не залежить від існування stream чи consumer group.
-        await this.handler.recover?.(() => this.stopped);
+        await this.handler
+          .recover?.(() => this.stopped)
+          .catch((error: Error) => {
+            // Окремий збій recovery не вимикає live доставку, reclaim або DLQ.
+            if (!this.stopped)
+              this.logger.warn({ alert: 'settlement_recovery_failed', reason: error.message });
+          });
         if (this.stopped) return;
         await this.ensureGroups();
         await this.reclaimDue();

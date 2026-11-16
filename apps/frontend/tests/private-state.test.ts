@@ -838,3 +838,23 @@ it('settles once without an order when the session closes during the read', asyn
   assert.deepEqual(reads.events, ['settled']);
   assert.equal(reads.timers.size, 0);
 });
+
+it('resumes active pagination at the last completed cursor after an interrupted page', async () => {
+  const { readActiveOrders, orderCursor } = await import('../lib/active-orders');
+  const first = { id: 'first', createdAt: '2026-11-01T00:00:00.000Z' };
+  const second = { id: 'second', createdAt: '2026-10-01T00:00:00.000Z' };
+  const scan = { rows: [] as (typeof first)[], cursor: '', complete: false };
+  const queries: string[] = [];
+  const read = async (query: string) => {
+    queries.push(query);
+    if (queries.length === 1) return [first];
+    if (queries.length === 2) throw new TypeError('Snapshot deadline exceeded');
+    if (queries.length === 3) return [second];
+    return [];
+  };
+  await assert.rejects(readActiveOrders(read, 1, scan), /deadline/);
+  assert.deepEqual(await readActiveOrders(read, 1, scan), [first, second]);
+  assert.equal(queries[2], queries[1]);
+  assert(queries[2].endsWith(orderCursor(first)));
+  assert(queries[3].endsWith(orderCursor(second)));
+});
