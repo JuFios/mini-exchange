@@ -109,17 +109,21 @@ function start() {
   const statuses: BookStatus[] = [];
   const books: BookState[] = [];
   const snapshots: BookState[] = [];
+  const resets: boolean[] = [];
   const stop = startBookSession(
     socket,
     'ABC',
     {
       onStatus: (status) => statuses.push(status),
       onBook: (book) => books.push(book),
-      onSnapshot: () => snapshots.push(books.at(-1)!),
+      onSnapshot: (reset) => {
+        snapshots.push(books.at(-1)!);
+        resets.push(reset);
+      },
     },
     clock,
   );
-  return { socket, clock, statuses, books, snapshots, stop };
+  return { socket, clock, statuses, books, snapshots, resets, stop };
 }
 
 describe('the book page connection', () => {
@@ -357,11 +361,20 @@ describe('recovery before the first snapshot on a connection', () => {
     const { socket, clock, statuses, books, stop } = start();
     socket.fire('connect');
     exhaustAttempts(socket, clock);
+    let reconnects = 0;
     for (let attempt = 0; attempt < 30; attempt++) {
       const before = socket.subscribes;
       clock.tick(9999);
       assert.equal(socket.subscribes, before);
       clock.tick(1);
+      if (attempt % 3 === 2) {
+        // Третє вікно без книги переводить сесію на нове з'єднання з однією спробою.
+        assert.equal(statuses.at(-1), 'reconnecting');
+        assert.equal(socket.disconnects, ++reconnects);
+        clock.tick(RETRY_MAX_MS);
+        assert.equal(socket.connects, reconnects);
+        socket.fire('connect');
+      }
       assert.equal(socket.subscribes, before + 1);
       assert.equal(clock.pending, 1);
       clock.tick(SUBSCRIBE_TIMEOUT_MS);
@@ -369,6 +382,7 @@ describe('recovery before the first snapshot on a connection', () => {
       assert.equal(clock.pending, 1);
       assert.equal(books.length, 0);
     }
+    assert.equal(reconnects, 10);
     stop();
     assert.equal(clock.pending, 0);
   });
@@ -394,7 +408,7 @@ describe('recovery before the first snapshot on a connection', () => {
   });
 
   it('takes the first snapshot of a new connection even when it is behind the visible book', () => {
-    const { socket, statuses, books } = start();
+    const { socket, statuses, books, resets } = start();
     socket.fire('connect');
     socket.accept(BOOK);
     socket.fire('disconnect', 'transport close');
@@ -408,6 +422,25 @@ describe('recovery before the first snapshot on a connection', () => {
       ['10', '1'],
     );
     assert.equal(socket.subscribes, 2);
+    // Стрічка угод замінюється разом із книгою; звичайний перший snapshot її не скидає.
+    assert.deepEqual(resets, [false, true]);
+  });
+
+  it('reports a history reset once, after a resync delayed the lower snapshot', () => {
+    const { socket, statuses, resets } = start();
+    socket.fire('connect');
+    socket.accept(BOOK);
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    socket.fire('book.resync', { instrument: 'ABC' });
+    socket.accept({ ...BOOK, seq: '2' });
+    assert.equal(statuses.at(-1), 'loading');
+    socket.accept({ ...BOOK, seq: '3' });
+    assert.equal(statuses.at(-1), 'live');
+    socket.fire('disconnect', 'transport close');
+    socket.fire('connect');
+    socket.accept({ ...BOOK, seq: '4' });
+    assert.deepEqual(resets, [false, true, false]);
   });
 
   it('coalesces resync signals during a slow retry before publishing the recovered book', () => {
@@ -702,7 +735,7 @@ describe('market book synchronization', () => {
       assert.equal(count(), before + 1);
     }
     state.ack({ ok: false, error: 'BOOK_BUSY' });
-    state.clock.tick(20_000);
+    state.clock.tick(9_999);
     assert.equal(count(), 7);
     assert.equal(state.statuses.at(-1), 'error');
     assert.equal(state.books.at(-1), visible);
@@ -924,6 +957,43 @@ it('reconnects a silent transport within a bounded heartbeat budget', () => {
   state.socket.fire('connect');
   state.socket.accept(BOOK);
   assert.equal(state.statuses.at(-1), 'live');
+  state.stop();
+  assert.equal(state.clock.pending, 0);
+});
+
+it('moves a book stuck in error without heartbeat to a new connection', () => {
+  const state = market(10, [level(100)]);
+  const visible = state.books.at(-1);
+  state.delta(13);
+  for (const delay of [250, 500, 1000, 2000, 2000]) {
+    state.ack({ ok: false, error: 'BOOK_BUSY' });
+    state.clock.tick(delay);
+  }
+  state.ack({ ok: false, error: 'BOOK_BUSY' });
+  assert.equal(state.statuses.at(-1), 'error');
+  // Delta з Redis не підтверджує свіжість: книга лишається у стані помилки.
+  state.delta(14);
+  state.clock.tick(9_999);
+  assert.equal(state.socket.disconnects, 0);
+  state.clock.tick(1);
+  assert.equal(state.socket.disconnects, 1);
+  assert.equal(state.statuses.at(-1), 'reconnecting');
+  assert.equal(state.books.at(-1), visible);
+  state.clock.tick(RETRY_MAX_MS);
+  assert.equal(state.socket.connects, 1);
+
+  // Нове з'єднання робить одну спробу на вікно ліміту, а не п'ять швидких.
+  state.socket.fire('connect');
+  const before = state.socket.subscribes;
+  state.ack({ ok: false, error: 'BOOK_BUSY' });
+  assert.equal(state.statuses.at(-1), 'error');
+  state.clock.tick(9_999);
+  assert.equal(state.socket.subscribes, before);
+  state.clock.tick(1);
+  assert.equal(state.socket.subscribes, before + 1);
+  state.accept(15, [level(101)]);
+  assert.equal(state.statuses.at(-1), 'live');
+  assert.deepEqual(state.books.at(-1)?.asks, [level(101)]);
   state.stop();
   assert.equal(state.clock.pending, 0);
 });

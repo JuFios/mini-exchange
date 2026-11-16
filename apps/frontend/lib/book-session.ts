@@ -30,7 +30,8 @@ export interface Clock {
 export interface BookView {
   onStatus(status: BookStatus): void;
   onBook(book: BookState): void;
-  onSnapshot?(): void;
+  /** `reset`: книга прийняла snapshot нижче за показаний, тобто історію в PG скинуто. */
+  onSnapshot?(reset: boolean): void;
 }
 
 export const RETRY_MIN_MS = 250;
@@ -41,6 +42,9 @@ export const SUBSCRIBE_TIMEOUT_MS = 3000;
 export const HEARTBEAT_TIMEOUT_MS = 8000;
 // Повтор першої підписки після вичерпання швидких спроб: одна спроба на серверне вікно ліміту.
 export const SLOW_RETRY_MS = 10_000;
+// Після стількох повільних спроб на одному з'єднанні сесія перепідключається: репліка із
+// завислим PG відповідає відмовою, а нове з'єднання може потрапити на здорову.
+export const SLOW_ATTEMPTS_PER_CONNECTION = 2;
 
 export const realClock: Clock = {
   setTimeout: (handler, ms) => setTimeout(handler, ms),
@@ -119,6 +123,11 @@ export function startBookSession(
   let resyncPending = false;
   let reconnectDelay = RETRY_MIN_MS;
   let failures = 0;
+  let slowAttempts = 0;
+  // Нове з'єднання після повільних спроб починає з однієї спроби, щоб не обійти ліміт сервера.
+  let slowReconnect = false;
+  // Скидання історії між snapshot і його публікацією, коли resync вимагає ще одного читання.
+  let historyReset = false;
   let requestId = 0;
   let stopped = false;
 
@@ -128,17 +137,19 @@ export function startBookSession(
     view.onStatus(next);
   }
 
+  function reconnectNow() {
+    cancelPending();
+    socket.disconnect();
+    setStatus('reconnecting');
+    reconnect();
+  }
+
   function armHeartbeatTimeout() {
     clock.clearTimeout(heartbeatTimer);
     heartbeatTimer = clock.setTimeout(() => {
       awaitingHeartbeat = true;
       setStatus('stale');
-      waiting = clock.setTimeout(() => {
-        cancelPending();
-        socket.disconnect();
-        setStatus('reconnecting');
-        reconnect();
-      }, RETRY_MAX_MS);
+      waiting = clock.setTimeout(reconnectNow, RETRY_MAX_MS);
     }, HEARTBEAT_TIMEOUT_MS);
   }
 
@@ -152,15 +163,21 @@ export function startBookSession(
     if (failures === 5) {
       buffered.clear();
       resyncPending = false;
-      if (status === 'loading') {
+      if (status === 'loading' && slowAttempts < SLOW_ATTEMPTS_PER_CONNECTION) {
         // Книга ще не стала live на цьому з'єднанні: сокет може бути поза кімнатою heartbeat.
+        slowAttempts++;
         waiting = clock.setTimeout(() => {
           setStatus('loading');
           subscribe();
         }, SLOW_RETRY_MS);
       } else {
-        // Уже підписаний сокет отримає heartbeat, коли сервер знову підтвердить свіжість.
-        awaitingHeartbeat = true;
+        // Heartbeat підписаного сокета відновить книгу раніше. Без нього репліка не читає PG,
+        // тож через вікно ліміту сесія переходить на нове з'єднання.
+        if (status !== 'loading') awaitingHeartbeat = true;
+        waiting = clock.setTimeout(() => {
+          slowReconnect = true;
+          reconnectNow();
+        }, SLOW_RETRY_MS);
       }
       setStatus('error');
       return;
@@ -196,6 +213,9 @@ export function startBookSession(
       heartbeatFloor = undefined;
       reconnectDelay = RETRY_MIN_MS;
       failures = 0;
+      slowAttempts = 0;
+      slowReconnect = false;
+      if (book && BigInt(reply.snapshot.seq) < BigInt(book.seq)) historyReset = true;
       book = next;
       // Якщо розрив зафіксовано під час читання, цей snapshot міг його ще не охопити.
       if (resyncPending) {
@@ -206,7 +226,9 @@ export function startBookSession(
       armHeartbeatTimeout();
       view.onBook(book);
       setStatus('live');
-      view.onSnapshot?.();
+      const reset = historyReset;
+      historyReset = false;
+      view.onSnapshot?.(reset);
     };
 
     socket.timeout(SUBSCRIBE_TIMEOUT_MS).emit('book.subscribe', { instrument }, finish);
@@ -234,7 +256,8 @@ export function startBookSession(
   socket.on('connect', () => {
     if (stopped) return;
     cancelPending();
-    failures = 0;
+    failures = slowReconnect ? 5 : 0;
+    slowAttempts = 0;
     setStatus('loading');
     subscribe();
   });

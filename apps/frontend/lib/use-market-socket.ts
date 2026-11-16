@@ -81,7 +81,11 @@ export function useMarketSocket(url: string | undefined, instrument: string) {
     const stop = startBookSession(socket, instrument, {
       onBook: setBook,
       onStatus: setStatus,
-      onSnapshot: history.refresh,
+      onSnapshot(reset) {
+        // Після скидання історії старі угоди з більшим seq інакше витіснили б нові зі стрічки.
+        if (reset) setTrades([]);
+        history.refresh();
+      },
     });
     socket.on('trade', (trade: Trade & { instrument: string }) => {
       if (trade?.instrument !== instrument) return;
