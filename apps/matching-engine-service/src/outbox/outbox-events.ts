@@ -7,16 +7,17 @@ export async function insertOutboxEvents(
   db: EntityManager,
   row: CommandRow,
   events: EngineEvent[],
+  appliedAt: Date,
 ): Promise<void> {
   const records = events.map((event) => ({
     ...event,
     stream: streamForEvent(event.type, row.instrument),
   }));
   await db.query(
-    `INSERT INTO outbox (event_id, stream, type, version, instrument, seq, payload, traceparent)
-     SELECT gen_random_uuid(), event->>'stream', event->>'type', 1, $1, $2, event->'payload', $3
+    `INSERT INTO outbox (event_id, stream, type, version, instrument, seq, payload, traceparent, created_at)
+     SELECT gen_random_uuid(), event->>'stream', event->>'type', 1, $1, $2, event->'payload', $3, $5
      FROM jsonb_array_elements($4::jsonb) WITH ORDINALITY AS batch(event, position)
      ORDER BY position`,
-    [row.instrument, row.seq, row.traceparent, JSON.stringify(records)],
+    [row.instrument, row.seq, row.traceparent, JSON.stringify(records), appliedAt],
   );
 }

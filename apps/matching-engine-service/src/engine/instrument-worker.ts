@@ -340,8 +340,12 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.ownership.leases.assert(owned.lease);
     if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
+    // Один час БД після fencing-lock: усі записи apply переживають зміну годинника репліки.
+    const [{ applied_at: appliedAt }]: { applied_at: Date }[] = await db.query(
+      "SELECT date_trunc('milliseconds', clock_timestamp()) AS applied_at",
+    );
     if (row.type === 'submit' && !(await this.funded(db, row.order_id))) {
-      return this.unfunded(db, owned, row, state.owner_epoch);
+      return this.unfunded(db, owned, row, state.owner_epoch, appliedAt);
     }
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });
     const command: Command =
@@ -350,7 +354,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
             type: 'submit',
             instrument: row.instrument,
             seq: BigInt(row.seq),
-            acceptedAt: row.accepted_at.toISOString(),
+            executedAt: appliedAt.toISOString(),
             order: bookOrder(target),
           }
         : {
@@ -391,7 +395,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     };
     const events: EngineEvent[] = [
       delta,
-      ...(await this.writeOrders(db, owned.lease, target, result.orderChanges)),
+      ...(await this.writeOrders(db, owned.lease, target, result.orderChanges, appliedAt)),
       ...(await this.writeTrades(db, owned.lease, row, target, result.trades)),
     ];
     for (const closed of result.closed) {
@@ -412,8 +416,8 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       });
     }
     this.step(owned.lease);
-    await insertOutboxEvents(db, row, events);
-    await this.finish(db, owned, row, result, state.owner_epoch);
+    await insertOutboxEvents(db, row, events, appliedAt);
+    await this.finish(db, owned, row, result, state.owner_epoch, appliedAt);
     return result;
   }
 
@@ -424,9 +428,10 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     row: CommandRow,
     result: WorkerResult,
     epoch: string,
+    appliedAt: Date,
   ): Promise<void> {
     const [, applied] = await db.query(
-      `UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
+      `UPDATE order_commands SET applied_at=$4,result=$3 WHERE instrument=$1 AND seq=$2`,
       [
         row.instrument,
         row.seq,
@@ -436,6 +441,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           epoch,
           instance: this.config.getOrThrow('INSTANCE_ID'),
         },
+        appliedAt,
       ],
     );
     if (applied !== 1) throw new Error('Command journal row changed');
@@ -493,6 +499,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     owned: OwnedBook,
     row: CommandRow,
     epoch: string,
+    appliedAt: Date,
   ): Promise<WorkerResult> {
     const result: WorkerResult = {
       book: owned.book,
@@ -503,10 +510,18 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       closed: [],
     };
     this.step(owned.lease);
-    await insertOutboxEvents(db, row, [
-      { type: 'book.delta', payload: { instrument: row.instrument, seq: row.seq, changes: [] } },
-    ]);
-    await this.finish(db, owned, row, result, epoch);
+    await insertOutboxEvents(
+      db,
+      row,
+      [
+        {
+          type: 'book.delta',
+          payload: { instrument: row.instrument, seq: row.seq, changes: [] },
+        },
+      ],
+      appliedAt,
+    );
+    await this.finish(db, owned, row, result, epoch, appliedAt);
     return result;
   }
 
@@ -515,6 +530,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     lease: InstrumentLease,
     target: Order,
     changes: WorkerResult['orderChanges'],
+    appliedAt: Date,
   ): Promise<EngineEvent[]> {
     const events: EngineEvent[] = [];
     for (const change of changes) {
@@ -533,7 +549,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         .getRepository(Order)
         .update(
           { id: change.id, version: previous.version },
-          { ...state, cancelReason: change.cancelReason ?? null, updatedAt: new Date() },
+          { ...state, cancelReason: change.cancelReason ?? null, updatedAt: appliedAt },
         );
       if (updated.affected !== 1) throw new Error('Order version changed');
       events.push({
@@ -571,7 +587,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         price: formatPrice(fill.price),
         quantity: formatQuantity(fill.quantity),
         takerSide: target.side,
-        executedAt: row.accepted_at.toISOString(),
+        executedAt: fill.executedAt,
       };
       const execution: TradeExecutedV1 = {
         ...publicTrade,
@@ -602,7 +618,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           execution.buyerUserId,
           execution.sellerUserId,
           execution.takerSide,
-          row.accepted_at,
+          new Date(fill.executedAt),
           row.traceparent?.split('-')[1] ?? null,
         ],
       );

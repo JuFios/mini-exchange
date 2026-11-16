@@ -482,3 +482,32 @@ it('maps a lost PostgreSQL connection to a retryable service response', async ()
     { n: 0 },
   ]);
 });
+
+it('timestamps a queued trade at apply after ownership recovery', async () => {
+  const seller = await register();
+  const buyer = await register();
+  await submit(seller);
+  await restart({ ENGINE_WORKER_ENABLED: false, ORDER_SYNC_WAIT_MS: 20 });
+  const pending = await (await submit(buyer, { side: 'buy' })).json();
+  const [{ takeover }]: { takeover: Date }[] = await database().query(
+    'SELECT clock_timestamp() AS takeover',
+  );
+  await restart();
+  const [trade] = await database().query('SELECT * FROM trades');
+  const [command] = await database().query('SELECT * FROM order_commands WHERE seq=2');
+  const events = await database().query('SELECT * FROM outbox WHERE seq=2 ORDER BY id');
+  expect(trade.executed_at.getTime()).toBeGreaterThanOrEqual(takeover.getTime());
+  expect(trade.executed_at.getTime()).toBeGreaterThan(new Date(pending.order.createdAt).getTime());
+  expect(trade.executed_at).toEqual(command.applied_at);
+  for (const event of events) {
+    expect(event.created_at).toEqual(trade.executed_at);
+    if (event.type.startsWith('trade.'))
+      expect(event.payload.executedAt).toBe(trade.executed_at.toISOString());
+  }
+  const orders = await database().query('SELECT updated_at FROM orders');
+  expect(
+    orders.every(
+      (order: { updated_at: Date }) => order.updated_at.getTime() === trade.executed_at.getTime(),
+    ),
+  ).toBe(true);
+});

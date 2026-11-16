@@ -64,7 +64,7 @@ it('sequences two intake instances and matches all two hundred HTTP commands aga
           type: 'submit',
           instrument: row.instrument,
           seq: BigInt(row.seq),
-          acceptedAt: row.accepted_at.toISOString(),
+          executedAt: row.applied_at.toISOString(),
           order: {
             id: row.order_id,
             ownerId: row.user_id,

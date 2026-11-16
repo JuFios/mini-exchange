@@ -64,7 +64,7 @@ export function matchOrder(book: BookSnapshot, incoming: MatcherOrder): MatchRes
       type: 'submit',
       instrument: incoming.instrument,
       seq: order.prioritySeq,
-      acceptedAt: incoming.createdAt.toISOString(),
+      executedAt: incoming.createdAt.toISOString(),
       order,
     },
   );

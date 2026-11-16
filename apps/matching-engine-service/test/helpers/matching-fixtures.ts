@@ -19,7 +19,7 @@ export function submit(
     type: 'submit',
     instrument: 'ABC',
     seq,
-    acceptedAt,
+    executedAt: acceptedAt,
     order: { id: `order-${seq}`, ownerId, side, price, quantity, remaining: quantity },
   };
 }

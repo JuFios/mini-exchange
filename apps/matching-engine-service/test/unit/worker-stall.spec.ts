@@ -178,18 +178,20 @@ function sweep(makers: number) {
   };
   const db = {
     query: async (sql: string) =>
-      sql.includes('FROM order_requests')
-        ? [{ status: 'accepted' }]
-        : sql.includes('FOR UPDATE')
-          ? [
-              {
-                owner_epoch: '1',
-                status: 'active',
-                legacy_verified: true,
-                last_applied_seq: '0',
-              },
-            ]
-          : [[], 1],
+      sql.includes('AS applied_at')
+        ? [{ applied_at: new Date(1000) }]
+        : sql.includes('FROM order_requests')
+          ? [{ status: 'accepted' }]
+          : sql.includes('FOR UPDATE')
+            ? [
+                {
+                  owner_epoch: '1',
+                  status: 'active',
+                  legacy_verified: true,
+                  last_applied_seq: '0',
+                },
+              ]
+            : [[], 1],
     getRepository: () => orders,
   };
   const applier = {
@@ -273,4 +275,33 @@ it('locks intake before halting on a sequence gap', async () => {
   const halt = queries.findIndex((sql) => sql.includes("SET status='halted'"));
   expect(lock).toBeGreaterThanOrEqual(0);
   expect(lock).toBeLessThan(halt);
+});
+
+it('uses the database apply clock for the command and order writes', async () => {
+  const { db, row, applier } = sweep(1);
+  const query = jest.spyOn(db, 'query');
+  const orders = db.getRepository();
+  const update = jest.spyOn(orders, 'update');
+  const apply = jest.spyOn(applier, 'apply');
+  const { worker, held } = setup(never, {}, applier);
+  await worker['applyOne'](
+    db as never,
+    { lease: held, seq: '0', epoch: '1', book: {} } as never,
+    row as never,
+  );
+  expect(apply.mock.calls[0]).toEqual([
+    {},
+    expect.objectContaining({ executedAt: new Date(1000).toISOString() }),
+  ]);
+  expect(update.mock.calls[0]).toEqual([
+    expect.anything(),
+    expect.objectContaining({ updatedAt: new Date(1000) }),
+  ]);
+  const calls = query.mock.calls as unknown as [string, unknown[]][];
+  expect(calls.find(([sql]) => sql.includes('INSERT INTO outbox'))![1].at(-1)).toEqual(
+    new Date(1000),
+  );
+  expect(calls.find(([sql]) => sql.includes('UPDATE order_commands'))![1].at(-1)).toEqual(
+    new Date(1000),
+  );
 });
