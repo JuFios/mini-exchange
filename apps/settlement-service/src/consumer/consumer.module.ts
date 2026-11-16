@@ -1,3 +1,4 @@
+import { OutboxModule } from '../consumer/outbox.module';
 import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
 import { LedgerModule } from '../ledger/ledger.module';
@@ -14,6 +15,7 @@ import { ReadinessController } from './readiness.controller';
 
 @Module({
   imports: [
+    OutboxModule,
     LedgerModule,
     TradesModule,
     ReservationsModule,

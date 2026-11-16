@@ -10,6 +10,7 @@ const queue = (streams: { pending: number; lag: number | null }[]): Queue => ({
   streams: streams.map((stream, index) => ({
     stream: `exchange:settlement:{S${index}}`,
     length: 10,
+    oldestPendingAgeSeconds: 120,
     lastDeliveredId: null,
     ...stream,
   })),
@@ -30,6 +31,9 @@ it('sums the stream lag when Redis knows it for every stream', async () => {
   ]);
   expect(await metric(value, 'settlement_stream_lag')).toBe('settlement_stream_lag 5');
   expect(await metric(value, 'settlement_pending')).toBe('settlement_pending 1');
+  expect(await metric(value, 'settlement_oldest_pending_age_seconds')).toBe(
+    'settlement_oldest_pending_age_seconds 120',
+  );
 });
 
 it('reports an unknown stream lag instead of counting it as zero', async () => {

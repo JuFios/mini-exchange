@@ -8,4 +8,6 @@ export class SettlementStats {
   trimmedPending = 0;
   transientFailures = 0;
   retriedFailures = 0;
+  recoveryLastSuccess = 0;
+  durableBacklog = 0;
 }

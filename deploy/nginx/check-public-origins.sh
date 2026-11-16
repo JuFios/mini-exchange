@@ -51,13 +51,15 @@ case "${PUBLIC_ORIGIN:-}" in
 esac
 # Порти за замовчуванням зникають із браузерного Host. Різні записи того самого
 # хоста мають утворити один ключ map, інакше nginx відхилить конфігурацію.
-if ! public_hosts=$(printf '%s\n' "$origins" | LC_ALL=C awk -F, -v mode="${DEPLOYMENT_MODE:-local}" '
+canonical_origins() {
+  printf '%s\n' "$1" | LC_ALL=C awk -F, -v mode="$2" '
   NR != 1 || NF == 0 { exit 1 }
   {
     for (i = 1; i <= NF; i++) {
       origin = tolower($i)
       sub(/^[ \t]+/, "", origin)
       sub(/[ \t]+$/, "", origin)
+      sub(/\/$/, "", origin)
       if (origin !~ /^https?:\/\/([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(:[0-9]+)?$/) exit 1
       secure = (origin ~ /^https:/)
       if (mode == "remote" && !secure) exit 1
@@ -69,13 +71,17 @@ if ! public_hosts=$(printf '%s\n' "$origins" | LC_ALL=C awk -F, -v mode="${DEPLO
         host = substr(host, 1, RSTART - 1)
         if (port != (secure ? 443 : 80)) host = host ":" port
       }
-      if (!seen[host]++) print host
+      key = (secure ? "https://" : "http://") host
+      if (!seen[key]++) print key
     }
   }
-'); then
-  echo 'PUBLIC_ORIGIN(S) must contain HTTP origins without paths or credentials (HTTPS in remote mode)' >&2
+'
+}
+if ! normalized_public=$(canonical_origins "$origins" "${DEPLOYMENT_MODE:-local}"); then
+  echo 'PUBLIC_ORIGIN(S) must contain valid HTTP origins' >&2
   exit 1
 fi
+public_hosts=$(printf '%s\n' "$normalized_public" | sed 's|^https*://||')
 public_hosts=$(
   for host in $public_hosts; do
     canonical_host "$host" || exit 1
@@ -88,8 +94,15 @@ case "$ws" in
   wss://*|https://*) default_port=443 ;;
   *) echo 'Invalid public WebSocket URL' >&2; exit 1 ;;
 esac
+if [ "${DEPLOYMENT_MODE:-local}" = remote ] && [ "$default_port" -ne 443 ]; then
+  echo 'Remote WebSocket URL must use TLS' >&2
+  exit 1
+fi
+case "${ws#*://}" in
+  *\?*|*\#*|*/*[!/]*) echo 'Invalid public WebSocket URL path' >&2; exit 1 ;;
+esac
 authority=${ws#*://}
-authority=${authority%%[/?#]*}
+authority=${authority%/}
 # Браузер прибирає початкові нулі, а порт за замовчуванням узагалі не надсилає в Host.
 if ! authority=$(printf '%s\n' "$authority" | LC_ALL=C awk -v default_port="$default_port" '
   NR != 1 || $0 !~ /^([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(:[0-9]+)?$/ { exit 1 }
@@ -123,3 +136,23 @@ fi
 [ "$authority" = 127.0.0.1:3001 ] || printf '  "%s" 1;\n' "$authority" >> "$temporary"
 printf '}\nmap "$exchange_public_host:$exchange_ws_host" $exchange_engine_host {\n  default 1;\n  "0:0" 0;\n}\n' >> "$temporary"
 mv "$temporary" /etc/nginx/conf.d/10-public-hosts.conf
+
+# CORS використовує канонічні origins, як URL.origin у застосунках.
+if ! cors_origins=$(canonical_origins "${CORS_ORIGINS:?CORS_ORIGINS is required}" "${DEPLOYMENT_MODE:-local}"); then
+  echo 'CORS_ORIGINS must contain valid HTTP origins' >&2
+  exit 1
+fi
+cors_origins=$(
+  for origin in $cors_origins; do
+    authority=$(canonical_host "${origin#*://}") || exit 1
+    printf '%s://%s\n' "${origin%%://*}" "$authority"
+  done
+)
+cors_origins=$(printf '%s\n' "$cors_origins" | LC_ALL=C awk '!seen[$0]++')
+temporary=$(mktemp /etc/nginx/conf.d/.cors-origins.XXXXXX)
+printf 'map $http_origin $engine_cors_origin {\n  default "";\n' > "$temporary"
+for origin in $cors_origins; do
+  printf '  "%s" "%s";\n' "$origin" "$origin" >> "$temporary"
+done
+printf '}\n' >> "$temporary"
+mv "$temporary" /etc/nginx/conf.d/11-cors-origins.conf

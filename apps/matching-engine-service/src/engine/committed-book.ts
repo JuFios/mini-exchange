@@ -1,3 +1,4 @@
+import { boundedRead } from '../database/bounded-read';
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { ConcurrencyLimit } from '../database/concurrency-limit';
@@ -22,12 +23,16 @@ export class CommittedBook extends ConcurrencyLimit {
   }
 
   /** `started` викликається, коли читання отримало слот: snapshot PG береться вже після нього. */
-  read(instrument: string, limit = BOOK_DEPTH, started?: () => void) {
+  read(
+    instrument: string,
+    limit = BOOK_DEPTH,
+    started?: () => void,
+    signal = AbortSignal.timeout(3000),
+  ) {
     return this.run(() => {
       started?.();
-      return this.source.transaction('REPEATABLE READ', async (db) => {
-        await db.query('SET TRANSACTION READ ONLY');
-        const [state] = await db.query(
+      return boundedRead(this.source, signal, async (db) => {
+        const [state] = await db.query<{ last_applied_seq: string; legacy_verified: boolean }>(
           'SELECT last_applied_seq,legacy_verified FROM instrument_state WHERE instrument=$1',
           [instrument],
         );
@@ -35,7 +40,7 @@ export class CommittedBook extends ConcurrencyLimit {
           throw new ServiceUnavailableException({ code: 'INSTRUMENT_HALTED' });
         // Обидві сторони читає один snapshot; сортування й LIMIT виконує PG.
         const side = (name: 'buy' | 'sell', direction: 'DESC' | 'ASC'): Promise<Level[]> =>
-          db.query(
+          db.query<Level>(
             `SELECT price,sum(remaining_quantity)::text AS quantity,count(*)::int AS orders
             FROM orders WHERE instrument=$1 AND side=$2 AND status IN ('open','partially_filled')
             GROUP BY price ORDER BY price ${direction} LIMIT $3`,
@@ -46,11 +51,14 @@ export class CommittedBook extends ConcurrencyLimit {
         const pick = ({ price, quantity, orders }: Level) => ({ price, quantity, orders });
         return {
           instrument,
-          seq: state.last_applied_seq,
+          seq: String(state.last_applied_seq),
           bids: bids.map(pick),
           asks: asks.map(pick),
         };
       });
+    }).catch((error: unknown) => {
+      if (signal.aborted) throw new ServiceUnavailableException({ code: 'BOOK_UNAVAILABLE' });
+      throw error;
     });
   }
 }

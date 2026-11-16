@@ -13,7 +13,7 @@ let fake: FakeSettlement;
 let url: string;
 
 beforeEach(async () => {
-  fake = new FakeSettlement(process.env.INTERNAL_API_TOKEN!);
+  fake = new FakeSettlement(process.env.RESERVATION_API_TOKEN!);
   url = await fake.start();
 });
 
@@ -26,7 +26,7 @@ function settings(intervalMs = 100): Partial<EngineEnv> {
     ENGINE_WORKER_ENABLED: false,
     ORDER_SYNC_WAIT_MS: 20,
     RESERVATIONS_ENABLED: true,
-    RESERVATION_SWEEP_AFTER_MS: 500,
+    RESERVATION_SWEEP_AFTER_MS: 8000,
     RESERVATION_SWEEP_INTERVAL_MS: intervalMs,
     RESERVATION_TIMEOUT_MS: 500,
     SETTLEMENT_URL: url,
@@ -114,6 +114,15 @@ function repeat(token: string) {
   return engine.request('/orders', 'POST', token, body, { 'Idempotency-Key': key });
 }
 
+async function makeDue(orderId: string) {
+  // Перевіряємо швидкість recovery вже простроченого резерву, не порушуючи env-бюджет.
+  await engine
+    .database()
+    .query("UPDATE order_requests SET created_at=now()-interval '30 seconds' WHERE order_id=$1", [
+      orderId,
+    ]);
+}
+
 it('retries a reserved request after SIGKILL with the same order and one command', async () => {
   const token = await engine.register();
   const orderId = await crashAfterReserve(token);
@@ -130,6 +139,7 @@ it('retries a reserved request after SIGKILL with the same order and one command
 it('expires an abandoned reservation within two seconds and rejects a delayed replay', async () => {
   const token = await engine.register();
   const orderId = await crashAfterReserve(token);
+  await makeDue(orderId);
   await engine.restart(settings());
   await waitFor(async () => (await state(orderId)).status === 'expired', 2000);
   expect(fake.releaseIds).toEqual([orderId]);
@@ -142,6 +152,7 @@ it('expires an abandoned reservation within two seconds and rejects a delayed re
 it('retries three release failures from releasing and increments the failure metric three times', async () => {
   const token = await engine.register();
   const orderId = await crashAfterReserve(token);
+  await makeDue(orderId);
   fake.failReleases = 3;
   await engine.restart(settings(200));
   await waitFor(async () => (await state(orderId)).release_attempts === 3, 2000);
@@ -158,6 +169,7 @@ it('retries three release failures from releasing and increments the failure met
 it('resumes an in-flight release after the sweeper is killed and releases once', async () => {
   const token = await engine.register();
   const orderId = await crashAfterReserve(token);
+  await makeDue(orderId);
   fake.failReleases = 3;
   fake.holdRelease = true;
   await withIntakeChild(async (child) => {

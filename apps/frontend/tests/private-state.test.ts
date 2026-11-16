@@ -434,7 +434,9 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       onWallet() {},
     },
     {
-      setTimeout(callback: () => void) {
+      setTimeout(callback: () => void, ms: number) {
+        // Ці тести рухають лише короткі паузи квоти, а не весь бюджет snapshot.
+        if (ms >= 15000) return callback;
         timers.push(callback);
         return callback;
       },
@@ -544,7 +546,9 @@ it('stops the remaining order reads of a snapshot attempt that already failed', 
       onWallet() {},
     },
     {
-      setTimeout(callback: () => void) {
+      setTimeout(callback: () => void, ms: number) {
+        // Ці тести рухають лише короткі паузи квоти, а не весь бюджет snapshot.
+        if (ms >= 15000) return callback;
         timers.push(callback);
       },
       clearTimeout() {},
@@ -762,7 +766,7 @@ function orderReads(statuses: number[]) {
   /** Запускає відкладений повтор і повертає його затримку. */
   const fire = async () => {
     await idle();
-    const [[handle, timer]] = [...timers];
+    const [[handle, timer]] = [...timers].sort((a, b) => a[1].ms - b[1].ms);
     timers.delete(handle);
     timer.callback();
     return timer.ms;

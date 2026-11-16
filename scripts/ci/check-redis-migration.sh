@@ -2,38 +2,27 @@
 # Перевіряє перенесення даних зі старого тому Redis: перервану спробу, зайнятий том і
 # збереження ключа з TTL після перезапуску.
 #
-# Працює у власному Compose-проєкті й видаляє лише його контейнери та томи. Два запуски
-# одночасно не підтримуються: проєкти мають фіксовані імена. Журнали контейнерів
-# зберігаються у виводі до очищення, якщо перевірка впала.
+# Кожен запуск має випадкові project/volume. Журнали зберігаються до cleanup.
 set -eu
 
 cd "$(dirname "$0")/../.."
 
 # Ім’я не береться із зовнішнього оточення: `down -v` нижче не має зачепити чужий проєкт.
-export COMPOSE_PROJECT_NAME=redis-upgrade-smoke
-
-# SIGKILL не виконує trap, тож залишки перерваного запуску прибираємо на старті.
-# Контейнер-утримувач тримає том, тож його видаляємо раніше за Compose-проєкти.
-holder_label=ci.check=redis-migration-holder
-leftover=$(docker ps -aq --filter "label=$holder_label")
-if [ -n "$leftover" ]; then
-  # shellcheck disable=SC2086
-  docker rm -f $leftover >/dev/null
-fi
-docker compose -p redis-upgrade-source down -v --remove-orphans >/dev/null 2>&1 || true
-docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+export COMPOSE_PROJECT_NAME="redis-upgrade-$(openssl rand -hex 6)"
+source_project="$COMPOSE_PROJECT_NAME-source"
+holder_label="ci.check=$COMPOSE_PROJECT_NAME-holder"
 
 fixture=$(mktemp -d)
 holder=
 source_compose() {
-  docker compose -p redis-upgrade-source -f "$fixture/compose.yml" "$@"
+  docker compose -p "$source_project" -f "$fixture/compose.yml" "$@"
 }
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
-    for project in redis-upgrade-source redis-upgrade-smoke; do
+    for project in "$source_project" "$COMPOSE_PROJECT_NAME"; do
       echo "::group::Compose project $project"
-      if [ "$project" = redis-upgrade-source ]; then
+      if [ "$project" = "$source_project" ]; then
         source_compose ps -a || true
         source_compose logs --no-color --tail=200 || true
       else
@@ -109,3 +98,12 @@ docker compose exec -T redis sh -ec '
 printf 'Redis startup removed the ACL file left by an interrupted start\n'
 test "$(docker compose exec -T redis redis-cli -e --raw GET smoke:upgrade)" = preserved
 test "$(docker compose exec -T redis redis-cli -e --raw TTL smoke:upgrade)" -gt 0
+
+if docker run --rm -v "$volume:/data" redis:7-alpine sh -ec 'exec 9</data; flock -n 9'; then
+  echo 'A second server acquired the live Redis volume' >&2
+  exit 1
+fi
+docker compose kill -s SIGKILL redis
+docker compose up -d --wait --wait-timeout 60 redis
+test "$(docker compose exec -T redis redis-cli -e --raw GET smoke:upgrade)" = preserved
+printf 'Redis lifetime lock and AOF restart after SIGKILL: passed\n'

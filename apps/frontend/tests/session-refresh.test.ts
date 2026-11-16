@@ -210,6 +210,20 @@ describe('client session refresh', () => {
     assert.equal(refreshes().length, 1);
   });
 
+  it('cancels a read even while the shared refresh has not returned', async () => {
+    let finish!: (response: Response) => void;
+    const { refreshes } = backend(() => new Promise((resolve) => (finish = resolve)));
+    login();
+    const controller = new AbortController();
+    const read = api().checkedFetch('/api/engine/orders', { signal: controller.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await assert.rejects(read, { name: 'AbortError' });
+    assert.equal(refreshes().length, 1);
+    finish(new Response(null, { status: 204 }));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
   it('goes to the sign-in page only when the refresh says the session is gone', async () => {
     const assign = login();
     const { signal } = new AbortController();

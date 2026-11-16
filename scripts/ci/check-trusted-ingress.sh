@@ -4,7 +4,8 @@ cd "$(dirname "$0")/../.."
 
 fixture=$(mktemp -d)
 prefix="exchange-ingress-$(openssl rand -hex 6)"
-image=nginx:1.28.0-alpine
+image=$(awk '$1 == "image:" && $2 ~ /^nginx:/ {print $2}' docker-compose.yml)
+test -n "$image"
 cleanup() {
   status=$?
   if [ "$status" -ne 0 ]; then
@@ -51,7 +52,8 @@ address() {
 docker run -d --name "$prefix-ingress" --network "$prefix" --network-alias trusted-ingress \
   -e "TRUSTED_TLS_PROXY_IP=$(address "$prefix-edge")" -e 'NGINX_ENVSUBST_FILTER=^TRUSTED_TLS_PROXY_IP$' \
   -e DEPLOYMENT_MODE=remote -e PUBLIC_ORIGIN=HTTPS://EXCHANGE.Example.Test:443 \
-  -e ENGINE_PUBLIC_WS_URL=WSS://WS.Example.Test:0443/socket.io \
+  -e CORS_ORIGINS=https://exchange.example.test \
+  -e ENGINE_PUBLIC_WS_URL=WSS://WS.Example.Test:0443/ \
   -e INGRESS_TOKEN=ci-only-ingress-token-value-000001 \
   -e FRONTEND_PROXY_TOKEN=ci-only-frontend-token-value-00001 \
   -v "$PWD/deploy/nginx/real-ip.conf.template:/etc/nginx/templates/real-ip.conf.template:ro" \
@@ -97,12 +99,14 @@ printf 'Public hosts: default port removed, case normalized, duplicates removed,
 
 docker exec -e DEPLOYMENT_MODE=local -e PUBLIC_ORIGIN= \
   -e 'PUBLIC_ORIGINS=http://[2001:0db8:0:0:0:0:0:1]:0080,http://[2001:db8::1]' \
-  -e 'ENGINE_PUBLIC_WS_URL=wss://[2001:0db8:0:0:0:0:0:2]:00443/socket.io' \
+  -e 'CORS_ORIGINS=http://[2001:0db8:0:0:0:0:0:1]:0080/,http://[2001:db8::1]' \
+  -e 'ENGINE_PUBLIC_WS_URL=wss://[2001:0db8:0:0:0:0:0:2]:00443/' \
   "$prefix-ingress" /docker-entrypoint.d/16-check-public-origins.sh
 docker exec "$prefix-ingress" nginx -t
 docker exec "$prefix-ingress" sh -ec '
   test "$(grep -cF \"[2001:db8::1]\" /etc/nginx/conf.d/10-public-hosts.conf)" = 1
   grep -qF \"[2001:db8::2]\" /etc/nginx/conf.d/10-public-hosts.conf
+  test "$(grep -cF http://[2001:db8::1] /etc/nginx/conf.d/11-cors-origins.conf)" = 1
 '
 
 if docker exec -e TRUSTED_TLS_PROXY_IP=0.0.0.0/0 "$prefix-ingress" \

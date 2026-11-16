@@ -909,3 +909,21 @@ describe('market book synchronization', () => {
     assert.deepEqual(state.books.at(-1)?.asks, [level(101)]);
   });
 });
+
+it('reconnects a silent transport within a bounded heartbeat budget', () => {
+  const state = start();
+  state.socket.fire('connect');
+  state.socket.accept(BOOK);
+  state.clock.tick(8000);
+  assert.equal(state.statuses.at(-1), 'stale');
+  state.clock.tick(RETRY_MAX_MS);
+  assert.equal(state.socket.disconnects, 1);
+  assert.equal(state.statuses.at(-1), 'reconnecting');
+  state.clock.tick(RETRY_MIN_MS);
+  assert.equal(state.socket.connects, 1);
+  state.socket.fire('connect');
+  state.socket.accept(BOOK);
+  assert.equal(state.statuses.at(-1), 'live');
+  state.stop();
+  assert.equal(state.clock.pending, 0);
+});

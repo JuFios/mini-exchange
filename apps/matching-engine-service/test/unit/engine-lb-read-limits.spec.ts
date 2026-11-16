@@ -102,6 +102,8 @@ it('limits non-order engine connections per client below the shared ceiling', ()
     'engine_rest_by_client=$engine_rest_client',
     'engine_rest_total=$engine_rest_scope',
     'engine_ws_by_ip=$binary_remote_addr',
+    'frontend_active_by_client=$binary_remote_addr',
+    'frontend_active_total=$server_name',
   ]);
   const limits = [...config.matchAll(/^ +limit_conn (engine_rest\w*) (\d+);$/gm)].map(
     ([, zone, value]) => `${zone} ${value}`,

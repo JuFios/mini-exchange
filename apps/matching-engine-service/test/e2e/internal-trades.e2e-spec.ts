@@ -3,7 +3,7 @@ import { waitFor } from '../helpers/wait-for';
 import { engineApp } from './engine-app';
 
 const api = engineApp();
-const token = () => process.env.INTERNAL_API_TOKEN!;
+const token = () => process.env.RECONCILIATION_TOKEN!;
 const window = 'from=2000-01-01T00:00:00.000Z&to=2099-01-01T00:00:00.000Z';
 const internal = (query: string, headers: Record<string, string> = {}) =>
   api.request(`/internal/trades?${window}${query}`, 'GET', undefined, undefined, headers);
@@ -80,6 +80,7 @@ it('filters by instrument and period and rejects malformed parameters', async ()
     '&after=x',
     '&extra=1',
     '&after=2026-13-45T00:00:00.000Z,5a0a6d70-000e-4e19-a8b6-3cb26021396e',
+    '&after=2026-02-29T00:00:00.000Z,5a0a6d70-000e-4e19-a8b6-3cb26021396e',
   ])
     expect((await internal(query, headers)).status).toBe(400);
   expect(

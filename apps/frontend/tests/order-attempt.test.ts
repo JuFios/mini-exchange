@@ -81,3 +81,23 @@ it('keeps a separate retry key for each different order after a gateway failure'
   assert.equal(new Set(keys.slice(0, 5)).size, 5);
   assert.equal(keys[5], keys[0]);
 });
+
+it('retains the same key after an incomplete successful acknowledgement', async () => {
+  answers = [() => Response.json({ order: { version: 1 } }, { status: 201 }), pending('accepted')];
+  await assert.rejects(send());
+  await send();
+  assert.equal(keys[0], keys[1]);
+});
+
+it('retains a retry key when sessionStorage is unavailable', async () => {
+  Reflect.deleteProperty(globalThis, 'sessionStorage');
+  answers = [
+    () => {
+      throw new Error('Connection reset after acceptance');
+    },
+    pending('accepted'),
+  ];
+  await assert.rejects(send());
+  await send();
+  assert.equal(keys[0], keys[1]);
+});

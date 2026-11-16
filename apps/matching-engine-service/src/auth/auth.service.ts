@@ -159,8 +159,12 @@ export class AuthService {
     await this.revokeSession(claims);
   }
 
-  isSessionActive(userId: string, sid: string): Promise<boolean> {
-    return this.users.existsBy({ id: userId, refreshSessionId: sid });
+  isSessionActive(userId: string, sid: string, adminEmail?: string): Promise<boolean> {
+    return this.users.existsBy({
+      id: userId,
+      refreshSessionId: sid,
+      ...(adminEmail !== undefined && { email: adminEmail, adminSeeded: true }),
+    });
   }
 
   /**

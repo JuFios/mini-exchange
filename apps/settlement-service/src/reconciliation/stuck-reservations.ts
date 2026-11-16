@@ -54,7 +54,7 @@ export function stuckReservations(
  * Пам'ять обмежена сторінкою; у список потрапляє не більше `limit` розбіжностей, але рахуються всі.
  */
 export async function scanStuckReservations(
-  db: EntityManager,
+  db: Pick<EntityManager, 'query'>,
   engine: Pick<EngineOrdersClient, 'terminal'>,
   context: { instrument?: string; now: number; graceMs: number; limit: number },
 ): Promise<{ count: number; found: Discrepancy[] }> {
@@ -111,7 +111,7 @@ export function unreservedOrders(
 
 /** Проходить сторінками книгу engine і шукає заявки без належного забезпечення. */
 export async function scanUnreservedOrders(
-  db: EntityManager,
+  db: Pick<EntityManager, 'query'>,
   engine: Pick<EngineOrdersClient, 'live'>,
   context: { instrument?: string; now: number; graceMs: number; limit: number },
 ): Promise<{ count: number; found: Discrepancy[] }> {

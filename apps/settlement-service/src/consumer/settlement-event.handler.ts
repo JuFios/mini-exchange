@@ -1,3 +1,6 @@
+import { EngineOutboxClient } from './engine-outbox.client';
+import { DataSource } from 'typeorm';
+import { ASSETS } from '../ledger/amount';
 import { traced } from '../observability/trace-context';
 import { Injectable, Logger } from '@nestjs/common';
 import { ReservationsService } from '../reservations/reservations.service';
@@ -17,11 +20,41 @@ export class SettlementEventHandler {
     private readonly wallets: WalletReader,
     private readonly publisher: WalletPublisher,
     private readonly stats: SettlementStats,
+    private readonly outbox: EngineOutboxClient,
+    private readonly source: DataSource,
   ) {}
+
+  async recover(stopped: () => boolean): Promise<void> {
+    this.stats.durableBacklog = 0;
+    for (const instrument of ASSETS.filter((asset) => asset !== 'USD')) {
+      if (stopped()) return;
+      const [progress]: { position: string }[] = await this.source.query(
+        'SELECT position FROM settlement_progress WHERE instrument=$1',
+        [instrument],
+      );
+      const events = await this.outbox.page(instrument, progress?.position ?? '0');
+      this.stats.durableBacklog += events.length;
+      for (const event of events) {
+        if (stopped()) return;
+        await this.handle(`outbox:${event.position}`, event.envelope);
+        // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
+        // Кожен прохід підтверджує лише свій повністю оброблений префікс.
+        await this.source.query(
+          `INSERT INTO settlement_progress(instrument,position) VALUES($1,$2)
+           ON CONFLICT(instrument) DO UPDATE
+           SET position=GREATEST(settlement_progress.position,EXCLUDED.position),
+               updated_at=clock_timestamp()`,
+          [instrument, event.position],
+        );
+      }
+    }
+    this.stats.recoveryLastSuccess = Date.now() / 1000;
+  }
 
   /** Повертається лише після COMMIT і публікації wallet.updated: після цього запис можна підтверджувати. */
   async handle(streamId: string, envelope: string | undefined): Promise<void> {
-    const event = parseSettlementEvent(envelope);
+    const canonical = await this.outbox.event(envelope);
+    const event = parseSettlementEvent(canonical.envelope);
     if (event.type === 'order.closed') {
       const { orderId, releasedAmount, userId, releasedAsset } = event.closed;
       await this.reservations.release(orderId, BigInt(releasedAmount), false, {

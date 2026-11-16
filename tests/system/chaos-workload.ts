@@ -124,7 +124,7 @@ function walletUpdates(redis: string, entryId: string): string[] {
     end
     return matches
   `;
-  return JSON.parse(redisCommand(redis, 'EVAL_RO', script, '1', 'exchange:user-events', entryId));
+  return JSON.parse(redisCommand(redis, 'EVAL_RO', script, '1', 'exchange:wallet-events', entryId));
 }
 
 async function arm(fault: Fault, admin: string, service: string, redis: string, old: Owner) {

@@ -1,3 +1,4 @@
+import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
 import { ReservationsService } from '../../src/reservations/reservations.service';
 import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
@@ -20,8 +21,19 @@ const reserve = (
     .send({ reservationId, userId, asset, amount, instrument, limitPrice });
 const release = (id: string) =>
   api().post(`/internal/reservations/${id}/release`).set('x-internal-token', internalToken);
-const settle = (trade: object) =>
-  api().post('/trades/settle').set('x-internal-token', internalToken).send(trade);
+const settle = (trade: object) => {
+  jest.spyOn(ledger.app().get(EngineOutboxClient), 'trade').mockResolvedValue({
+    position: '1',
+    envelope: JSON.stringify({
+      eventId: randomUUID(),
+      version: 1,
+      type: 'trade.executed',
+      producer: 'matching-engine',
+      payload: trade,
+    }),
+  });
+  return api().post('/trades/settle').set('x-internal-token', internalToken).send(trade);
+};
 
 it('requires the internal token on all settlement mutation routes', async () => {
   const paths = [

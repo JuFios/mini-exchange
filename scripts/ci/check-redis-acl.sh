@@ -32,9 +32,13 @@ allow engine XADD 'exchange:settlement:{ABC}' '*' envelope test
 allow settlement XREADGROUP GROUP settlement probe STREAMS 'exchange:settlement:{ABC}' '>'
 allow settlement XACK 'exchange:settlement:{ABC}' settlement 1-0
 allow settlement XADD exchange:dlq '*' envelope test
-allow settlement XADD exchange:user-events '*' envelope test
+allow settlement XADD exchange:wallet-events '*' envelope test
 deny settlement XADD 'exchange:settlement:{ABC}' '*' envelope test
 deny settlement SET 'lease:instrument:{ABC}' value
 deny settlement DEL 'exchange:limit:acl-probe'
 deny engine DEL 'exchange:settlement:{ABC}'
-printf 'Redis ACL: 2 role logins, 8 allowed operations, 10 denied operations, no plaintext admin password\n'
+allow engine XREAD STREAMS 'exchange:market:{ABC}' exchange:user-events exchange:wallet-events 0-0 0-0 0-0
+deny engine XADD exchange:wallet-events '*' envelope test
+deny settlement XADD exchange:user-events '*' envelope test
+deny settlement XADD 'exchange:market:{ABC}' '*' envelope test
+printf 'Redis ACL: 2 role logins, 9 allowed operations, 13 denied operations, no plaintext admin password\n'

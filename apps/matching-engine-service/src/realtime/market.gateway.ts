@@ -170,15 +170,26 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   private snapshot(instrument: string): Promise<BookSnapshot> {
     const waiting = this.batches.get(instrument);
     if (waiting) return waiting;
+    const signal = AbortSignal.timeout(3000);
     const close = () => {
       if (this.batches.get(instrument) === batch) this.batches.delete(instrument);
     };
-    const batch: Promise<BookSnapshot> = (this.reading.get(instrument) ?? Promise.resolve()).then(
-      () => this.book.read(instrument, undefined, close),
-    );
+    let abort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(new ServiceUnavailableException({ code: 'BOOK_UNAVAILABLE' }));
+      signal.addEventListener('abort', abort, { once: true });
+    });
+    const reading = (this.reading.get(instrument) ?? Promise.resolve()).then(() => {
+      signal.throwIfAborted();
+      return this.book.read(instrument, undefined, close, signal);
+    });
+    const batch: Promise<BookSnapshot> = Promise.race([reading, cancelled]);
     this.batches.set(instrument, batch);
-    // Відмова до отримання слота (`BOOK_BUSY`) теж закриває пачку.
-    const tail = batch.then(close, close);
+    const finish = () => {
+      close();
+      signal.removeEventListener('abort', abort);
+    };
+    const tail = batch.then(finish, finish);
     this.reading.set(instrument, tail);
     void tail.then(() => {
       if (this.reading.get(instrument) === tail) this.reading.delete(instrument);

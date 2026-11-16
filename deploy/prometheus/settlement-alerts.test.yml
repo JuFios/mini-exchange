@@ -2,6 +2,16 @@
 rule_files: [settlement-alerts.yml]
 evaluation_interval: 1m
 tests:
+  # Pending лишається старим після reclaim, навіть коли недоставлених записів немає.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s"}'
+        values: '0x12'
+      - series: 'settlement_oldest_pending_age_seconds'
+        values: '120+60x12'
+    alert_rule_test:
+      - { eval_time: 4m, alertname: SettlementPendingStuck, exp_alerts: [] }
+      - { eval_time: 6m, alertname: SettlementPendingStuck, exp_alerts: [{ exp_labels: {} }] }
   # Короткий backlog нової серії (3 хв) не будить нікого: обіцяно 10 хвилин.
   - interval: 1m
     input_series:

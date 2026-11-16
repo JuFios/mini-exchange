@@ -27,7 +27,12 @@ export function toPeriod(query: ReconciliationQuery): Period {
     throw new BadRequestException('Некоректні параметри звірки');
   const from = query.from ?? EPOCH;
   const to = query.to ?? new Date().toISOString();
-  if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to)) || from >= to)
+  if (
+    [from, to].some(
+      (value) => !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value,
+    ) ||
+    from >= to
+  )
     throw new BadRequestException('Некоректний період звірки');
   return { from, to, ...(query.instrument && { instrument: query.instrument }) };
 }

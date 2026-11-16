@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { engineApp } from './engine-app';
 
 const api = engineApp();
-const token = () => process.env.INTERNAL_API_TOKEN!;
+const token = () => process.env.RECONCILIATION_TOKEN!;
 const lookup = (body: unknown, headers: Record<string, string> = {}) =>
   api.request('/internal/orders/terminal', 'POST', undefined, body, headers);
 const authorized = () => ({ 'x-internal-token': token() });

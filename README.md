@@ -4,6 +4,12 @@
 інструменти `ABC` і `XYZ` з котируванням у USD. Matching engine зіставляє їх за price-time
 priority, а окремий сервіс розрахунків переносить кошти за кожною угодою рівно один раз.
 
+Поточний підтримуваний режим — ізольована навчальна демонстрація із синтетичними даними,
+довіреними тестувальниками та окремим профілем браузера. Локальні порти прив’язані до loopback;
+remote-профіль використовуйте лише за VPN або мережевим allowlist. Node20 і Next14 збережено
+для сумісності зі starter. Для публічного сервісу, недовірених користувачів або цінних даних
+спершу потрібне окреме рішення щодо [залишкових обмежень](#залишкові-обмеження-демонстрації).
+
 | Компонент | Роль |
 |---|---|
 | `apps/matching-engine-service` (NestJS, дві репліки) | Автентифікація, прийом і скасування заявок, зіставлення, self-trade prevention, WebSocket `/market`, `/private` і застарілий `/` |
@@ -278,7 +284,7 @@ JSON-чисел перевіряється запис із тіла запиту
   settlement — за `tradeId` (первинний ключ у ledger).
 - Settlement не залежить від порядку між записами: усі операції з резервом комутативні.
 - Розгортання розраховане на один Redis без Cluster з AOF і `noeviction`. Втрачений хвіст
-  stream відтворюється з outbox через redrive.
+  stream автоматично відтворюється з committed outbox; redrive лишається операторським повтором.
 
 ## Володіння інструментом і failover
 
@@ -484,7 +490,7 @@ docker compose up -d --build --wait --wait-timeout 240
 |---|---|
 | Недостатній баланс | 422, номер команди не видається |
 | Результат невідомий після трьох спроб (повторюються лише збій мережі, 5xx і 429) | 503 |
-| Інша відповідь settlement, наприклад 401 через різні `INTERNAL_API_TOKEN` | 500 без повтору; у журналі `reservation_request_refused` зі статусом |
+| Інша відповідь settlement, наприклад 401 через різні `RESERVATION_API_TOKEN` | 500 без повтору; у журналі `reservation_request_refused` зі статусом |
 | Сапер уже почав звільнення простроченого резерву | 409 `REQUEST_EXPIRED` на повтор |
 
 Після 503 чи 500 повторіть запит з тим самим `Idempotency-Key`.
@@ -1895,7 +1901,7 @@ HTTP-ліміти engine спільні для реплік (лічильник�
 з `Retry-After: 1` і JSON `{"statusCode":429,"message":"Забагато запитів"}` на всіх трьох listener,
 зокрема для `limit_conn` на HTTP-маршрутах і `/socket.io/`. Відмови видно в access log, рядків error
 log на кожну немає. На `:8080` адресою клієнта вважається адреса з `X-Forwarded-For`, яку передає
-frontend. Заявки, скасування, `/health`, `/ready` і внутрішня перевірка сесії `:8080` під ліміти
+frontend. Заявки, скасування, `/health` і внутрішня перевірка сесії `:8080` під ліміти
 читань не потрапляють.
 
 **Вхід.** Спроба списується до bcrypt, тож паралельні запити не обходять межу. Вона повертається
@@ -2063,7 +2069,7 @@ engine, як і раніше, не більше 64 на обидва listener р
   передаються.
 - **Redis ACL.** Redis має різні users `engine` і `settlement` з різними паролями. Engine працює з
   lease, лічильниками та своїми streams. Settlement читає й підтверджує settlement streams, а пише
-  лише DLQ і `exchange:user-events`, тож підробити upstream `order.closed` або `trade.executed` цими
+  лише DLQ і `exchange:wallet-events`, тож підробити upstream `order.closed` або `trade.executed` цими
   правами не можна. Обидва users не мають `FLUSHALL`, `CONFIG SET` чи `ACL`. Окремий admin-пароль
   `REDIS_PASSWORD` лишається лише в Redis і операторських перевірках; його значення не зберігається
   в `requirepass`, ACL містить SHA-256 хеші. У remote engine і settlement відхиляють
@@ -2072,7 +2078,7 @@ engine, як і раніше, не більше 64 на обидва listener р
 - **Резерви.** `order.closed` звіряє user і asset з резервом перед release. Звірка також порівнює
   живі заявки engine (`/internal/orders/live`) з активними резервами й журналом. `unreserved_order`
   позначає живу заявку з відсутнім або передчасно звільненим резервом, включно з частковим release.
-  Streams не підписані: Redis admin і host лишаються довіреною межею.
+  Settlement використовує зі stream лише eventId: payload читається з committed outbox engine через окремий credential. Сам запис у Redis не дозволяє провести іншу фінансову операцію. Engine, PostgreSQL і host лишаються довіреною межею.
 
 ### Frontend: заголовки й сесія
 
@@ -2124,7 +2130,7 @@ engine, як і раніше, не більше 64 на обидва listener р
 тестовій БД, бо відкат початкової міграції видаляє таблиці та їхні дані.
 
 Для settlement поза Compose задайте `LEDGER_DATABASE_*`, адресу Redis і `REDIS_PASSWORD`, власні
-`INTERNAL_API_TOKEN` і `JWT_ACCESS_SECRET` та початкові демобаланси за прикладом
+`RESERVATION_API_TOKEN` і `JWT_ACCESS_SECRET` та початкові демобаланси за прикладом
 `apps/settlement-service/.env.example`. У каталозі settlement виконайте
 `npm ci` і `npm run migration:run` перед `npm run start:dev`. У конфігурації engine
 вкажіть доступний `SETTLEMENT_URL` і той самий внутрішній токен. Для доступу до
@@ -2145,7 +2151,7 @@ Bootstrap використовує чинну адміністративну р�
 `docker-compose.remote.yml` з TLS-проксі на тому самому хості.
 
 Override зберігає прив'язку портів Compose до loopback і вимагає власні `JWT_ACCESS_SECRET`,
-`JWT_REFRESH_SECRET`, `ADMIN_EMAILS`, `ADMIN_PASSWORD`, `INTERNAL_API_TOKEN`, `POSTGRES_PASSWORD`,
+`JWT_REFRESH_SECRET`, `ADMIN_EMAILS`, `ADMIN_PASSWORD`, `RESERVATION_API_TOKEN`, `RECONCILIATION_TOKEN`, `OUTBOX_READ_TOKEN`, `POSTGRES_PASSWORD`,
 `ENGINE_DB_PASSWORD`, `LEDGER_DB_PASSWORD`, `REDIS_PASSWORD`, `CORS_ORIGINS` та адресу WebSocket,
 доступну браузеру. Він передає секрети реплікам, settlement і службам запуску за їхніми ролями.
 Використовуйте окремий Compose-проєкт із власними томами й адресою адміністратора, щоб віддалений
@@ -2157,7 +2163,9 @@ export JWT_ACCESS_SECRET="$(openssl rand -hex 32)"
 export JWT_REFRESH_SECRET="$(openssl rand -hex 32)"
 export ADMIN_EMAILS=admin@exchange.example.com
 export ADMIN_PASSWORD="$(openssl rand -hex 24)"
-export INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
+export RESERVATION_API_TOKEN="$(openssl rand -hex 32)"
+export RECONCILIATION_TOKEN="$(openssl rand -hex 32)"
+export OUTBOX_READ_TOKEN="$(openssl rand -hex 32)"
 export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
 export ENGINE_DB_PASSWORD="$(openssl rand -hex 32)"
 export LEDGER_DB_PASSWORD="$(openssl rand -hex 32)"
@@ -2173,7 +2181,8 @@ export TRUSTED_TLS_PROXY_IP='<IP-адреса TLS-проксі, яку бачи�
 docker compose -p mini-exchange-remote up -d --build --wait --wait-timeout 240
 ```
 
-**Секрети.** Збережіть їх у захищеному сховищі. `INTERNAL_API_TOKEN` має містити 32–1024 видимих
+**Секрети.** Збережіть їх у захищеному сховищі. Три різні ключі `RESERVATION_API_TOKEN`,
+`RECONCILIATION_TOKEN`, `OUTBOX_READ_TOKEN` мають містити 32–1024 видимих
 ASCII-символів без пробілів. Зміна JWT-секретів робить видані токени недійсними. Remote відхиляє
 секрети з `local-only` і локальний пароль PostgreSQL `exchange`. Для повторного запуску з тим самим
 томом використовуйте чинний `POSTGRES_PASSWORD`: змінюйте пароль адміністратора в PostgreSQL перед
@@ -2376,18 +2385,12 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 - Розгортання розраховане на один Redis без Cluster і Sentinel. Без Redis новий submit отримує 503,
   а після спливу lease зупиняється й застосування команд. Прийняте лишається в PostgreSQL і
   застосовується після відновлення Redis.
-- Relay обрізає stream settlement за `STREAM_MAXLEN` так само, як інші stream, без урахування
-  відставання consumer. Якщо settlement відстав більше ніж на `STREAM_MAXLEN` подій (у нашому
-  замірі `MEMORY USAGE` близько 1 КБ на подію, тобто ~1 ГБ), найстаріші непрочитані події зникають
-  зі stream. Звірка показує такі угоди як `missing`, а втрачене `order.closed` — як
-  `stuck_reservation`; redrive відновлює їх з outbox за `tradeIds` або `orderIds`.
-
-  Обрізання лише нижче непідтверджених записів ми перевірили й відкинули. Без межі stream
-  зупиненого settlement ріс би в Redis, який у Compose не має `maxmemory`, аж до OOM хоста. З
-  `maxmemory` і `noeviction` повний Redis відхиляв би команди запису, що можуть додати пам'ять
-  (`denyoom`): лічильники всіх лімітів запитів, публікацію relay і захоплення lease після збою
-  власника, тож зупинилась би вся торгівля. Будь-яка жорстка межа знову дає ту саму втрату, лише за
-  більшої пам'яті. Тож лишаємо межу, а втрату виявляє звірка й виправляє redrive.
+- Relay обмежує Redis Streams через `STREAM_MAXLEN`. Фінансова доставка від цього більше не
+  залежить: settlement кожним циклом читає bounded сторінку committed outbox, проводить її
+  ідемпотентно та записує `settlement_progress` лише після фінансового COMMIT і wallet push.
+  Позиція `settlement_position` незмінна, навіть коли redrive змінює relay id. Падіння перед
+  checkpoint означає повтор. Дві recovery-спроби підтверджують лише власний оброблений префікс.
+  Outbox не можна очищати без окремого протоколу retention і перевіреного архіву.
 - Сокет `/private` відкликаної сесії закривається звіркою раз на 3 с, до 13 с. Спільний Socket.IO
   adapter між репліками дав би миттєве закриття, але це ще одна залежність.
 
@@ -2439,3 +2442,92 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 - Frontend розраховано на Linux-контейнер Compose. Серверна оптимізація зображень вимкнена.
   `npm audit` позначає версії Next.js і транзитивного `tar`. Перед публічним розгортанням потрібна
   окрема перевірка залежностей і перехід на виправлені версії.
+
+
+### Оновлені межі контрактів
+
+- `/ready` доступний лише напряму в backend-мережі; публічний listener повертає 404.
+  Перед створенням нового резерву settlement перевіряє scoped outbox API та реальний доступ
+  consumer до Redis group. Успішна перевірка спільна для конкурентних запитів і кешується 1 с.
+  Нова заявка відмовляє при збої; читання й скасування не залежать від цієї перевірки.
+- `RESERVATION_API_TOKEN` відкриває фінансовий API settlement; `RECONCILIATION_TOKEN` — engine
+  читання для звірки й перевірку сесії; `OUTBOX_READ_TOKEN` — тільки committed outbox і дозвіл
+  компенсації. Старий `INTERNAL_API_TOKEN` не підтримується. Повний release через HTTP потребує
+  стійкого `releasing/expired` intake; settle звіряє payload із committed trade.
+- Перед оновленням зупиніть submit і старий settlement, дочекайтеся relay, збережіть узгоджені
+  копії engine/ledger та вихідний Redis backup. Застосуйте міграції на копії й перевірте баланси,
+  проводки, резерви та звірку. Потім на зупиненому стенді застосуйте міграції, задайте три різні
+  ключі та перезапустіть усі сервіси й Redis ACL. Новий consumer починає recovery з нуля й
+  ідемпотентно підтверджує історію; не відкривайте submit до завершення backlog і перевірки звірки.
+  Rolling upgrade старого фінансового writer не підтримується. Після нових записів відновлюйте
+  роботу з durable прогресу; rollback даних — лише до узгодженого backup обох БД.
+- Ledger upgrade не змінює старі проводки. Невідповідність asset/account або trade/journal
+  зупиняє міграцію до DDL: збережіть БД і розберіть причину, не видаляйте рядки для обходу перевірки.
+  Справжня camelCase-схема starter без migration history зупиняє старт із діагностикою.
+  Зробіть `pg_dump` вихідної БД, перевірте restore в окрему БД і збережіть її; підтримується
+  окремий новий стенд. Автоматичного імпорту незабезпечених legacy-заявок немає.
+- Звірка запускається кнопкою або CLI, має загальний бюджет 30 с, скасування HTTP disconnect,
+  спільний advisory lock та максимум 1000 прикладів розбіжностей. Вона може завершитися 503;
+  великий обсяг потребує вужчого періоду або окремого рішення про асинхронний звіт.
+- Wallet stream відокремлено від order stream. Reader перевіряє stream, producer, type та
+  instrument. Під час cutover перезапустіть reader; приватний REST snapshot відновлює стан.
+  Snapshot і читання невідомої заявки мають бюджет 15 с, черга pending — максимум 1000,
+  паралельні невідомі ID — максимум 8; переповнення починає resync. Остаточний 404 вилучає
+  лише відсутню заявку. Авторитетний reconnect snapshot замінює wallet cache.
+- За відсутності book heartbeat клієнт показує stale через 8 с і починає reconnect ще через
+  2 с зі штатним backoff. WS snapshot включно з pool/чергою обмежений 3 с; завислий PG client
+  знищується. Наступна спроба може перейти на здорову репліку.
+- Невизначений submit, неповний 2xx і недоступний sessionStorage зберігають один ключ наміру
+  в пам’яті вкладки. Після reload без storage такий ключ втрачено: спершу перевірте список заявок.
+- Frontend ingress має межі 32 активні запити на IP і 128 загалом, header/body timeout 10 с.
+  Користувачі за NAT ділять цю квоту. Зовнішній TLS proxy також мусить обмежувати неповні
+  заголовки й з’єднання; одноразовий browser smoke перевіряє реальний HTTPS/WSS шлях.
+- Remote startup відхиляє chaos, вимкнений worker/резерви та неправильну Redis role. Origins
+  канонізуються за scheme/host/default port, один root slash дозволений. Secure cookies
+  потребують HTTPS origin і WSS URL без path/query/hash. Refresh TTL — максимум 30 діб;
+  sweep budget має перевищувати три reserve timeout і 6000 мс для intake транзакцій.
+
+### Залишкові обмеження демонстрації
+
+| Обмеження | Наслідок і запобіжник | Умова перегляду |
+|---|---|---|
+| Node20, Next14 і advisories bcrypt5/tar | Лінійки поза підтримкою; відсутність відомого шляху не доводить безпечність. Лише ізольовані синтетичні стенди, довірені збірки й одноразовий browser profile. CI має точні строкові винятки; нові high/critical блокуються. | Сумісний patch, дозвіл на зміну starter major, строк винятку або потреба публічного/цінного середовища. |
+| Login quota за email | Атакувальник може тимчасово заблокувати правильний пароль. Мережевий allowlist, обмежена група тестувальників, очікування TTL та допомога оператора; нового каналу підтвердження власника немає. | Реальні публічні акаунти, вимога доступності або перевірений recovery-канал. |
+| Звірка двох БД без спільного watermark | Онлайн-звіт може пропустити пізній commit або дати тимчасову розбіжність. Для контрольного звіту зупиніть submit, дочекайтеся виконання команд, relay та durable recovery; повторіть звіт. | Онлайн-аудит, незалежна фінансова сертифікація або реальні кошти. |
+| Неповна звірка атрибутів резервів та orphan intake | Зелене `ok` не доводить правильність user/asset/limit/remaining кожного резерву й відсутність orphan. Підтримуються синтетичні дані, створені чинним API; окремо перевіряйте активні резерви під час restore/cutover. DB constraints та канонічні події запобігають частині пошкоджень. | Імпорт даних, реальний ledger або потреба діагностувати довільне пошкодження. |
+| Немає покоління історії після restore | Гарячий restore може лишити стару стрічку/приватний стан. Restore виконуйте лише із зупинкою всіх writer, Redis/reader та закриттям усіх вкладок; після перевірки обох БД відкривайте новий browser context. | Вимога hot restore без закриття клієнтів або replay між поколіннями. |
+| Втрата refresh-відповіді після COMMIT | Поза grace може знадобитися повторний login; незалежні вкладки також можуть конкурувати. Дані не видаляються. Не повторюйте фінансовий намір із новим ключем до перевірки заявок. | Публічні сесії з вимогою безперервності або окремий протокол ідемпотентної ротації. |
+| HS256 verifier володіє signing secret | Компрометація сервісу цього trust domain дозволяє підписувати токени. Admin додатково звіряється із seeded DB identity та чинною сесією. Settlement й engine розміщуються в одній довіреній ізольованій зоні. | Розділення trust domain, незалежний verifier або публічне розгортання. |
+| Redis volume lock | Перевірений локальний Docker volume з flock; NFS і спільний volume між хостами не підтримуються. Кожен Redis має ексклюзивний volume. | Інше сховище або multi-host розгортання: спершу окремий lock/recovery тест. |
+| Docker socket system runner | Доступ рівня хоста. Локально — тільки власна довірена гілка; CI — одноразова GitHub-hosted VM без production credentials. Shared/self-hosted daemon для недовірених PR не підтримується. | Потреба shared runner: окремий контрольований Docker API proxy або еквівалентна ізоляція. |
+
+Ці обмеження зберігають невиправлені ризики; вони не є гарантією для публічного сервісу.
+Міграція JWT, покоління restore, cross-database snapshot і канал recovery потребують нових
+протоколів, переходу даних та постійного супроводу. Для поточної навчальної демонстрації це
+відкладено до зазначених умов.
+
+### Додаткові перевірки
+
+`node scripts/audit-production.mjs` зберігає production npm audit та відхиляє high/critical
+поза `dependency-audit-exceptions.json`, включно зі зміною версії та закінченням строку.
+Runtime-образи оновлюють Alpine packages і не містять невикористаних npm/yarn.
+`bash scripts/ci/check-runtime-images.sh` сканує фактичні образи запущеного Compose-стека.
+Trivy завантажує базу окремо, а архів образу читає офлайн без Docker socket. Нові high/critical
+або прострочені винятки блокують CI. `IMAGE_AUDIT_LOG_DIR` зберігає звіти за чотирма образами.
+`cd tests/system && npm ci && npx playwright install chromium && npm run remote:smoke` запускає
+власний TLS-стек із двома репліками, перевіряє cookies/CSP/WSS і production private hook після
+kill репліки, зберігає журнали до cleanup та видаляє тільки свої volumes. `TEST_LOG_DIR` задає
+каталог доказів; `BROWSER_EXECUTABLE` дозволяє використати встановлений Chromium.
+
+Метрики settlement: `settlement_oldest_pending_age_seconds` (вік від XADD, не скидається reclaim),
+`settlement_dead_letters`, `settlement_failures`, `settlement_trimmed_pending_total`,
+`settlement_recovery_last_success_timestamp_seconds`, `settlement_durable_backlog` (нижня оцінка,
+до 50 подій на інструмент у поточній сторінці). Алерти працюють і за нульового stream lag.
+При backlog перевірте доступ до outbox API й помилки ledger; payload trim більше не потребує
+ручного redrive за здорового durable recovery. Не очищайте outbox для вимкнення алерта.
+
+Оновлені тести зберігають assertions стану й сум. Fixtures wallet використовують новий stream,
+а interceptor realtime передає source key. Recovery sweeper тестує вже прострочений запис,
+зберігаючи безпечний env budget; 2-секундна межа обробки лишилася. Redrive system тепер перевіряє
+автоматичне відновлення втрачених trade/close та часткового fill+close до ручного повтору.
+Frontend test runner використовує абсолютні шляхи, сумісні з Node20 на macOS і Linux.

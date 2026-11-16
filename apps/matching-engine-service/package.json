@@ -47,13 +47,13 @@
     "@nestjs/swagger": "7.4.2",
     "@nestjs/terminus": "10.3.0",
     "@nestjs/throttler": "6.4.0",
-    "@opentelemetry/api": "1.9.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.215.0",
-    "@opentelemetry/instrumentation-http": "0.215.0",
-    "@opentelemetry/instrumentation-ioredis": "0.63.0",
-    "@opentelemetry/instrumentation-pg": "0.67.0",
-    "@opentelemetry/instrumentation-undici": "0.25.0",
-    "@opentelemetry/sdk-node": "0.215.0",
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.301.2",
+    "@opentelemetry/instrumentation-http": "0.301.2",
+    "@opentelemetry/instrumentation-ioredis": "0.73.0",
+    "@opentelemetry/instrumentation-pg": "0.78.0",
+    "@opentelemetry/instrumentation-undici": "0.35.1",
+    "@opentelemetry/sdk-node": "0.301.2",
     "helmet": "8.3.0",
     "nestjs-pino": "4.6.1",
     "pino": "9.14.0",
@@ -82,14 +82,34 @@
     "prettier": "^3.9.10"
   },
   "overrides": {
-    "@nestjs/config": { "lodash": "^4.18.1" },
-    "@nestjs/platform-express": { "body-parser": "~1.20.9", "multer": "^2.5.0" }
+    "@nestjs/config": {
+      "lodash": "^4.18.1"
+    },
+    "@nestjs/platform-express": {
+      "body-parser": "~1.20.9",
+      "multer": "^2.5.0"
+    },
+    "lodash": "4.18.1",
+    "@nestjs/swagger": {
+      "js-yaml": "^4.3.2",
+      "lodash": "^4.18.1"
+    }
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": ".",
     "testRegex": "\\.spec\\.ts$",
-    "testPathIgnorePatterns": ["/node_modules/", "/test/e2e/", "/test/integration/"],
-    "transform": { "^.+\\.(t|j)s$": "ts-jest" }
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/test/e2e/",
+      "/test/integration/"
+    ],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    }
   }
 }

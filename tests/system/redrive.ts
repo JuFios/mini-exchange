@@ -123,19 +123,9 @@ async function main() {
     docker('unpause', ownerContainer);
     ownerContainer = undefined;
 
-    const lost = await until(
-      reconcile,
-      (report) => report.discrepancies.some(({ type }) => type === 'missing'),
-      20000,
-    );
-    assert.equal(lost.ok, false);
-    assert.deepEqual(
-      lost.discrepancies.filter(({ type }) => type === 'missing').map(({ tradeId }) => tradeId),
-      [tradeId],
-    );
-    const missing = cli();
-    assert.equal(missing.code, 1, 'reconcile must exit 1 while a trade is missing');
-    assert(missing.report.discrepancies.some((d) => d.type === 'missing' && d.tradeId === tradeId));
+    // Stream уже видалено. Durable recovery має завершитися без операторського redrive.
+    const automatic = await until(reconcile, (report) => report.ok && report.counts.matched >= 1);
+    assert.equal(automatic.counts.missing, 0);
 
     const redrive = await request('/admin/outbox/redrive', 'POST', admin, { tradeIds: [tradeId] });
     assert.equal(redrive.status, 200, await redrive.clone().text());
@@ -189,13 +179,8 @@ async function main() {
 
     const stuckOf = (report: Report) =>
       report.discrepancies.filter(({ type }) => type === 'stuck_reservation');
-    const stuck = await until(reconcile, (report) => stuckOf(report).length > 0, 20000);
-    assert.equal(stuck.ok, false);
-    assert.equal(stuck.counts.stuck_reservation, 1);
-    assert.equal(stuckOf(stuck)[0].actual?.reservationId, orderId);
-    const stuckReport = cli();
-    assert.equal(stuckReport.code, 1, 'reconcile must exit 1 while a reservation is stuck');
-    assert.equal(stuckOf(stuckReport.report)[0]?.actual?.reservationId, orderId);
+    const automaticRelease = await until(reconcile, (report) => report.ok);
+    assert.equal(automaticRelease.counts.stuck_reservation, 0);
 
     const release = await request('/admin/outbox/redrive', 'POST', admin, { orderIds: [orderId] });
     assert.equal(release.status, 200, await release.clone().text());
@@ -297,7 +282,6 @@ async function main() {
       30000,
     );
     assert.equal(docker('exec', redis, 'redis-cli', 'DEL', stream), '1');
-    docker('unpause', settlementContainer);
     const partialCancel = await request(`/orders/${partialId}`, 'DELETE', partialMaker);
     assert([200, 202].includes(partialCancel.status), await partialCancel.text());
     await until(
@@ -313,7 +297,11 @@ async function main() {
     );
     const isStuck = (report: Report) =>
       stuckOf(report).some(({ actual }) => actual?.reservationId === partialId);
-    await until(reconcile, isStuck, 20000);
+    // Втрачаємо і fill, і close; порядок відновлюється зі стійких позицій outbox.
+    assert.equal(docker('exec', redis, 'redis-cli', 'DEL', stream), '1');
+    docker('unpause', settlementContainer);
+    const automaticPartial = await until(reconcile, (report) => report.ok && !isStuck(report));
+    assert.equal(automaticPartial.counts.missing, 0);
     const drained = async () =>
       (await (await request('/admin/queue', 'GET', admin, undefined, settlement)).json()) as {
         streams: { lag: number; pending: number }[];
@@ -343,7 +331,7 @@ async function main() {
     await until(drained, ({ streams }) =>
       streams.every(({ lag, pending }) => lag === 0 && pending === 0),
     );
-    assert(isStuck(await reconcile()), 'The order-only redrive must not clear the reservation');
+    assert((await reconcile()).ok, 'An order-only duplicate must preserve the recovered ledger');
 
     // Рецепт README: orderIds разом з tradeIds усіх угод заявки.
     const partialTrades = await tradesOf(partialId);
@@ -365,7 +353,7 @@ async function main() {
       0,
     );
     console.log(
-      `redrive tradeId=${tradeId} missing->ok matched=${repaired.counts.matched} orderId=${orderId} stuck_reservation->ok partialOrderId=${partialId} orders-only=stuck orders+trades->ok`,
+      `durable recovery: lost trade, close and partial fill+close repaired automatically; matched=${repaired.counts.matched}; repeated redrive preserved reconciliation`,
     );
   } catch (error) {
     failure = error;

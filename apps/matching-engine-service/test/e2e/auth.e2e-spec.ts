@@ -113,7 +113,7 @@ it('logs out the current session when its signed refresh token is presented', as
     expect(
       (
         await request('/internal/auth/session', 'GET', accessToken, undefined, {
-          'x-internal-token': process.env.INTERNAL_API_TOKEN!,
+          'x-internal-token': process.env.RECONCILIATION_TOKEN!,
         })
       ).status,
     ).toBe(401);
@@ -158,7 +158,7 @@ it('drops the admin role of issued tokens once the address leaves ADMIN_EMAILS',
   const login = await post('login', { email, password: process.env.ADMIN_PASSWORD! });
   expect(login.status).toBe(201);
   const { accessToken } = (await login.json()) as Tokens;
-  const internal = { 'x-internal-token': process.env.INTERNAL_API_TOKEN! };
+  const internal = { 'x-internal-token': process.env.RECONCILIATION_TOKEN! };
   const adminRoutes = async () => [
     (await request('/admin/instruments', 'GET', accessToken)).status,
     (await request('/admin/outbox/redrive', 'POST', accessToken, { tradeIds: [randomUUID()] }))
@@ -365,4 +365,14 @@ describe('refresh without rotation', () => {
       (await post('refresh', { refreshToken: tokens.refreshToken, rotate: true })).status,
     ).toBe(200);
   });
+});
+
+it('rejects an admin claim whose email does not belong to the active session owner', async () => {
+  const { tokens } = await registerAccount();
+  const decoded = jwt.decode(tokens.accessToken) as Record<string, unknown>;
+  const forged = jwt.sign(
+    { ...decoded, email: 'admin@demo.local', roles: ['admin'] },
+    { secret: process.env.JWT_ACCESS_SECRET, algorithm: 'HS256' },
+  );
+  expect((await request('/admin/instruments', 'GET', forged)).status).toBe(401);
 });

@@ -19,3 +19,18 @@ groups:
         expr: max by (stream) (engine_settlement_group_lag != engine_settlement_group_lag) or
           absent(engine_settlement_group_lag)
         for: 5m
+
+      - alert: SettlementPendingStuck
+        expr: max(settlement_oldest_pending_age_seconds) > 60
+        for: 5m
+      - alert: SettlementDeadLetters
+        expr: max(settlement_failures) > 0 or max(settlement_dead_letters) > 0
+        for: 1m
+      - alert: SettlementPayloadTrimmed
+        expr: sum(increase(settlement_trimmed_pending_total[5m])) > 0
+      - alert: SettlementRecoveryUnavailable
+        expr: time() - max(settlement_recovery_last_success_timestamp_seconds) > 60
+        for: 5m
+      - alert: SettlementDurableBacklog
+        expr: max(settlement_durable_backlog) > 0
+        for: 10m

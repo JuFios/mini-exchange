@@ -9,7 +9,7 @@ import { waitFor } from '../helpers/wait-for';
 import { connect, disconnected, payloads, record } from '../helpers/websocket';
 
 const api = engineApp();
-const USER_EVENTS = 'exchange:user-events';
+const USER_EVENTS = 'exchange:wallet-events';
 const jwt = new JwtService();
 const sockets: Socket[] = [];
 let peer: INestApplication | undefined;

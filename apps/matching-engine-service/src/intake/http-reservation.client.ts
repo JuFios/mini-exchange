@@ -21,7 +21,7 @@ export class HttpReservationClient extends ReservationClient {
   constructor(config: ConfigService) {
     super();
     this.url = config.getOrThrow('SETTLEMENT_URL');
-    this.token = config.getOrThrow('INTERNAL_API_TOKEN');
+    this.token = config.getOrThrow('RESERVATION_API_TOKEN');
     this.timeoutMs = config.getOrThrow('RESERVATION_TIMEOUT_MS');
   }
 

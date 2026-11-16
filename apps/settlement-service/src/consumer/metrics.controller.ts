@@ -26,6 +26,8 @@ export class MetricsController {
   @Header('Content-Type', 'text/plain; version=0.0.4')
   async metrics() {
     const lines = [
+      `settlement_recovery_last_success_timestamp_seconds ${this.stats.recoveryLastSuccess}`,
+      `settlement_durable_backlog ${this.stats.durableBacklog}`,
       ...Object.entries(this.stats.trades).map(
         ([result, count]) => `settlement_trades_total{result="${result}"} ${count}`,
       ),
@@ -37,6 +39,11 @@ export class MetricsController {
     // Недоступний Redis не повинен ховати лічильники процесу.
     const queue = await this.consumer.queue().catch(() => undefined);
     if (queue) {
+      lines.push(
+        `settlement_failures ${queue.failures}`,
+        `settlement_dead_letters ${queue.deadLetters}`,
+        `settlement_oldest_pending_age_seconds ${Math.max(0, ...queue.streams.map((stream) => stream.oldestPendingAgeSeconds))}`,
+      );
       this.pending.set(queue.streams.reduce((sum, { pending }) => sum + pending, 0));
       // null від Redis означає, що lag невідомий (наприклад, після видалення недоставленого
       // запису). Нуль ховав би відставання, тож метрика стає NaN.

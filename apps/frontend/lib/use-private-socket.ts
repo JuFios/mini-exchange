@@ -102,7 +102,12 @@ async function readOrdersById(ids: string[], read: SnapshotRead) {
     // Спроба, що вже впала, скасовує свій signal: решта воркерів не витрачає квоту даремно.
     while (next < ids.length && !read.signal.aborted) {
       const id = ids[next++];
-      orders.push(await readOrders<Order>('/api/engine/orders/' + encodeURIComponent(id), read));
+      try {
+        orders.push(await readOrders<Order>('/api/engine/orders/' + encodeURIComponent(id), read));
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404) || read.signal.aborted)
+          throw error;
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(PARALLEL_ORDER_READS, ids.length) }, worker));
@@ -130,15 +135,26 @@ export function readOrder(
   read: OrderRead,
   clock: Clock = realClock,
 ) {
+  if (signal.aborted) return read.onSettled();
+  const parent = signal;
+  const budget = new AbortController();
+  signal = AbortSignal.any([parent, budget.signal]);
+  const deadline = clock.setTimeout(
+    () => budget.abort(new TypeError('Order read deadline exceeded')),
+    15000,
+  );
   let timer: unknown;
   let delay = RETRY_MIN_MS;
   const abort = () => {
+    clock.clearTimeout(deadline);
+    if (!parent.aborted) read.onError(signal.reason);
     clock.clearTimeout(timer);
     read.onSettled();
   };
   if (signal.aborted) return read.onSettled();
   signal.addEventListener('abort', abort, { once: true });
   const settle = () => {
+    clock.clearTimeout(deadline);
     signal.removeEventListener('abort', abort);
     read.onSettled();
   };
@@ -217,6 +233,10 @@ export function startPrivateSocket(
     const attempt = new AbortController();
     const abort = () => attempt.abort();
     session.addEventListener('abort', abort, { once: true });
+    const deadline = clock.setTimeout(
+      () => attempt.abort(new TypeError('Snapshot deadline exceeded')),
+      15000,
+    );
     let limited = false;
     const read: SnapshotRead = {
       signal: attempt.signal,
@@ -255,18 +275,22 @@ export function startPrivateSocket(
         loadDelay = RETRY_MIN_MS;
       })
       .catch((error: unknown) => {
+        const failure = signal.aborted ? signal.reason : error;
         attempt.abort();
         if (session.aborted) return;
-        view.onError(error);
+        view.onError(failure);
         // Сокет лишається підключеним, тож подій не буде, доки читання не вдасться.
-        if (!transient(error)) return;
+        if (!transient(failure)) return;
         clock.clearTimeout(loadRetry);
         loadRetry = clock.setTimeout(() => {
           if (!session.aborted) load(session);
         }, loadDelay);
         loadDelay = Math.min(loadDelay * 2, RETRY_MAX_MS);
       })
-      .finally(() => session.removeEventListener('abort', abort));
+      .finally(() => {
+        clock.clearTimeout(deadline);
+        session.removeEventListener('abort', abort);
+      });
   }
 
   socket.on('connect', () => {
@@ -315,7 +339,7 @@ export function startPrivateSocket(
   });
   socket.connect();
 
-  return () => {
+  const stop = () => {
     lifetime.abort();
     session?.abort();
     clock.clearTimeout(retry);
@@ -323,6 +347,12 @@ export function startPrivateSocket(
     walletRefresh?.stop();
     socket.disconnect();
   };
+  stop.resync = () => {
+    session?.abort();
+    socket.disconnect();
+    reconnect();
+  };
+  return stop;
 }
 
 export function usePrivateSocket(url: string | undefined) {
@@ -376,6 +406,10 @@ export function usePrivateSocket(url: string | undefined) {
         return;
       }
       if (reads.get(update.orderId) === signal) return;
+      if (reads.size >= PARALLEL_ORDER_READS) {
+        stop.resync();
+        return;
+      }
       reads.set(update.orderId, signal);
       // Подія не несе ціну й сторону нової заявки, тому дочитуємо її за ID.
       let failure: unknown;
@@ -442,6 +476,7 @@ export function usePrivateSocket(url: string | undefined) {
         for (const order of latest) storeOrder(order);
         for (const order of submitted.values()) storeOrder(order);
         submitted.clear();
+        wallets.clear();
         for (const wallet of [...snapshot.wallets, ...pendingWallets.values()]) {
           wallets.set(wallet.asset, mergeWallet(wallets.get(wallet.asset), wallet)!);
         }
@@ -467,6 +502,10 @@ export function usePrivateSocket(url: string | undefined) {
         if (loading || !orders.has(update.orderId)) {
           const previous = pendingOrders.get(update.orderId);
           if (previous && previous.version >= update.version) return;
+          if (!pendingOrders.has(update.orderId) && pendingOrders.size >= 1000) {
+            stop.resync();
+            return;
+          }
           pendingOrders.set(update.orderId, update);
         }
         if (!loading) applyOrder(update, signal);

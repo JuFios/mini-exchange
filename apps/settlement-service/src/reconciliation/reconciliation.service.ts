@@ -1,3 +1,6 @@
+import { boundedRead } from '../database/bounded-read';
+import { EntityManager } from 'typeorm';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { ConflictException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
@@ -23,6 +26,7 @@ interface LeakRow {
   asset: Asset;
   reserved: string;
   expected: string;
+  total: string;
 }
 
 export interface ReconciliationReport {
@@ -64,10 +68,10 @@ export class ReconciliationService {
     this.graceMs = config.getOrThrow('SETTLEMENT_GRACE_MS');
   }
 
-  // Запуск тримає з'єднання пулу до 10 хв; паралельні виклики забирали б його в розрахунку.
+  // Локальний guard доповнює спільний транзакційний lock.
   private running = false;
 
-  async run(period: Period): Promise<ReconciliationReport> {
+  async run(period: Period, cancelled?: AbortSignal): Promise<ReconciliationReport> {
     if (this.running)
       throw new ConflictException({
         code: 'RECONCILIATION_RUNNING',
@@ -75,23 +79,37 @@ export class ReconciliationService {
       });
     this.running = true;
     try {
-      return await this.compare(period);
+      const deadline = AbortSignal.timeout(30000);
+      const signal = cancelled ? AbortSignal.any([deadline, cancelled]) : deadline;
+      try {
+        return await this.compare(period, signal);
+      } catch (error) {
+        if (signal.aborted) throw new ServiceUnavailableException('Час звірки вичерпано');
+        throw error;
+      }
     } finally {
       this.running = false;
     }
   }
 
-  private async compare(period: Period): Promise<ReconciliationReport> {
+  private async compare(period: Period, signal: AbortSignal): Promise<ReconciliationReport> {
     // Один snapshot для угод, DLQ, балансів і резервів: звіт не бачить половини запису.
-    return this.source.transaction('REPEATABLE READ', async (db) => {
-      await db.query('SET TRANSACTION READ ONLY');
-      // Транзакція чекає на сторінки engine й читає весь ledger, тож стандартні ліміти сесії
-      // (15 с на запит, 10 с простою) тут замалі. Виняток діє лише в цій транзакції.
-      await db.query("SET LOCAL statement_timeout = '600s'");
-      await db.query("SET LOCAL idle_in_transaction_session_timeout = '120s'");
+    return boundedRead(this.source, signal, async (reader) => {
+      const db = reader as unknown as Pick<EntityManager, 'query'>;
+      const [{ locked }] = await db.query('SELECT pg_try_advisory_xact_lock(734021, 4) AS locked');
+      if (!locked)
+        throw new ConflictException({
+          code: 'RECONCILIATION_RUNNING',
+          message: 'Звірка вже виконується',
+        });
+      await db.query("SET LOCAL idle_in_transaction_session_timeout = '30s'");
+      const orders = {
+        terminal: (ids: string[]) => this.orders.terminal(ids, signal),
+        live: (after: string, instrument?: string) => this.orders.live(after, instrument, signal),
+      };
       const now = Date.now();
       const comparison = await compareStreams(
-        this.engine.trades(period),
+        this.engine.trades(period, signal),
         ledgerTrades(db, period),
         {
           // Запит на кожну відсутню угоду: пам'ять не залежить від розміру DLQ.
@@ -124,17 +142,20 @@ export class ReconciliationService {
          ORDER BY a.code`,
       );
       const leaks: LeakRow[] = await db.query(
-        `SELECT a.user_id, a.asset, a.balance AS reserved, COALESCE(r.remaining, 0) AS expected
-         FROM accounts a LEFT JOIN (SELECT user_id, asset, sum(remaining) AS remaining
-           FROM reservations WHERE status = 'active' GROUP BY user_id, asset) r
-           ON r.user_id = a.user_id AND r.asset = a.asset
-         WHERE a.kind = 'reserved' AND a.balance <> COALESCE(r.remaining, 0)
-         ORDER BY a.user_id, a.asset`,
+        `SELECT COALESCE(a.user_id,r.user_id) AS user_id, COALESCE(a.asset,r.asset) AS asset,
+           COALESCE(a.balance,0)::text AS reserved, COALESCE(r.remaining,0)::text AS expected,
+           count(*) OVER()::text AS total
+         FROM (SELECT user_id,asset,balance FROM accounts WHERE kind='reserved') a
+         FULL JOIN (SELECT user_id,asset,sum(remaining) AS remaining FROM reservations
+           WHERE status='active' GROUP BY user_id,asset) r
+           ON r.user_id=a.user_id AND r.asset=a.asset
+         WHERE a.balance IS DISTINCT FROM COALESCE(r.remaining,0)
+         ORDER BY user_id,asset LIMIT ${MAX_DISCREPANCIES}`,
       );
 
       const discrepancies = comparison.discrepancies;
+      comparison.counts.reservation_leak += Number(leaks[0]?.total ?? 0);
       for (const leak of leaks) {
-        comparison.counts.reservation_leak++;
         if (discrepancies.length < MAX_DISCREPANCIES)
           discrepancies.push({
             type: 'reservation_leak',
@@ -147,7 +168,7 @@ export class ReconciliationService {
       }
 
       // Як і витік, перевіряється на момент звірки, а не за період; `instrument` звужує вибірку.
-      const stuck = await scanStuckReservations(db, this.orders, {
+      const stuck = await scanStuckReservations(db, orders, {
         instrument: period.instrument,
         now,
         graceMs: this.graceMs,
@@ -155,7 +176,7 @@ export class ReconciliationService {
       });
       comparison.counts.stuck_reservation += stuck.count;
       discrepancies.push(...stuck.found);
-      const unreserved = await scanUnreservedOrders(db, this.orders, {
+      const unreserved = await scanUnreservedOrders(db, orders, {
         instrument: period.instrument,
         now,
         graceMs: this.graceMs,

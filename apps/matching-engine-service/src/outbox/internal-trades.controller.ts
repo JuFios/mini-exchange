@@ -42,7 +42,10 @@ export class InternalTradesController {
     const limit = Number(query.limit ?? MAX_PAGE);
     // Шаблон не відхиляє неіснуючі дати (місяць 13), які PostgreSQL відхилив би помилкою 500.
     for (const stamp of [query.from, query.to, query.after?.split(',')[0]])
-      if (stamp !== undefined && Number.isNaN(Date.parse(stamp)))
+      if (
+        stamp !== undefined &&
+        (!Number.isFinite(Date.parse(stamp)) || new Date(stamp).toISOString() !== stamp)
+      )
         throw new BadRequestException('Некоректна дата');
     const params: unknown[] = [query.from, query.to];
     let filter = '';

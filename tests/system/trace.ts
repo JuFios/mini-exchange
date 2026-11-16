@@ -165,7 +165,7 @@ async function main() {
           entry.req.headers?.['x-internal-token'] === redacted,
       ),
     );
-    const internal = docker('exec', settlement, 'sh', '-c', 'printf %s "$INTERNAL_API_TOKEN"');
+    const internal = docker('exec', settlement, 'sh', '-c', 'printf %s "$RESERVATION_API_TOKEN"');
     for (const secret of [password, buyer, seller, internal]) {
       assert(
         secret && !(engineLogs + settlementLogs).includes(secret),

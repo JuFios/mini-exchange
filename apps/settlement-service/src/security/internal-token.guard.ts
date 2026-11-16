@@ -12,7 +12,7 @@ export class InternalTokenGuard implements CanActivate {
   private readonly expected: Buffer;
 
   constructor(config: ConfigService) {
-    this.expected = hash(config.getOrThrow<string>('INTERNAL_API_TOKEN'));
+    this.expected = hash(config.getOrThrow<string>('RESERVATION_API_TOKEN'));
   }
 
   canActivate(context: ExecutionContext): boolean {

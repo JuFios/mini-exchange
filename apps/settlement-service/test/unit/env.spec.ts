@@ -8,7 +8,9 @@ const remote = {
   ...example,
   DEPLOYMENT_MODE: 'remote',
   JWT_ACCESS_SECRET: 'remote-access-secret-value-000001',
-  INTERNAL_API_TOKEN: 'remote-internal-token-value-00001',
+  RESERVATION_API_TOKEN: 'remote-reservation-token-value-00001',
+  RECONCILIATION_TOKEN: 'remote-reconciliation-token-000001',
+  OUTBOX_READ_TOKEN: 'remote-outbox-token-value-000000001',
   REDIS_USERNAME: 'settlement',
   REDIS_PASSWORD: 'remote-redis-password-only',
   LEDGER_DATABASE_PASSWORD: 'remote-ledger-password-only',
@@ -23,7 +25,9 @@ it('rejects demo secrets in remote mode and preserves the configured demo balanc
   ).toBeGreaterThan(0n);
   for (const key of [
     'JWT_ACCESS_SECRET',
-    'INTERNAL_API_TOKEN',
+    'RESERVATION_API_TOKEN',
+    'RECONCILIATION_TOKEN',
+    'OUTBOX_READ_TOKEN',
     'REDIS_PASSWORD',
     'LEDGER_DATABASE_PASSWORD',
   ] as const) {
@@ -40,7 +44,7 @@ it('validates all and only the keys from the env example', () => {
   expect(Object.keys(parsed).sort()).toEqual(Object.keys(example).sort());
 });
 
-it.each(['INTERNAL_API_TOKEN', 'JWT_ACCESS_SECRET'])('rejects a 31-character %s', (key) => {
+it.each(['RESERVATION_API_TOKEN', 'JWT_ACCESS_SECRET'])('rejects a 31-character %s', (key) => {
   expect(() => validateEnv({ ...example, [key]: 'a'.repeat(31) })).toThrow(key);
 });
 
@@ -51,8 +55,8 @@ it.each([
   'а'.repeat(32),
   'a'.repeat(1025),
 ])('rejects an internal token that cannot be sent as a bounded HTTP header', (value) => {
-  expect(() => validateEnv({ ...example, INTERNAL_API_TOKEN: value })).toThrow(
-    'INTERNAL_API_TOKEN',
+  expect(() => validateEnv({ ...example, RESERVATION_API_TOKEN: value })).toThrow(
+    'RESERVATION_API_TOKEN',
   );
 });
 
@@ -72,4 +76,10 @@ it('rejects a 15-character Redis password', () => {
   expect(() => validateEnv({ ...example, REDIS_PASSWORD: 'a'.repeat(15) })).toThrow(
     'REDIS_PASSWORD',
   );
+});
+
+it('rejects reuse of credentials between internal scopes', () => {
+  expect(() =>
+    validateEnv({ ...example, OUTBOX_READ_TOKEN: example.RECONCILIATION_TOKEN }),
+  ).toThrow('must differ');
 });

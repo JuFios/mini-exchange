@@ -13,7 +13,9 @@ const remote = {
   DATABASE_PASSWORD: 'remote-database-password-only',
   REDIS_USERNAME: 'engine',
   REDIS_PASSWORD: 'remote-redis-password-only',
-  INTERNAL_API_TOKEN: 'remote-internal-token-value-00001',
+  RESERVATION_API_TOKEN: 'remote-reservation-token-value-00001',
+  RECONCILIATION_TOKEN: 'remote-reconciliation-token-000001',
+  OUTBOX_READ_TOKEN: 'remote-outbox-token-value-000000001',
   INGRESS_TOKEN: 'remote-ingress-token-value-000001',
 };
 
@@ -23,7 +25,9 @@ it.each([
   'ADMIN_PASSWORD',
   'DATABASE_PASSWORD',
   'REDIS_PASSWORD',
-  'INTERNAL_API_TOKEN',
+  'RESERVATION_API_TOKEN',
+  'RECONCILIATION_TOKEN',
+  'OUTBOX_READ_TOKEN',
   'INGRESS_TOKEN',
 ] as const)('rejects the demo %s in remote mode', (key) => {
   expect(() => validateEnv(remote)).not.toThrow();
@@ -122,8 +126,8 @@ it('rejects renew intervals and safety windows that exceed the lease budget', ()
 });
 
 it('requires an internal token of at least 32 characters', () => {
-  expect(() => validateEnv({ ...example, INTERNAL_API_TOKEN: 'a'.repeat(31) })).toThrow(
-    'INTERNAL_API_TOKEN',
+  expect(() => validateEnv({ ...example, RESERVATION_API_TOKEN: 'a'.repeat(31) })).toThrow(
+    'RESERVATION_API_TOKEN',
   );
 });
 
@@ -143,15 +147,17 @@ it.each([
   'a'.repeat(1025),
 ])('rejects an internal token that cannot be sent as a bounded HTTP header', (value) => {
   expect(() =>
-    validateEnv({ ...example, RESERVATIONS_ENABLED: 'true', INTERNAL_API_TOKEN: value }),
-  ).toThrow('INTERNAL_API_TOKEN');
+    validateEnv({ ...example, RESERVATIONS_ENABLED: 'true', RESERVATION_API_TOKEN: value }),
+  ).toThrow('RESERVATION_API_TOKEN');
 });
 
 it('accepts the previous environment when reservation support is disabled', () => {
   const config = { ...example, RESERVATIONS_ENABLED: 'false' };
   for (const key of [
     'SETTLEMENT_URL',
-    'INTERNAL_API_TOKEN',
+    'RESERVATION_API_TOKEN',
+    'RECONCILIATION_TOKEN',
+    'OUTBOX_READ_TOKEN',
     'RESERVATION_TIMEOUT_MS',
     'RESERVATION_SWEEP_AFTER_MS',
     'RESERVATION_SWEEP_INTERVAL_MS',
@@ -162,7 +168,9 @@ it('accepts the previous environment when reservation support is disabled', () =
 
 it.each([
   'SETTLEMENT_URL',
-  'INTERNAL_API_TOKEN',
+  'RESERVATION_API_TOKEN',
+  'RECONCILIATION_TOKEN',
+  'OUTBOX_READ_TOKEN',
   'RESERVATION_TIMEOUT_MS',
   'RESERVATION_SWEEP_AFTER_MS',
   'RESERVATION_SWEEP_INTERVAL_MS',
@@ -173,7 +181,12 @@ it.each([
 });
 
 // Файл зафіксовано з `solution`: конфігурація, яка працювала до цього PR, має запускатися й далі.
-const previous = parseEnv(readFileSync(join(__dirname, 'fixtures/env.solution.example'), 'utf8'));
+const previous = {
+  ...parseEnv(readFileSync(join(__dirname, 'fixtures/env.solution.example'), 'utf8')),
+  RESERVATION_API_TOKEN: example.RESERVATION_API_TOKEN,
+  RECONCILIATION_TOKEN: example.RECONCILIATION_TOKEN,
+  OUTBOX_READ_TOKEN: example.OUTBOX_READ_TOKEN,
+};
 
 describe('environments written before WS_REPLICA_MAX_LAG_MS existed', () => {
   it('start with a 5000 ms replica lag limit', () => {
@@ -195,4 +208,39 @@ it('rejects a 15-character Redis password', () => {
   expect(() => validateEnv({ ...example, REDIS_PASSWORD: 'a'.repeat(15) })).toThrow(
     'REDIS_PASSWORD',
   );
+});
+
+it('rejects reuse of credentials between internal scopes', () => {
+  expect(() =>
+    validateEnv({ ...example, OUTBOX_READ_TOKEN: example.RECONCILIATION_TOKEN }),
+  ).toThrow('must differ');
+});
+
+it.each([
+  { CHAOS_ENABLED: 'true' },
+  { ENGINE_WORKER_ENABLED: 'false' },
+  { RESERVATIONS_ENABLED: 'false' },
+])('rejects unsafe remote settings %j', (changes) => {
+  expect(() => validateEnv({ ...remote, ...changes })).toThrow('Remote mode requires');
+});
+it.each(['31d', '999999999d'])('bounds refresh cookie lifetime %s', (JWT_REFRESH_TTL) => {
+  expect(() => validateEnv({ ...example, JWT_REFRESH_TTL })).toThrow('JWT_REFRESH_TTL');
+});
+it('requires a sweep budget longer than all reserve attempts and intake transactions', () => {
+  expect(() =>
+    validateEnv({
+      ...example,
+      RESERVATIONS_ENABLED: 'true',
+      RESERVATION_TIMEOUT_MS: '2000',
+      RESERVATION_SWEEP_AFTER_MS: '12000',
+    }),
+  ).toThrow('RESERVATION_SWEEP_AFTER_MS');
+  expect(() =>
+    validateEnv({
+      ...example,
+      RESERVATIONS_ENABLED: 'true',
+      RESERVATION_TIMEOUT_MS: '2000',
+      RESERVATION_SWEEP_AFTER_MS: '12001',
+    }),
+  ).not.toThrow();
 });

@@ -7,27 +7,21 @@ const digest = (value: string): Buffer => createHash('sha256').update(value).dig
 
 @Injectable()
 export class InternalTokenGuard implements CanActivate {
-  private readonly expected?: Buffer;
-
-  constructor(config: ConfigService) {
-    // Без налаштованого токена внутрішні маршрути закриті для всіх.
-    let token: string | undefined;
-    try {
-      token = config.getOrThrow<string>('INTERNAL_API_TOKEN');
-    } catch {
-      token = undefined;
-    }
-    this.expected = token === undefined ? undefined : digest(token);
-  }
+  constructor(private readonly config: ConfigService) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const token = context.switchToHttp().getRequest<Request>().headers['x-internal-token'];
-    // Порівняння хешів однакової довжини не кидає виняток для токена будь-якої довжини.
-    if (
-      !this.expected ||
-      typeof token !== 'string' ||
-      !timingSafeEqual(digest(token), this.expected)
-    )
+    const request = context.switchToHttp().getRequest<Request>();
+    const scope = request.path.startsWith('/internal/outbox/')
+      ? 'OUTBOX_READ_TOKEN'
+      : 'RECONCILIATION_TOKEN';
+    let expected: string | undefined;
+    try {
+      expected = this.config.getOrThrow<string>(scope);
+    } catch {
+      expected = undefined;
+    }
+    const token = request.headers['x-internal-token'];
+    if (!expected || typeof token !== 'string' || !timingSafeEqual(digest(token), digest(expected)))
       throw new UnauthorizedException();
     return true;
   }

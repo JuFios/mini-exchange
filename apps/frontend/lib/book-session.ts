@@ -133,6 +133,12 @@ export function startBookSession(
     heartbeatTimer = clock.setTimeout(() => {
       awaitingHeartbeat = true;
       setStatus('stale');
+      waiting = clock.setTimeout(() => {
+        cancelPending();
+        socket.disconnect();
+        setStatus('reconnecting');
+        reconnect();
+      }, RETRY_MAX_MS);
     }, HEARTBEAT_TIMEOUT_MS);
   }
 
@@ -207,6 +213,7 @@ export function startBookSession(
   }
 
   function recover() {
+    clock.clearTimeout(waiting);
     clock.clearTimeout(heartbeatTimer);
     setStatus('stale');
     subscribe();

@@ -8,7 +8,7 @@
     "node": ">=20.12"
   },
   "scripts": {
-    "test": "node --require ts-node/register --test chaos-workload.test.ts cleanup.test.ts",
+    "test": "node --require ts-node/register --test chaos-workload.test.ts cleanup.test.ts ingress-cleanup.test.ts",
     "concurrency": "ts-node concurrency.ts",
     "chaos:kill": "ts-node chaos-kill.ts",
     "chaos:pause": "ts-node chaos-pause.ts",
@@ -33,17 +33,19 @@
     "engine-lb:errors": "ts-node edge-errors.ts",
     "session:revocation": "ts-node session-revocation.ts",
     "frontend:admin": "ts-node admin-page.ts",
-    "ingress:client-limits": "ts-node ingress-client-limits.ts"
+    "ingress:client-limits": "ts-node ingress-client-limits.ts",
+    "remote:smoke": "ts-node remote-smoke.ts"
   },
   "dependencies": {
     "pg": "^8.11.3",
+    "socket.io-client": "4.8.4",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3",
-    "socket.io-client": "4.8.4"
+    "typescript": "^5.3.3"
   },
   "devDependencies": {
-    "@types/pg": "^8.23.1",
     "@types/node": "^20.11.0",
+    "@types/pg": "^8.23.1",
+    "playwright": "1.65.1",
     "prettier": "^3.9.10"
   }
 }

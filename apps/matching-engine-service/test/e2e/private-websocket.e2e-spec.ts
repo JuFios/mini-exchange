@@ -7,7 +7,7 @@ import { connect, disconnected, record, Received } from '../helpers/websocket';
 import { engineApp } from './engine-app';
 
 const api = engineApp();
-const USER_EVENTS = 'exchange:user-events';
+const USER_EVENTS = 'exchange:wallet-events';
 const jwt = new JwtService();
 const sockets: Socket[] = [];
 let redis: Redis;

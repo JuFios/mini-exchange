@@ -1,3 +1,4 @@
+import { SettlementPosition1793980800009 } from './migrations/1793980800009-settlement-position';
 import { ReservationFundingAndRedrive1793980800006 } from './migrations/1793980800006-reservation-funding-and-redrive';
 import { LiveOrdersIndex1793980800008 } from './migrations/1793980800008-live-orders-index';
 import { ReservationMode1793980800007 } from './migrations/1793980800007-reservation-mode';
@@ -59,6 +60,7 @@ export function engineDataSourceOptions(
       ReservationFundingAndRedrive1793980800006,
       ReservationMode1793980800007,
       LiveOrdersIndex1793980800008,
+      SettlementPosition1793980800009,
     ],
     synchronize: false,
     migrationsRun: false,

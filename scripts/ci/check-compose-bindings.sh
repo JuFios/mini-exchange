@@ -9,7 +9,9 @@ cd "$(dirname "$0")/../.."
 # Значення лише для цієї перевірки, не для запуску.
 CI_ACCESS_SECRET=ci-only-access-secret-value-000001
 CI_REFRESH_SECRET=ci-only-refresh-secret-value-00001
-export INTERNAL_API_TOKEN=ci-only-internal-token-value-00001
+export RESERVATION_API_TOKEN=ci-only-reservation-token-value-00001
+export RECONCILIATION_TOKEN=ci-only-reconciliation-token-value-001
+export OUTBOX_READ_TOKEN=ci-only-outbox-read-token-value-000001
 export POSTGRES_PASSWORD=ci-only-postgres-password
 export ENGINE_DB_PASSWORD=ci-only-engine-password
 export LEDGER_DB_PASSWORD=ci-only-ledger-password
@@ -67,23 +69,23 @@ expect_rejection JWT_ACCESS_SECRET \
 expect_rejection ADMIN_PASSWORD \
   env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
   ADMIN_PASSWORD= docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
-for variable in INTERNAL_API_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD REDIS_ENGINE_PASSWORD REDIS_SETTLEMENT_PASSWORD INGRESS_TOKEN FRONTEND_PROXY_TOKEN PUBLIC_ORIGIN TRUSTED_TLS_PROXY_IP; do
+for variable in RESERVATION_API_TOKEN RECONCILIATION_TOKEN OUTBOX_READ_TOKEN POSTGRES_PASSWORD ENGINE_DB_PASSWORD LEDGER_DB_PASSWORD REDIS_PASSWORD REDIS_ENGINE_PASSWORD REDIS_SETTLEMENT_PASSWORD INGRESS_TOKEN FRONTEND_PROXY_TOKEN PUBLIC_ORIGIN TRUSTED_TLS_PROXY_IP; do
   expect_rejection "$variable" env JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" \
     "$variable=" docker compose -f docker-compose.yml -f docker-compose.remote.yml config -q
 done
 JWT_ACCESS_SECRET="$CI_ACCESS_SECRET" JWT_REFRESH_SECRET="$CI_REFRESH_SECRET" remote config --format json |
   jq -e --arg access "$CI_ACCESS_SECRET" --arg refresh "$CI_REFRESH_SECRET" \
     --arg admin "$ADMIN_EMAILS" --arg password "$ADMIN_PASSWORD" \
-    --arg token "$INTERNAL_API_TOKEN" --arg postgres "$POSTGRES_PASSWORD" \
+    --arg token "$RESERVATION_API_TOKEN" --arg postgres "$POSTGRES_PASSWORD" \
     --arg engine "$ENGINE_DB_PASSWORD" --arg ledger "$LEDGER_DB_PASSWORD" '
     .services as $s |
     (["matching-engine-1","matching-engine-2"] | all(. as $name | $s[$name].environment |
       .JWT_ACCESS_SECRET == $access and .JWT_REFRESH_SECRET == $refresh and
       .ADMIN_EMAILS == $admin and .ADMIN_PASSWORD == $password and
-      .INTERNAL_API_TOKEN == $token and .DATABASE_PASSWORD == $engine and
+      .RESERVATION_API_TOKEN == $token and .RECONCILIATION_TOKEN == $ENV.RECONCILIATION_TOKEN and .OUTBOX_READ_TOKEN == $ENV.OUTBOX_READ_TOKEN and .DATABASE_PASSWORD == $engine and
       .REDIS_PASSWORD == $ENV.REDIS_ENGINE_PASSWORD)) and
     ($s["settlement-service"].environment |
-      .JWT_ACCESS_SECRET == $access and .INTERNAL_API_TOKEN == $token and .LEDGER_DATABASE_PASSWORD == $ledger and
+      .JWT_ACCESS_SECRET == $access and .RESERVATION_API_TOKEN == $token and .RECONCILIATION_TOKEN == $ENV.RECONCILIATION_TOKEN and .OUTBOX_READ_TOKEN == $ENV.OUTBOX_READ_TOKEN and .LEDGER_DATABASE_PASSWORD == $ledger and
       .REDIS_PASSWORD == $ENV.REDIS_SETTLEMENT_PASSWORD) and
     ($s.redis.environment.REDISCLI_AUTH == $ENV.REDIS_PASSWORD) and
     ($s.redis.command[0] == "redis-server" and $s.redis.entrypoint == ["sh", "/usr/local/bin/exchange-redis"] and $s.redis.environment.REDIS_ENGINE_PASSWORD == $ENV.REDIS_ENGINE_PASSWORD and $s.redis.environment.REDIS_SETTLEMENT_PASSWORD == $ENV.REDIS_SETTLEMENT_PASSWORD) and

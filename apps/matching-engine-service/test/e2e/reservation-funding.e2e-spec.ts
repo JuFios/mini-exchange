@@ -10,7 +10,7 @@ let settlement: FakeSettlement;
 let settlementUrl: string;
 
 beforeEach(async () => {
-  settlement = new FakeSettlement(process.env.INTERNAL_API_TOKEN!);
+  settlement = new FakeSettlement(process.env.RESERVATION_API_TOKEN!);
   settlementUrl = await settlement.start();
 });
 
@@ -48,7 +48,7 @@ it('preserves unfunded intake if the first funded replica fails startup validati
 });
 
 it.each([
-  [{ INTERNAL_API_TOKEN: 'incorrect-internal-token-for-tests' }, /reservation credentials/],
+  [{ RESERVATION_API_TOKEN: 'incorrect-internal-token-for-tests' }, /reservation credentials/],
   [{ REDIS_USERNAME: 'unknown-role' }, /Engine Redis is unavailable/],
 ] as const)(
   'keeps unfunded intake available when a funded dependency is misconfigured',
@@ -274,7 +274,7 @@ it('refuses to enable reservations after a trade that was never reserved', async
 it('marks an order as funded only when a real reservation was made', async () => {
   const unfunded = await api.register();
   const { order } = await (await api.submit(unfunded)).json();
-  const fake = new FakeSettlement(process.env.INTERNAL_API_TOKEN!);
+  const fake = new FakeSettlement(process.env.RESERVATION_API_TOKEN!);
   try {
     // Заявка без резерву вже є, тож резерви вмикаються на чистій історії.
     expect((await api.request(`/orders/${order.id}`, 'DELETE', unfunded)).status).toBe(200);

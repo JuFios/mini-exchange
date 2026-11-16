@@ -25,6 +25,21 @@ function refreshSession() {
   return refreshing;
 }
 
+async function waitForRefresh(signal: AbortSignal): Promise<number> {
+  signal.throwIfAborted();
+  let abort!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    // Читання відмовляє вчасно; спільна ротація все ще може доставити cookie.
+    return await Promise.race([refreshSession(), cancelled]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+}
+
 /**
  * Відновлення після 401 у перевірці на сервері: той самий запит оновлення, що й для читань.
  * 401 від оновлення веде на /login, тимчасовий збій сесію не завершує. Поки JWT далеко від `exp`,
@@ -39,25 +54,21 @@ export async function recoverSession(): Promise<'refreshed' | 'signed-out' | 'fa
 }
 
 export async function checkedFetch(path: string, init?: RequestInit) {
-  // Проксі звіряє користувача з cookie, тож вкладка зі старим сокетом не подає заявки з чужого рахунку.
   const headers = new Headers(init?.headers);
   const user = boundSession();
   if (user && !headers.has(SESSION_HEADER) && /^\/api\/(?:engine|settlement)\//.test(path)) {
     headers.set(SESSION_HEADER, user);
   }
-  // Запит із signal можна обірвати, тож сесію під час нього middleware не оновлює.
   const deferred = Boolean(init?.signal);
   if (deferred) headers.set(DEFER_REFRESH_HEADER, '1');
   const send = () => fetch(path, { cache: 'no-store', ...init, headers });
   let response = await send();
-  if (response.status === 401 && deferred) {
-    const refreshed = await refreshSession();
+  if (response.status === 401 && init?.signal) {
+    const refreshed = await waitForRefresh(init.signal);
     if (refreshed >= 200 && refreshed < 300) response = await send();
-    // Збій оновлення не означає, що сесії немає: без переходу на /login.
     else if (refreshed !== 401) throw new ApiError(refreshed, 'Не вдалося виконати запит');
   }
   if (!response.ok) {
-    // Сесія завершилась: перенаправлення швидше за «з'єднання недоступне».
     if (response.status === 401 && !ANONYMOUS_PATH.test(path) && typeof window !== 'undefined') {
       window.location.assign('/login');
     }

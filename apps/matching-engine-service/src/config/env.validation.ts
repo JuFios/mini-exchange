@@ -160,7 +160,9 @@ function internalToken(value: unknown, key: string): string {
 
 const reservationSchema = {
   SETTLEMENT_URL: httpOrigin,
-  INTERNAL_API_TOKEN: internalToken,
+  RESERVATION_API_TOKEN: internalToken,
+  RECONCILIATION_TOKEN: internalToken,
+  OUTBOX_READ_TOKEN: internalToken,
   RESERVATION_TIMEOUT_MS: milliseconds,
   RESERVATION_SWEEP_AFTER_MS: milliseconds,
   RESERVATION_SWEEP_INTERVAL_MS: milliseconds,
@@ -266,14 +268,32 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
   const parsed = Object.fromEntries(
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as EngineEnv;
+  const scopedTokens = [
+    'RESERVATION_API_TOKEN',
+    'RECONCILIATION_TOKEN',
+    'OUTBOX_READ_TOKEN',
+  ] as const;
+  const tokens = scopedTokens
+    .map((key) => input[key])
+    .filter((value) => value !== undefined && value !== '');
+  if (new Set(tokens).size !== tokens.length)
+    throw new Error(
+      'RESERVATION_API_TOKEN, RECONCILIATION_TOKEN and OUTBOX_READ_TOKEN must differ',
+    );
   if (parsed.DEPLOYMENT_MODE === 'remote') {
-    if (parsed.REDIS_USERNAME === 'default')
+    if (parsed.CHAOS_ENABLED || !parsed.ENGINE_WORKER_ENABLED || !parsed.RESERVATIONS_ENABLED)
+      throw new Error(
+        'Remote mode requires CHAOS_ENABLED=false, ENGINE_WORKER_ENABLED=true and RESERVATIONS_ENABLED=true',
+      );
+    if (parsed.REDIS_USERNAME !== 'engine')
       throw new Error('REDIS_USERNAME must identify a restricted role in remote mode');
     for (const key of [
       'JWT_ACCESS_SECRET',
       'JWT_REFRESH_SECRET',
       'ADMIN_PASSWORD',
-      'INTERNAL_API_TOKEN',
+      'RESERVATION_API_TOKEN',
+      'RECONCILIATION_TOKEN',
+      'OUTBOX_READ_TOKEN',
       'REDIS_PASSWORD',
       'DATABASE_PASSWORD',
       'INGRESS_TOKEN',
@@ -297,5 +317,16 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
       ? [[key, read(value, key)]]
       : [];
   });
-  return { ...parsed, ...Object.fromEntries(reservations) };
+  const reservationSettings = Object.fromEntries(reservations);
+  if (
+    parsed.RESERVATIONS_ENABLED &&
+    reservationSettings.RESERVATION_SWEEP_AFTER_MS <=
+      3 * reservationSettings.RESERVATION_TIMEOUT_MS + 6000
+  )
+    throw new Error(
+      'RESERVATION_SWEEP_AFTER_MS must exceed three RESERVATION_TIMEOUT_MS attempts plus 6000 ms for intake transactions',
+    );
+  if (parsed.JWT_REFRESH_TTL > 30 * 86400)
+    throw new Error('JWT_REFRESH_TTL must not exceed 30 days');
+  return { ...parsed, ...reservationSettings };
 }

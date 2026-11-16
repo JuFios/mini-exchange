@@ -51,7 +51,7 @@ async function checkIngressCapacity() {
     assert.equal((await request('/orders/book?instrument=XYZ')).status, 200);
     assert.equal((await request('/orders')).status, 401);
     assert.equal((await request('/health')).status, 200);
-    assert.equal((await request('/ready')).status, 200);
+    assert.equal((await request('/ready')).status, 404);
   } finally {
     for (const socket of clients) socket.destroy();
   }

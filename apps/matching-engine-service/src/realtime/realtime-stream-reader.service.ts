@@ -3,7 +3,7 @@ import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@ne
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { ChaosHooks } from '../chaos/chaos-hooks';
-import { marketStream, USER_EVENTS_STREAM } from '../outbox/streams';
+import { marketStream, USER_EVENTS_STREAM, WALLET_EVENTS_STREAM } from '../outbox/streams';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { MarketEvent, parseEnvelope, seqOf, UserEvent } from './realtime-events';
 import { checkBatch, RecentIds, StreamCounters, streamPosition } from './replica-lag';
@@ -85,6 +85,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     this.keys = [
       ...this.instruments.list().map(({ symbol }) => marketStream(symbol)),
       USER_EVENTS_STREAM,
+      WALLET_EVENTS_STREAM,
     ];
     this.loop = this.run();
   }
@@ -184,7 +185,7 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
     for (const [key, entries] of reply) {
       let skipped = false;
       for (const [id, fields] of entries) {
-        skipped = !this.consume(fields) || skipped;
+        skipped = !this.consume(key, fields) || skipped;
         ids.set(key, id);
       }
       this.unverified.set(key, (this.unverified.get(key) ?? 0) + entries.length);
@@ -321,9 +322,9 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   }
 
   /** Запис, який не вдалося обробити, пропускається: курсор усе одно просувається за ним. */
-  private consume(fields: string[]): boolean {
+  private consume(key: string, fields: string[]): boolean {
     try {
-      return this.dispatch(fields);
+      return this.dispatch(key, fields);
     } catch (error) {
       this.logger.warn({
         alert: 'realtime_event_skipped',
@@ -334,8 +335,8 @@ export class RealtimeStreamReader implements OnApplicationBootstrap, OnModuleDes
   }
 
   /** `false`, якщо запис не вдалося прочитати й він пропущений. */
-  private dispatch(fields: string[]): boolean {
-    const event = parseEnvelope(fields);
+  private dispatch(key: string, fields: string[]): boolean {
+    const event = parseEnvelope(fields, key);
     // Пошкоджений запис не зупиняє читача й не повторюється.
     if (!event) {
       this.logger.warn({ alert: 'realtime_event_skipped', message: 'Unreadable stream entry' });

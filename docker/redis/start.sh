@@ -38,10 +38,9 @@ rm -f /data/.users-acl.*
 temporary=$(mktemp /data/.users-acl.XXXXXX)
 trap 'rm -f "$temporary"' EXIT
 printf 'user default reset on #%s ~* &* +@all\n' "$(hash "$REDISCLI_AUTH")" > "$temporary"
-printf 'user engine reset on #%s -@all +ping +info +quit +config|get (~exchange:limit:* ~{exchange:limit:* ~lease:instrument:* +get +set +del +incr +decr +pexpire +pttl +pexpiretime +eval) (~exchange:market:* ~exchange:settlement:* ~exchange:user-events ~exchange:outbox:* +xread +xinfo +xlen +xadd +xrange +xrevrange +hget +hset +eval)\n' "$(hash "$REDIS_ENGINE_PASSWORD")" >> "$temporary"
+printf 'user engine reset on #%s -@all +ping +info +quit +config|get (~exchange:limit:* ~{exchange:limit:* ~lease:instrument:* +get +set +del +incr +decr +pexpire +pttl +pexpiretime +eval) (~exchange:market:* ~exchange:settlement:* ~exchange:user-events ~exchange:outbox:* +xread +xinfo +xlen +xadd +xrange +xrevrange +hget +hset +eval) (~exchange:market:* ~exchange:settlement:* ~exchange:user-events ~exchange:wallet-events +xread +xinfo +xlen +xrange +xrevrange)\n' "$(hash "$REDIS_ENGINE_PASSWORD")" >> "$temporary"
 # Settlement може читати й підтверджувати settlement stream, а писати — лише DLQ та сповіщення.
-printf 'user settlement reset on #%s -@all +ping +info +quit +config|get (~exchange:settlement:* ~exchange:dlq +eval +xreadgroup +xgroup|create +xautoclaim +xack +xpending +xinfo +xlen) (~exchange:dlq ~exchange:user-events +xadd +xlen)\n' "$(hash "$REDIS_SETTLEMENT_PASSWORD")" >> "$temporary"
+printf 'user settlement reset on #%s -@all +ping +info +quit +config|get (~exchange:settlement:* ~exchange:dlq +eval +xreadgroup +xgroup|create +xautoclaim +xack +xpending +xinfo +xlen) (~exchange:dlq ~exchange:wallet-events +xadd +xlen)\n' "$(hash "$REDIS_SETTLEMENT_PASSWORD")" >> "$temporary"
 if [ "$(id -u)" -eq 0 ]; then chown redis:redis "$temporary"; fi
 mv "$temporary" /data/users.acl
-exec 9<&-
 exec /usr/local/bin/docker-entrypoint.sh "$@" --aclfile /data/users.acl

@@ -1,3 +1,4 @@
+import { EngineOutboxClient } from '../src/consumer/engine-outbox.client';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,10 +14,13 @@ import { AccessSession } from '../src/security/access-session';
 import { SettlementConsumer } from '../src/consumer/settlement-consumer.service';
 
 const demo = parseEnv(readFileSync(join(__dirname, '../.env.example'), 'utf8'));
-export const internalToken = demo.INTERNAL_API_TOKEN!;
+export const internalToken = demo.RESERVATION_API_TOKEN!;
 
 // Consumer читає спільні stream Redis, тож його вмикають лише тести, які цього потребують.
 class IdleConsumer {
+  async redisReady() {
+    return true;
+  }
   async queue() {
     return { streams: [] };
   }
@@ -72,6 +76,15 @@ export function ledgerApp(
     const { AppModule } = await import('../src/app.module');
     const builder = Test.createTestingModule({ imports: [AppModule] });
     if (!consumer) builder.overrideProvider(SettlementConsumer).useClass(IdleConsumer);
+    // Ізольовані тести ledger не запускають engine; його контракт перевіряється окремо.
+    builder.overrideProvider(EngineOutboxClient).useValue({
+      event: async (envelope: string) => ({ position: '1', envelope }),
+      trade: async () => {
+        throw new Error('Committed trade fixture is required');
+      },
+      assertCompensation: async () => undefined,
+      page: async () => [],
+    });
     customize?.(builder);
     const module = await builder.compile();
     jest.spyOn(module.get(AccessSession), 'requireActive').mockResolvedValue(undefined);
