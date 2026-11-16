@@ -85,22 +85,22 @@ it('answers every nginx rate refusal with the JSON 429 handler', () => {
 });
 
 // Один спільний лічильник з'єднань дозволяв одному анонімному клієнту зайняти всі слоти
-// HTTP-маршрутів поза заявками на обох listener. Межа має бути на клієнта і нижчою за стелю.
-it('limits non-order engine connections per client below a per-listener ceiling', () => {
+// HTTP-маршрутів поза заявками на обох listener. Межа має бути на клієнта і нижчою за стелю;
+// стеля — стара спільна межа обох listener, щоб навантаження на engine не зросло.
+it('limits non-order engine connections per client below the shared ceiling', () => {
   const config = readFileSync(join(__dirname, '../../../../deploy/nginx/engine-lb.conf'), 'utf8');
   expect(config).toContain(
     'map "$engine_rest_scope:$server_port:$exchange_client_address" $engine_rest_client {',
   );
-  expect(config).toContain('map "$engine_rest_scope:$server_port" $engine_rest_listener {');
   expect(config).toContain('limit_conn_zone $engine_rest_client zone=engine_rest_by_client:10m;');
-  expect(config).toContain('limit_conn_zone $engine_rest_listener zone=engine_rest_total:64k;');
-  // Жодна зона з'єднань engine не має ключа, спільного для всіх клієнтів.
+  expect(config).toContain('limit_conn_zone $engine_rest_scope zone=engine_rest_total:64k;');
+  // Спільний для всіх клієнтів ключ має лише стеля.
   const zones = [...config.matchAll(/^limit_conn_zone (\S+) zone=(\w+):/gm)].map(
     ([, key, zone]) => `${zone}=${key}`,
   );
   expect(zones).toEqual([
     'engine_rest_by_client=$engine_rest_client',
-    'engine_rest_total=$engine_rest_listener',
+    'engine_rest_total=$engine_rest_scope',
     'engine_ws_by_ip=$binary_remote_addr',
   ]);
   const limits = [...config.matchAll(/^ +limit_conn (engine_rest\w*) (\d+);$/gm)].map(
