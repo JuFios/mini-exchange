@@ -26,7 +26,7 @@ const P50_BOUND_MS = 200;
 const P95_BOUND_MS = 600;
 
 type Counts = Record<string, number>;
-type Mode = 'wallets' | 'config';
+type Mode = 'wallets' | 'config' | 'static';
 
 const percentile = (values: number[], share: number) =>
   [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * share))];
@@ -98,18 +98,27 @@ async function flood(mode: Mode, address: string, accessToken: string) {
   process.on('message', () => {
     running = false;
   });
-  const path = mode === 'wallets' ? '/api/settlement/wallets' : '/api/config';
+  // Відсутній статичний файл: Next рендерить на нього HTML-сторінку 404.
+  const path = (index: number) =>
+    mode === 'wallets'
+      ? '/api/settlement/wallets'
+      : mode === 'config'
+        ? '/api/config'
+        : `/_next/static/chunks/missing-${process.pid}-${index}.js`;
   const headers = mode === 'wallets' ? { cookie: 'exchange_access=' + accessToken } : {};
+  let completed = 0;
   await Promise.all(
     Array.from({ length: FLOOD_CONNECTIONS }, async () => {
       while (running) {
         let key: string;
         try {
-          key = String(await statusFrom(address, 3000, path, headers, agent));
+          key = String(await statusFrom(address, 3000, path(completed), headers, agent));
         } catch (error) {
           key = (error as Error).message;
         }
         counts[key] = (counts[key] ?? 0) + 1;
+        // Заміри починаються, коли кожне з'єднання потоку вже отримало відповідь.
+        if (++completed === FLOOD_CONNECTIONS) process.send!('ready');
       }
     }),
   );
@@ -124,10 +133,16 @@ function startFlood(mode: Mode, address: string, accessToken: string) {
   });
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
   child.on('error', () => undefined);
+  const ready = new Promise<void>((resolve, reject) => {
+    child.on('message', (value) => value === 'ready' && resolve());
+    void exited.then(() => reject(new Error('Flood process exited before it started')));
+    setTimeout(() => reject(new Error('Flood did not start within 30 s')), 30000).unref();
+  });
   return {
+    ready,
     async stop(): Promise<Counts> {
       const counts = new Promise<Counts>((resolve, reject) => {
-        child.once('message', (value) => resolve(value as Counts));
+        child.on('message', (value) => typeof value === 'object' && resolve(value as Counts));
         void exited.then(() => reject(new Error('Flood process exited before reporting')));
       });
       if (child.connected) child.send('stop', () => undefined);
@@ -234,11 +249,12 @@ async function main() {
     for (let i = 0; i < 10; i++) baseline.push(await sell());
     console.log(`ingress client limits baselineP50=${percentile(baseline, 0.5).toFixed(0)}ms`);
 
-    for (const mode of ['wallets', 'config'] as const) {
+    for (const mode of ['wallets', 'config', 'static'] as const) {
       const started = startFlood(mode, address, flooder.accessToken);
       floods.push(started);
-      // Потік має розігнатися, перш ніж міряти заявки іншого користувача.
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Потік має розігнатися, перш ніж міряти заявки іншого користувача: фіксована пауза на
+      // повільному CI могла б закінчитися раніше, ніж дочірній процес почне слати запити.
+      await started.ready;
       const latencies: number[] = [];
       for (let i = 0; i < SUBMITS; i++) latencies.push(await sell());
       const counts = await started.stop();
