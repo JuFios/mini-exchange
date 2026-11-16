@@ -385,6 +385,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       payload: {
         instrument: row.instrument,
         seq: row.seq,
+        tradeCount: result.trades.length,
         changes: result.levelChanges.map((level) => ({
           side: level.side === 'buy' ? 'bid' : 'ask',
           price: formatPrice(level.price),
@@ -516,7 +517,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       [
         {
           type: 'book.delta',
-          payload: { instrument: row.instrument, seq: row.seq, changes: [] },
+          payload: { instrument: row.instrument, seq: row.seq, tradeCount: 0, changes: [] },
         },
       ],
       appliedAt,
@@ -582,6 +583,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       const sell = await db.getRepository(Order).findOneByOrFail({ id: fill.sellOrderId });
       const publicTrade: TradePublicV1 = {
         tradeId: fill.tradeId,
+        fillIndex,
         instrument: row.instrument,
         seq: row.seq,
         price: formatPrice(fill.price),

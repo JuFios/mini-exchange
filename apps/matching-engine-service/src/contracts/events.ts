@@ -11,6 +11,8 @@ export interface Envelope<T> {
 }
 
 export interface TradePublicV1 {
+  // Номер fill усередині команди; старі події можуть його не мати.
+  fillIndex?: number;
   tradeId: string;
   instrument: string;
   seq: string;
@@ -24,6 +26,7 @@ export interface TradeExecutedV1 extends TradePublicV1 {
   fillIndex: number;
   baseAsset: string;
   quoteAsset: string;
+  // Ціле: price ticks × quantity lots, одиниця USD = 1e-10.
   quoteAmount: string;
   buyOrderId: string;
   sellOrderId: string;
@@ -44,6 +47,8 @@ export interface OrderClosedV1 {
 }
 
 export interface BookDeltaV1 {
+  // Кількість trade.public цієї команди; відсутня лише у старих подіях.
+  tradeCount?: number;
   instrument: string;
   seq: string;
   changes: { side: 'bid' | 'ask'; price: string; quantity: string; orders: number }[];

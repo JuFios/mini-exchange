@@ -42,11 +42,16 @@ const isLevel = (value: unknown): boolean =>
  */
 const hasShape: Record<RealtimeEvent['type'], (p: Record<string, unknown>) => boolean> = {
   'book.delta': (p) =>
-    isText(p.instrument) && isSeq(p.seq) && Array.isArray(p.changes) && p.changes.every(isLevel),
+    isText(p.instrument) &&
+    isSeq(p.seq) &&
+    (p.tradeCount === undefined || isCount(p.tradeCount)) &&
+    Array.isArray(p.changes) &&
+    p.changes.every(isLevel),
   'trade.public': (p) =>
     isText(p.tradeId) &&
     isText(p.instrument) &&
     isSeq(p.seq) &&
+    (p.fillIndex === undefined || isCount(p.fillIndex)) &&
     isDecimal(p.price) &&
     isDecimal(p.quantity) &&
     (p.takerSide === 'buy' || p.takerSide === 'sell') &&
@@ -139,9 +144,10 @@ function matchesStream(
 
 // Нижче поля перелічені явно: нова внутрішня властивість події не потрапить до клієнта сама.
 
-export const publicDelta = ({ instrument, seq, changes }: BookDeltaV1) => ({
+export const publicDelta = ({ instrument, seq, changes, tradeCount }: BookDeltaV1) => ({
   instrument,
   seq,
+  ...(tradeCount !== undefined && { tradeCount }),
   // Рівні теж перелічені явно: зайве поле запису в Redis не повинно дійти до публічного клієнта.
   changes: changes.map(({ side, price, quantity, orders }) => ({ side, price, quantity, orders })),
 });
@@ -154,7 +160,17 @@ export const publicTrade = ({
   quantity,
   takerSide,
   executedAt,
-}: TradePublicV1) => ({ instrument, tradeId, seq, price, quantity, takerSide, executedAt });
+  fillIndex,
+}: TradePublicV1) => ({
+  instrument,
+  tradeId,
+  seq,
+  price,
+  quantity,
+  takerSide,
+  executedAt,
+  ...(fillIndex !== undefined && { fillIndex }),
+});
 
 export const privateOrder = ({
   orderId,

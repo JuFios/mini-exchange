@@ -193,7 +193,7 @@ it('rejects an internal matching error, persists its release, and applies the ne
       'SELECT type,payload FROM outbox WHERE seq=1 ORDER BY id',
     );
     expect(outbox).toEqual([
-      { type: 'book.delta', payload: { instrument: 'ABC', seq: '1', changes: [] } },
+      { type: 'book.delta', payload: { instrument: 'ABC', seq: '1', tradeCount: 0, changes: [] } },
       {
         type: 'order.updated',
         payload: {

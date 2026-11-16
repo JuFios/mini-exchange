@@ -443,6 +443,7 @@ it('serializes two competing relays and delivers all events for 1000 applied com
     )) {
       expect(Object.keys(envelope.payload).sort()).toEqual([
         'executedAt',
+        'fillIndex',
         'instrument',
         'price',
         'quantity',
