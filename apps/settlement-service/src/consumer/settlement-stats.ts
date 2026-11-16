@@ -9,5 +9,6 @@ export class SettlementStats {
   transientFailures = 0;
   retriedFailures = 0;
   recoveryLastSuccess = 0;
+  recoveryCaughtUp = 0;
   durableBacklog = 0;
 }

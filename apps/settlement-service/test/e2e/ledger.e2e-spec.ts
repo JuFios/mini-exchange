@@ -1,4 +1,5 @@
 import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
+import { InvalidEventError } from '../../src/consumer/settlement-event';
 import { ReservationsService } from '../../src/reservations/reservations.service';
 import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
@@ -123,6 +124,57 @@ it('settles the same trade only once and returns a conflict for a changed quanti
     .source()
     .query('SELECT count(*)::int AS legs FROM postings WHERE entry_id=$1', [first.body.entryId]);
   expect(legs).toBe(5);
+});
+
+it('refuses an unconfirmed release or settlement with 409 and leaves the ledger unchanged', async () => {
+  const outbox = ledger.app().get(EngineOutboxClient);
+  const user = randomUUID();
+  const orderId = randomUUID();
+  await reserve(orderId, user, 'ABC', '100000000').expect(201);
+  const journal = () =>
+    ledger
+      .source()
+      .query(
+        'SELECT count(*)::int AS entries FROM journal_entries je JOIN postings p ON p.entry_id=je.id',
+      );
+  const before = await journal();
+
+  jest
+    .spyOn(outbox, 'assertCompensation')
+    .mockRejectedValueOnce(new InvalidEventError('Intake has not authorized compensation'));
+  const refused = await release(orderId).expect(409);
+  expect(refused.body.code).toBe('NOT_COMMITTED');
+
+  const trade = tradeFixture();
+  jest
+    .spyOn(outbox, 'trade')
+    .mockRejectedValueOnce(new InvalidEventError('Event is not committed'));
+  expect(
+    (
+      await api()
+        .post('/trades/settle')
+        .set('x-internal-token', internalToken)
+        .send(trade)
+        .expect(409)
+    ).body.code,
+  ).toBe('NOT_COMMITTED');
+  // Committed угода з іншими полями: запит не може підмінити суму чи сторону.
+  jest.spyOn(outbox, 'trade').mockResolvedValueOnce({
+    position: '1',
+    envelope: JSON.stringify({
+      eventId: randomUUID(),
+      version: 1,
+      type: 'trade.executed',
+      producer: 'matching-engine',
+      payload: { ...trade, quantity: '0.4' },
+    }),
+  });
+  await api().post('/trades/settle').set('x-internal-token', internalToken).send(trade).expect(409);
+  expect(await journal()).toEqual(before);
+  const [{ status }] = await ledger
+    .source()
+    .query('SELECT status FROM reservations WHERE reservation_id=$1', [orderId]);
+  expect(status).toBe('active');
 });
 
 it('stores rejections and releases or tombstones a reservation only once', async () => {

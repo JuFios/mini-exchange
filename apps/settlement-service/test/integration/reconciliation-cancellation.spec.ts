@@ -50,3 +50,19 @@ it('honors an external transaction lock and releases all snapshots after repeate
     ).toEqual([{ n: 0 }]);
   }
 });
+
+it('answers 503 when one report query reaches the pool statement timeout', async () => {
+  const service = ledger.app().get(ReconciliationService);
+  const timeout = Object.assign(new Error('canceling statement due to statement timeout'), {
+    code: '57014',
+  });
+  jest
+    .spyOn(service as never as { compare: () => Promise<never> }, 'compare')
+    .mockRejectedValueOnce(timeout);
+  await expect(service.run(period)).rejects.toMatchObject({ status: 503 });
+  // Інші помилки не маскуються під тимчасову недоступність.
+  jest
+    .spyOn(service as never as { compare: () => Promise<never> }, 'compare')
+    .mockRejectedValueOnce(new Error('broken'));
+  await expect(service.run(period)).rejects.toThrow('broken');
+});

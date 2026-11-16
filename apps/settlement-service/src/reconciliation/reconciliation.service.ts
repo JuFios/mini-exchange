@@ -84,7 +84,9 @@ export class ReconciliationService {
       try {
         return await this.compare(period, signal);
       } catch (error) {
-        if (signal.aborted) throw new ServiceUnavailableException('Час звірки вичерпано');
+        // 57014: окремий SQL перевищив statement_timeout пулу раніше за загальний бюджет.
+        if (signal.aborted || (error as { code?: string }).code === '57014')
+          throw new ServiceUnavailableException('Час звірки вичерпано');
         throw error;
       }
     } finally {

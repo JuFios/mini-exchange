@@ -27,6 +27,7 @@ export class MetricsController {
   async metrics() {
     const lines = [
       `settlement_recovery_last_success_timestamp_seconds ${this.stats.recoveryLastSuccess}`,
+      `settlement_recovery_caught_up_timestamp_seconds ${this.stats.recoveryCaughtUp}`,
       `settlement_durable_backlog ${this.stats.durableBacklog}`,
       ...Object.entries(this.stats.trades).map(
         ([result, count]) => `settlement_trades_total{result="${result}"} ${count}`,

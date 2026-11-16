@@ -270,6 +270,22 @@ it.each([
     const clean = await report();
     expect(clean.counts.unreserved_order).toBe(0);
 
+    // Активний резерв із тим самим ID, але іншого власника чи інструмента, заявку не покриває.
+    const foreign = randomUUID();
+    liveOrders = [
+      resting(t.buyOrderId, foreign),
+      { ...resting(t.sellOrderId, t.sellerUserId), instrument: 'XYZ' },
+    ];
+    const mismatched = await report();
+    expect(mismatched.counts.unreserved_order).toBe(2);
+    expect(
+      mismatched.discrepancies
+        .filter(({ type }: { type: string }) => type === 'unreserved_order')
+        .map(({ actual }: { actual: { orderId: string } }) => actual.orderId)
+        .sort(),
+    ).toEqual([t.buyOrderId, t.sellOrderId].sort());
+    liveOrders = [resting(t.buyOrderId, t.buyerUserId), resting(t.sellOrderId, t.sellerUserId)];
+
     // Запис у stream із правильним власником і активом проходить перевірку release, тож
     // кошти звільнено, а заявка лишається в книзі. Це має побачити звірка.
     await ledger

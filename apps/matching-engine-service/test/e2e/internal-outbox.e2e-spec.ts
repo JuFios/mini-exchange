@@ -78,6 +78,10 @@ it('returns only committed financial events and preserves recovery order across 
   expect((await (await read(`trades/${tradeId}`)).json()).position).toBe(
     before.settlement_position,
   );
+  // UUID у верхньому регістрі — той самий trade, а не «не committed».
+  expect((await (await read(`trades/${tradeId.toUpperCase()}`)).json()).position).toBe(
+    before.settlement_position,
+  );
   expect((await read(`events/${randomUUID()}`)).status).toBe(404);
   expect((await read('page?instrument=ABC&after=9223372036854775808')).status).toBe(400);
   const id = randomUUID();

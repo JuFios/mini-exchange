@@ -124,12 +124,19 @@ export async function scanUnreservedOrders(
     const rows: { reservation_id: string }[] = await db.query(
       // Справжній order.closed з’являється лише після виходу заявки з книги. Частковий
       // release інакше лишив би active та не порушив би рівність журналу й балансів.
+      // Резерв іншого власника чи інструмента з тим самим ID заявку не забезпечує.
       `SELECT r.reservation_id FROM reservations r
-       WHERE r.reservation_id = ANY($1::uuid[]) AND r.status = 'active'
+       JOIN unnest($1::uuid[], $2::uuid[], $3::text[]) AS o(id, user_id, instrument)
+         ON r.reservation_id = o.id AND r.user_id = o.user_id AND r.instrument = o.instrument
+       WHERE r.status = 'active'
          AND NOT EXISTS (
            SELECT 1 FROM journal_entries j WHERE j.operation_id = 'release:' || r.reservation_id::text
          )`,
-      [page.map(({ orderId }) => orderId)],
+      [
+        page.map(({ orderId }) => orderId),
+        page.map(({ userId }) => userId),
+        page.map(({ instrument }) => instrument),
+      ],
     );
     const missing = unreservedOrders(
       page,

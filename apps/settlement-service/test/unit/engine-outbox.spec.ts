@@ -173,3 +173,46 @@ it('discards a stalled progress connection and still reads the next instrument',
   expect(page).toHaveBeenCalledTimes(1);
   expect(page.mock.calls[0]).toEqual(['XYZ', '0', expect.any(AbortSignal)]);
 });
+
+it('gives each recovered event its own budget and reports catching up only at the journal end', async () => {
+  const connection = () =>
+    Object.assign(new EventEmitter(), {
+      release() {},
+      query: async () => ({ rows: [] }),
+    });
+  let pageSize = 50;
+  const page = jest.fn(async (instrument: string) =>
+    instrument === 'ABC'
+      ? Array.from({ length: pageSize }, (_, index) => ({
+          position: String(index + 1),
+          envelope: `event-${index + 1}`,
+        }))
+      : [],
+  );
+  const stats = new SettlementStats();
+  const handler = new SettlementEventHandler(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    stats,
+    { page } as never,
+    { driver: { master: { connect: async () => connection() } } } as never,
+  );
+  const signals = new Set<AbortSignal | undefined>();
+  jest.spyOn(handler, 'handle').mockImplementation(async (_, __, signal) => {
+    signals.add(signal);
+  });
+
+  // Повна сторінка: курсор ще не дійшов до кінця журналу, хоча прохід успішний.
+  await handler.recover(() => false);
+  expect(signals.size).toBe(50);
+  expect(stats.recoveryLastSuccess).toBeGreaterThan(0);
+  expect(stats.recoveryCaughtUp).toBe(0);
+  expect(stats.durableBacklog).toBe(50);
+
+  pageSize = 3;
+  await handler.recover(() => false);
+  expect(stats.recoveryCaughtUp).toBeGreaterThan(0);
+  expect(stats.durableBacklog).toBe(3);
+});

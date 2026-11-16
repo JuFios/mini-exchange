@@ -10,14 +10,18 @@ import {
   ParseUUIDPipe,
   Post,
   UnprocessableEntityException,
+  UseFilters,
   UseGuards,
 } from '@nestjs/common';
+import { InvalidEventFilter } from '../consumer/invalid-event.filter';
+import { InvalidEventError } from '../consumer/settlement-event';
 import { InternalTokenGuard } from '../security/internal-token.guard';
 import { ReservationsService } from './reservations.service';
 import { ReserveDto } from './reserve.dto';
 
 @Controller('internal/reservations')
 @UseGuards(InternalTokenGuard)
+@UseFilters(InvalidEventFilter)
 export class ReservationsController {
   private fundingUntil = 0;
   private funding?: Promise<void>;
@@ -44,7 +48,14 @@ export class ReservationsController {
   }
 
   private async verifyFunding(): Promise<void> {
-    await this.outbox.page('ABC', '9223372036854775807');
+    // Порожня сторінка після максимальної позиції перевіряє лише доступ і scope до outbox:
+    // маршрут і credential спільні для всіх інструментів.
+    await this.outbox.page('ABC', '9223372036854775807').catch((error: unknown) => {
+      // 404 тут означає зламаний маршрут, а не відмову в операції: новий submit має почекати.
+      if (error instanceof InvalidEventError)
+        throw new ServiceUnavailableException('Розрахунок тимчасово недоступний');
+      throw error;
+    });
     if (!(await this.modules.get(SettlementConsumer, { strict: false }).redisReady()))
       throw new ServiceUnavailableException('Розрахунок тимчасово недоступний');
   }

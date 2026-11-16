@@ -32,5 +32,7 @@ groups:
         expr: time() - max(settlement_recovery_last_success_timestamp_seconds) > 60
         for: 5m
       - alert: SettlementDurableBacklog
-        expr: max(settlement_durable_backlog) > 0
-        for: 10m
+        # Під торгівлею сторінка recovery майже завжди непорожня: live delivery курсор не рухає.
+        # Відставання — це курсор, який 10 хвилин не дочитував журнал до кінця.
+        expr: time() - max(settlement_recovery_caught_up_timestamp_seconds) > 600
+        for: 5m

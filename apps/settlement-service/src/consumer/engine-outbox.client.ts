@@ -29,7 +29,8 @@ export class EngineOutboxClient {
   }
 
   trade(id: string): Promise<CommittedEvent> {
-    return this.read(`trades/${id}`);
+    // Engine записує UUID малими літерами, а DTO приймає будь-який регістр.
+    return this.read(`trades/${id.toLowerCase()}`);
   }
 
   async page(instrument: string, after: string, signal?: AbortSignal): Promise<CommittedEvent[]> {

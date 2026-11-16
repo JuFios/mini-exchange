@@ -12,6 +12,12 @@ import { PayloadConflictError } from './failure-kind';
 import { parseSettlementEvent } from './settlement-event';
 import { SettlementStats } from './settlement-stats';
 
+// Розмір сторінки `GET /internal/outbox/page` в engine. Коротша сторінка означає, що курсор
+// після неї дійшов до кінця committed журналу на момент читання.
+const OUTBOX_PAGE_LIMIT = 50;
+// Бюджет одного кроку recovery: читання курсора й сторінки або одна подія з checkpoint.
+const RECOVERY_STEP_MS = 5000;
+
 @Injectable()
 export class SettlementEventHandler {
   private readonly logger = new Logger(SettlementEventHandler.name);
@@ -28,28 +34,38 @@ export class SettlementEventHandler {
   async recover(stopped: () => boolean): Promise<void> {
     this.stats.durableBacklog = 0;
     const failures: string[] = [];
+    let caughtUp = true;
     for (const instrument of ASSETS.filter((asset) => asset !== 'USD')) {
       if (stopped()) return;
       try {
-        await this.recoverInstrument(instrument, stopped);
+        caughtUp = (await this.recoverInstrument(instrument, stopped)) && caughtUp;
       } catch (error) {
         // Курсор цього інструмента лишається перед проблемою; інші інструменти просуваються.
         failures.push(`${instrument}: ${(error as Error).message}`);
       }
     }
     if (failures.length) throw new Error(failures.join('; '));
-    if (!stopped()) this.stats.recoveryLastSuccess = Date.now() / 1000;
+    if (stopped()) return;
+    const now = Date.now() / 1000;
+    this.stats.recoveryLastSuccess = now;
+    // Live delivery не рухає курсор, тож під торгівлею сторінка рідко порожня. Відставання
+    // означає лише курсор, який не дочитує журнал до кінця.
+    if (caughtUp) this.stats.recoveryCaughtUp = now;
   }
 
-  private async recoverInstrument(instrument: string, stopped: () => boolean): Promise<void> {
-    const signal = AbortSignal.timeout(5000);
-    const [progress]: { position: string }[] = await boundedRead(this.source, signal, (db) =>
+  /** Повертає true, якщо курсор дійшов до кінця журналу інструмента на момент читання. */
+  private async recoverInstrument(instrument: string, stopped: () => boolean): Promise<boolean> {
+    const pageSignal = AbortSignal.timeout(RECOVERY_STEP_MS);
+    const [progress]: { position: string }[] = await boundedRead(this.source, pageSignal, (db) =>
       db.query('SELECT position FROM settlement_progress WHERE instrument=$1', [instrument]),
     );
-    const events = await this.outbox.page(instrument, progress?.position ?? '0', signal);
+    const events = await this.outbox.page(instrument, progress?.position ?? '0', pageSignal);
     this.stats.durableBacklog += events.length;
     for (const event of events) {
-      if (stopped()) return;
+      if (stopped()) return false;
+      // Окремий бюджет на подію: повільний ledger просуває курсор подія за подією, а не
+      // переривається щоразу посеред сторінки.
+      const signal = AbortSignal.timeout(RECOVERY_STEP_MS);
       await this.handle(`outbox:${event.position}`, event.envelope, signal);
       // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
       await boundedTransaction(this.source, signal, (db) =>
@@ -62,6 +78,7 @@ export class SettlementEventHandler {
         ),
       );
     }
+    return events.length < OUTBOX_PAGE_LIMIT;
   }
 
   /** Redis delivery публікує wallet.updated до ACK. Recovery читає вже перевірену сторінку outbox. */

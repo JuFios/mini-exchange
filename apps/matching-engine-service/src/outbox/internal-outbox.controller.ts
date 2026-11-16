@@ -48,7 +48,8 @@ export class InternalOutboxController {
   async trade(@Param('id', ParseUUIDPipe) id: string) {
     const [row]: Row[] = await this.source.query(
       `SELECT ${COLUMNS} FROM outbox WHERE type='trade.executed' AND payload->>'tradeId'=$1`,
-      [id],
+      // Engine записує UUID малими літерами; ParseUUIDPipe пропускає й великі.
+      [id.toLowerCase()],
     );
     if (!row) throw new NotFoundException('Угоду не знайдено');
     return committed(row);
@@ -59,6 +60,7 @@ export class InternalOutboxController {
     this.catalog.require(instrument);
     if (!/^(0|[1-9][0-9]{0,18})$/.test(after) || BigInt(after) > 9223372036854775807n)
       throw new BadRequestException('Некоректна позиція');
+    // Settlement вважає сторінку коротшу за 50 кінцем журналу (`OUTBOX_PAGE_LIMIT`).
     const rows: Row[] = await this.source.query(
       `SELECT ${COLUMNS} FROM outbox WHERE instrument=$1 AND settlement_position>$2 AND ${FINANCIAL}
        ORDER BY settlement_position LIMIT 50`,
