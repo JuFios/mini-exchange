@@ -8,7 +8,8 @@ trap 'rm -rf "$scratch"' EXIT
 logs=${IMAGE_AUDIT_LOG_DIR:-$scratch/reports}
 mkdir -p "$scratch/cache" "$logs"
 # Завантаження бази не має доступу до образів чи Docker socket.
-docker run --rm -v "$scratch/cache:/cache" "$scanner" image \
+# Під користувачем runner: інакше файли бази від root не видаляє cleanup на Linux.
+docker run --rm --user "$(id -u):$(id -g)" -v "$scratch/cache:/cache" "$scanner" image \
   --cache-dir /cache --download-db-only --no-progress
 
 for service in matching-engine-1 settlement-service frontend engine-lb; do
