@@ -1,4 +1,4 @@
-import { apiJson, ApiError } from './client-api';
+import { checkedFetch, ApiError } from './client-api';
 import type { OrderInput } from './decimal';
 import { type Order, acceptedOrder, attemptKey } from './private-state';
 
@@ -33,18 +33,38 @@ export async function sendOrder(input: OrderInput) {
   const idempotencyKey = pending?.idempotencyKey ?? crypto.randomUUID();
   writeAttempt(key, { idempotencyKey });
   try {
-    const { order } = await apiJson<{ order: Partial<Order> & { id: string } }>(
-      '/api/engine/orders',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
-        body: JSON.stringify(input),
-      },
-    );
-    // Будь-яка успішна відповідь, зокрема 202, означає прийняту заявку. Ключ потрібен лише для
-    // повтору після обриву: зі збереженим ключем наступна така сама заявка повернула б цю.
-    if (!order || typeof order.id !== 'string' || !order.id)
+    const response = await checkedFetch('/api/engine/orders', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    });
+    const { order, trades } = (await response.json()) as {
+      order?: Partial<Order> & { id: string; ownerId?: string };
+      trades?: unknown[];
+    };
+    if (
+      ![200, 201, 202].includes(response.status) ||
+      !Array.isArray(trades) ||
+      !order ||
+      typeof order.id !== 'string' ||
+      !order.id ||
+      order.instrument !== input.instrument ||
+      order.side !== input.side ||
+      (response.status === 202 && order.status !== 'pending') ||
+      (response.status === 201 && order.status === 'pending')
+    )
       throw new Error('Invalid order acknowledgement');
+    // Коротка відповідь можлива тільки після стійкого прийняття з HTTP 202.
+    if (
+      !Number.isInteger(order.version) &&
+      (response.status !== 202 ||
+        'version' in order ||
+        order.status !== 'pending' ||
+        typeof order.ownerId !== 'string' ||
+        !order.ownerId ||
+        trades.length !== 0)
+    )
+      throw new Error('Invalid pending order acknowledgement');
     const accepted = acceptedOrder(input, order);
     if (attemptKey(accepted) !== key)
       throw new Error('Order acknowledgement does not match the request');

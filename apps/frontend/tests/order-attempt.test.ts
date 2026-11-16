@@ -27,7 +27,20 @@ afterEach(() => {
 
 const send = () =>
   (require('../lib/order-attempt') as typeof import('../lib/order-attempt')).sendOrder(input);
-const pending = (id: string) => () => Response.json({ order: { id }, trades: [] }, { status: 202 });
+const pending = (id: string) => () =>
+  Response.json(
+    {
+      order: {
+        id,
+        ownerId: 'owner',
+        instrument: input.instrument,
+        side: input.side,
+        status: 'pending',
+      },
+      trades: [],
+    },
+    { status: 202 },
+  );
 
 it('sends an identical second order with its own key after a pending acceptance', async () => {
   answers = [pending('first'), pending('second')];
@@ -83,10 +96,33 @@ it('keeps a separate retry key for each different order after a gateway failure'
 });
 
 it('retains the same key after an incomplete successful acknowledgement', async () => {
-  answers = [() => Response.json({ order: { version: 1 } }, { status: 201 }), pending('accepted')];
+  answers = [
+    () =>
+      Response.json(
+        { order: { id: 'incomplete', instrument: 'ABC', side: 'buy' }, trades: [] },
+        { status: 201 },
+      ),
+    () =>
+      Response.json(
+        {
+          order: {
+            id: 'other',
+            instrument: 'XYZ',
+            side: 'buy',
+            status: 'pending',
+            ownerId: 'owner',
+          },
+          trades: [],
+        },
+        { status: 202 },
+      ),
+    pending('accepted'),
+  ];
+  await assert.rejects(send());
   await assert.rejects(send());
   await send();
   assert.equal(keys[0], keys[1]);
+  assert.equal(keys[0], keys[2]);
 });
 
 it('retains a retry key when sessionStorage is unavailable', async () => {

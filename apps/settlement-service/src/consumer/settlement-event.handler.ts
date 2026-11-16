@@ -36,7 +36,7 @@ export class SettlementEventHandler {
       this.stats.durableBacklog += events.length;
       for (const event of events) {
         if (stopped()) return;
-        await this.handle(`outbox:${event.position}`, event.envelope);
+        await this.handle(`outbox:${event.position}`, event.envelope, 'recovery');
         // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
         // Кожен прохід підтверджує лише свій повністю оброблений префікс.
         await this.source.query(
@@ -51,16 +51,21 @@ export class SettlementEventHandler {
     this.stats.recoveryLastSuccess = Date.now() / 1000;
   }
 
-  /** Повертається лише після COMMIT і публікації wallet.updated: після цього запис можна підтверджувати. */
-  async handle(streamId: string, envelope: string | undefined): Promise<void> {
-    const canonical = await this.outbox.event(envelope);
-    const event = parseSettlementEvent(canonical.envelope);
+  /** Redis delivery публікує wallet.updated до ACK. Recovery читає вже перевірену сторінку outbox. */
+  async handle(
+    streamId: string,
+    envelope: string | undefined,
+    mode: 'stream' | 'recovery' = 'stream',
+  ): Promise<void> {
+    const canonical = mode === 'recovery' ? envelope : (await this.outbox.event(envelope)).envelope;
+    const event = parseSettlementEvent(canonical);
     if (event.type === 'order.closed') {
       const { orderId, releasedAmount, userId, releasedAsset } = event.closed;
       await this.reservations.release(orderId, BigInt(releasedAmount), false, {
         userId,
         asset: releasedAsset,
       });
+      if (mode === 'recovery') return;
       // Як і для угоди, повторна доставка теж публікує стан: без цього збій XADD після COMMIT
       // лишав би клієнту старий резерв до перепідключення.
       const released = await this.reservations.closedRelease(orderId);
@@ -76,6 +81,7 @@ export class SettlementEventHandler {
       this.stats.trades[result.status]++;
       this.logger.log({ event: 'settlement.trade', ...fields, result: result.status });
       if (result.status === 'conflict') throw new PayloadConflictError('Trade payload conflict');
+      if (mode === 'recovery') return;
 
       // Повторна доставка теж публікує стан: попередній прогін міг впасти між COMMIT і XADD.
       const balances = await this.wallets.read([

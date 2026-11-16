@@ -389,14 +389,15 @@ it('keeps cancelled orders that are older than the latest hundred orders', async
   );
 });
 
-it('finishes a snapshot that needs more order reads than the ingress allows at once', async () => {
+it('finishes a large snapshot across deadlines without repeating completed order reads', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
-  // Терміналу відомі 150 заявок, яких уже немає серед активних: кожну він дочитує за ID.
-  const known = Array.from({ length: 150 }, (_, i) => `known-${i}`);
+  // Навіть початковий burst і 20 читань/с не вкладають450 ID в одну спробу.
+  const known = Array.from({ length: 450 }, (_, i) => `known-${i}`);
   // Двійник ліміту nginx: 100 читань заявок, далі 429, поки таймер не поверне квоту.
   let quota = 100;
   let inFlight = 0;
   let peak = 0;
+  const completed = new Set<string>();
   mock.method(globalThis, 'fetch', async (path: string) => {
     if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
     if (!path.startsWith('/api/engine/orders')) return Response.json([]);
@@ -408,6 +409,8 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
     inFlight--;
     const id = path.match(/\/orders\/([^?]+)$/)?.[1];
     if (!id) return Response.json([]);
+    assert.equal(completed.has(id), false, `Repeated a finished read of ${id}`);
+    completed.add(id);
     return Response.json({
       id,
       status: 'cancelled',
@@ -415,7 +418,8 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       version: 2,
     });
   });
-  const timers: (() => void)[] = [];
+  let now = 0;
+  const timers = new Map<() => void, number>();
   const errors: unknown[] = [];
   let snapshot: { orders: { id: string }[] } | undefined;
   const socket = new EventEmitter();
@@ -435,14 +439,11 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
     },
     {
       setTimeout(callback: () => void, ms: number) {
-        // Ці тести рухають лише короткі паузи квоти, а не весь бюджет snapshot.
-        if (ms >= 15000) return callback;
-        timers.push(callback);
+        timers.set(callback, now + ms);
         return callback;
       },
       clearTimeout(handle: unknown) {
-        const index = timers.indexOf(handle as () => void);
-        if (index >= 0) timers.splice(index, 1);
+        timers.delete(handle as () => void);
       },
     },
     (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
@@ -454,15 +455,21 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       }),
   );
   // Кожен крок — секунда: квота відновлюється, і спрацьовують відкладені повтори.
-  for (let second = 0; second < 20 && !snapshot; second++) {
+  for (let second = 0; second < 50 && !snapshot; second++) {
     for (let tick = 0; tick < 50; tick++) await new Promise((resolve) => setImmediate(resolve));
     quota = Math.min(100, quota + 20);
-    for (const timer of timers.splice(0)) timer();
+    now += 1000;
+    for (const [callback, at] of timers) {
+      if (at > now) continue;
+      timers.delete(callback);
+      callback();
+    }
   }
   stop();
   assert.ok(snapshot, `No snapshot after ${errors.length} failed loads`);
   assert.deepEqual(snapshot.orders.map(({ id }) => id).sort(), [...known].sort());
-  // Дочитування за ID не відкриває 150 запитів одразу.
+  assert.equal(completed.size, 450);
+  assert(errors.some((error) => String(error).includes('Snapshot deadline exceeded')));
   assert.ok(peak <= 8, `Peak of ${peak} parallel order reads`);
 });
 

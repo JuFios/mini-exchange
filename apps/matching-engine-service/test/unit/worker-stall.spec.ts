@@ -4,7 +4,8 @@ import type { InstrumentLease } from '../../src/ownership/lease-manager';
 
 afterEach(() => jest.useRealTimers());
 
-const STALL_MS = 30000;
+const DRAIN_STALL_MS = 6500;
+const RECOVERY_STALL_MS = 30000;
 const never = () => new Promise<never>(() => undefined);
 
 function lease(value = 'v'): InstrumentLease {
@@ -55,7 +56,7 @@ it('releases the lease with a back-off when a drain never settles', async () => 
   drain(worker).mockImplementation(never);
 
   const kicked = worker.kick('ABC');
-  await jest.advanceTimersByTimeAsync(STALL_MS - 1);
+  await jest.advanceTimersByTimeAsync(DRAIN_STALL_MS - 1);
   expect(dropped).toEqual([]);
   await jest.advanceTimersByTimeAsync(1);
   await kicked;
@@ -70,7 +71,7 @@ it('releases the lease and frees the slot when recovery never settles', async ()
 
   const loading = worker['reload']('ABC');
   const failure = expect(loading).rejects.toBeInstanceOf(FencedOutError);
-  await jest.advanceTimersByTimeAsync(STALL_MS);
+  await jest.advanceTimersByTimeAsync(RECOVERY_STALL_MS);
   await failure;
 
   expect(dropped[0]).toEqual([held, 5000]);
@@ -83,7 +84,7 @@ it('does not install a recovery that finishes after the stall', async () => {
   const { worker, owned } = setup(() => new Promise((resolve) => (finish = resolve)));
 
   const failure = expect(worker['reload']('ABC')).rejects.toBeInstanceOf(FencedOutError);
-  await jest.advanceTimersByTimeAsync(STALL_MS);
+  await jest.advanceTimersByTimeAsync(RECOVERY_STALL_MS);
   await failure;
   finish({ book: { bids: [], asks: [] }, seq: '0', halted: false, lease: lease('late') });
   await jest.advanceTimersByTimeAsync(0);
@@ -117,7 +118,7 @@ it('leaves the lease alone when the drain finishes in time', async () => {
   drain(worker).mockResolvedValue(undefined);
 
   await worker.kick('ABC');
-  await jest.advanceTimersByTimeAsync(STALL_MS * 2);
+  await jest.advanceTimersByTimeAsync(DRAIN_STALL_MS * 2);
 
   expect(dropped).toEqual([]);
 });
@@ -130,7 +131,7 @@ it('keeps the lease while a long drain keeps making progress', async () => {
 
   const kicked = worker.kick('ABC');
   for (let step = 0; step < 4; step++) {
-    await jest.advanceTimersByTimeAsync(20000);
+    await jest.advanceTimersByTimeAsync(DRAIN_STALL_MS - 1000);
     worker['beat'](held);
   }
   finish();
@@ -145,9 +146,9 @@ it('releases the lease once progress stops part way through', async () => {
   drain(worker).mockImplementation(never);
 
   const kicked = worker.kick('ABC');
-  await jest.advanceTimersByTimeAsync(20000);
+  await jest.advanceTimersByTimeAsync(DRAIN_STALL_MS - 1000);
   worker['beat'](held);
-  await jest.advanceTimersByTimeAsync(STALL_MS - 1);
+  await jest.advanceTimersByTimeAsync(DRAIN_STALL_MS - 1);
   expect(dropped).toEqual([]);
   await jest.advanceTimersByTimeAsync(1);
   await kicked;

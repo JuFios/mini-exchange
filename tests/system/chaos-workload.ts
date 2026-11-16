@@ -178,8 +178,8 @@ async function recover(
   if (fault === 'settlement_after_commit_before_ack') {
     const event = crashEvent(victim, fault);
     const { rows } = await ledger.query(
-      'SELECT entry_id FROM settled_trades WHERE stream_id=$1 AND entry_id IS NOT NULL',
-      [event.id],
+      'SELECT entry_id FROM settled_trades WHERE trade_id=$1 AND entry_id IS NOT NULL',
+      [event.tradeId],
     );
     assert.equal(rows.length, 1, 'Settlement must commit before the process dies');
     const entryId = rows[0].entry_id as string;
@@ -333,7 +333,7 @@ async function pauseInTransaction(db: Client, victim: string) {
 function crashEvent(
   victim: string,
   fault: Fault,
-): { point: string; seq: string; eventId: string; id: string } {
+): { point: string; seq: string; eventId: string; id: string; tradeId: string } {
   const line = docker('logs', victim)
     .split('\n')
     .find((entry) => entry.startsWith('system-crash '));

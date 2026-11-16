@@ -2,6 +2,7 @@ import { QueryRunner } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
 import { SettlementEventHandler } from '../../src/consumer/settlement-event.handler';
+import { WalletPublisher } from '../../src/wallets/wallet-publisher';
 import { ledgerApp, tradeFixture } from '../ledger-app';
 import { reserveTrade, streamFields } from '../stream-fixtures';
 
@@ -69,7 +70,11 @@ it('recovers the exact ledger after an interrupted checkpoint and concurrent red
   await expect(handler.recover(() => false)).rejects.toThrow('Interrupted');
   expect(await query('SELECT * FROM settlement_progress')).toEqual([]);
   spy.mockRestore();
+  const publish = jest
+    .spyOn(ledger.app().get(WalletPublisher), 'publish')
+    .mockRejectedValue(new Error('Wallet Redis unavailable'));
   await Promise.all([handler.recover(() => false), handler.recover(() => false)]);
+  expect(publish).not.toHaveBeenCalled();
   expect(await query('SELECT position FROM settlement_progress')).toEqual([{ position: '3' }]);
   expect(await query("SELECT count(*)::int AS n FROM journal_entries WHERE type='trade'")).toEqual([
     { n: 1 },
@@ -81,13 +86,16 @@ it('recovers the exact ledger after an interrupted checkpoint and concurrent red
     await query("SELECT sum(balance)::text AS balance FROM accounts WHERE kind='reserved'"),
   ).toEqual([{ balance: '0' }]);
   const balances = await query('SELECT id,balance,version FROM accounts ORDER BY id');
-  await handler.handle(
-    'forged',
-    JSON.stringify({
-      eventId: JSON.parse(events[0].envelope).eventId,
-      payload: { tradeId: randomUUID(), quantity: '999' },
-    }),
-  );
+  await expect(
+    handler.handle(
+      'forged',
+      JSON.stringify({
+        eventId: JSON.parse(events[0].envelope).eventId,
+        payload: { tradeId: randomUUID(), quantity: '999' },
+      }),
+    ),
+  ).rejects.toThrow('Wallet Redis unavailable');
+  publish.mockRestore();
   await handler.recover(() => false);
   expect(await query('SELECT id,balance,version FROM accounts ORDER BY id')).toEqual(balances);
 });

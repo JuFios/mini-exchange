@@ -94,13 +94,14 @@ it('limits non-order engine connections per client below the shared ceiling', ()
   );
   expect(config).toContain('limit_conn_zone $engine_rest_client zone=engine_rest_by_client:10m;');
   expect(config).toContain('limit_conn_zone $engine_rest_scope zone=engine_rest_total:64k;');
-  // Спільний для всіх клієнтів ключ має лише стеля.
+  // Фіксуємо окремі ключі для клієнтських і спільних квот.
   const zones = [...config.matchAll(/^limit_conn_zone (\S+) zone=(\w+):/gm)].map(
     ([, key, zone]) => `${zone}=${key}`,
   );
   expect(zones).toEqual([
     'engine_rest_by_client=$engine_rest_client',
     'engine_rest_total=$engine_rest_scope',
+    'engine_outbox_total=$server_port',
     'engine_ws_by_ip=$binary_remote_addr',
     'frontend_active_by_client=$binary_remote_addr',
     'frontend_active_total=$server_name',
@@ -155,4 +156,15 @@ it('limits wallet reads by client address and token', () => {
   expect(config).toMatch(
     /limit_req_zone \$exchange_client_address zone=wallets_reads_by_client:\S+ rate=100r\/s;/,
   );
+});
+
+it('reserves separate connection capacity for internal committed outbox reads', () => {
+  const config = readFileSync(join(__dirname, '../../../../deploy/nginx/engine-lb.conf'), 'utf8');
+  const internal = config.split(/\nserver \{\n/).find((server) => server.includes('listen 8080;'));
+  const outbox = /\n {2}location ~\* \^\/internal\/outbox\/ \{\n([\s\S]*?)\n {2}\}/.exec(
+    internal ?? '',
+  );
+  expect(outbox?.[1]).toContain('limit_conn engine_outbox_total 8;');
+  expect(outbox?.[1]).not.toContain('engine_rest_total');
+  expect(config).toContain('limit_conn_zone $server_port zone=engine_outbox_total:64k;');
 });

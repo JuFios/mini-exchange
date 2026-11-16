@@ -15,6 +15,21 @@ it('separates outbox reads from reconciliation and reservation credentials', asy
   ])
     expect((await read('page?instrument=ABC', token)).status).toBe(401);
   expect((await read('page?instrument=ABC')).status).toBe(200);
+  for (const [token, status] of [
+    [process.env.RECONCILIATION_TOKEN!, 401],
+    [process.env.OUTBOX_READ_TOKEN!, 200],
+  ] as const) {
+    const response = await api.request(
+      '/INTERNAL/OUTBOX/page?instrument=ABC',
+      'GET',
+      undefined,
+      undefined,
+      {
+        'x-internal-token': token,
+      },
+    );
+    expect(response.status).toBe(status);
+  }
   expect(
     (
       await api.request(

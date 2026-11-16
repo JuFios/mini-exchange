@@ -13,7 +13,7 @@ import {
 
 const REPLICAS = ['matching-engine-1', 'matching-engine-2'];
 // Сторожовий таймер worker плюс запас на acquire і recovery резервної репліки.
-const TAKEOVER_LIMIT_MS = 45000;
+const TAKEOVER_LIMIT_MS = 10000;
 
 const address = (service: string) =>
   docker(
@@ -82,6 +82,7 @@ async function main() {
       TAKEOVER_LIMIT_MS,
     );
     const takeoverMs = Math.round(performance.now() - started);
+    assert(takeoverMs <= TAKEOVER_LIMIT_MS, `takeoverMs=${takeoverMs}`);
     assert.equal(`matching-${current.owner_instance}`, standby);
     // Через балансувальник: відрізана репліка має дати повторюваний 503, а не 500.
     const response = await submit(user, { ...body, side: 'buy' });

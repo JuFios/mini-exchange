@@ -21,6 +21,7 @@ import {
 interface Snapshot {
   orders: Order[];
   wallets: Wallet[];
+  absentOrderIds?: string[];
 }
 
 interface View {
@@ -95,23 +96,29 @@ async function readOrders<T>(path: string, read: SnapshotRead): Promise<T> {
 }
 
 /** Заявки за ID не більше ніж по кілька одночасно, щоб не вичерпати квоту одним сплеском. */
-async function readOrdersById(ids: string[], read: SnapshotRead) {
-  const orders: Order[] = [];
+async function readOrdersById(
+  ids: string[],
+  read: SnapshotRead,
+  resolved: Map<string, Order | null>,
+) {
+  const missing = ids.filter((id) => !resolved.has(id));
   let next = 0;
   async function worker() {
     // Спроба, що вже впала, скасовує свій signal: решта воркерів не витрачає квоту даремно.
-    while (next < ids.length && !read.signal.aborted) {
-      const id = ids[next++];
+    while (next < missing.length && !read.signal.aborted) {
+      const id = missing[next++];
       try {
-        orders.push(await readOrders<Order>('/api/engine/orders/' + encodeURIComponent(id), read));
+        const order = await readOrders<Order>('/api/engine/orders/' + encodeURIComponent(id), read);
+        if (!read.signal.aborted) resolved.set(id, order);
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 404) || read.signal.aborted)
           throw error;
+        resolved.set(id, null);
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(PARALLEL_ORDER_READS, ids.length) }, worker));
-  return orders;
+  await Promise.all(Array.from({ length: Math.min(PARALLEL_ORDER_READS, missing.length) }, worker));
+  return ids.map((id) => resolved.get(id));
 }
 
 function readActive(read: SnapshotRead) {
@@ -122,7 +129,7 @@ interface OrderRead {
   onOrder(order: Order): void;
   onError(error: unknown): void;
   /** Читання завершене: заявку отримано, помилка остаточна або сесію закрито. */
-  onSettled(): void;
+  onSettled(reason?: 'deadline'): void;
 }
 
 /**
@@ -149,7 +156,7 @@ export function readOrder(
     clock.clearTimeout(deadline);
     if (!parent.aborted) read.onError(signal.reason);
     clock.clearTimeout(timer);
-    read.onSettled();
+    read.onSettled(parent.aborted ? undefined : 'deadline');
   };
   if (signal.aborted) return read.onSettled();
   signal.addEventListener('abort', abort, { once: true });
@@ -227,7 +234,7 @@ export function startPrivateSocket(
     delay = Math.min(delay * 2, RETRY_MAX_MS);
   }
 
-  function load(session: AbortSignal) {
+  function load(session: AbortSignal, resolved: Map<string, Order | null>) {
     // Своя спроба на кожне читання знімка: після збою її запити зупиняються, а не конкурують
     // за квоту читань із наступною спробою.
     const attempt = new AbortController();
@@ -268,9 +275,14 @@ export function startPrivateSocket(
         const orders = [...byId.values()];
         // Заявка, відсутня у списку, могла завершитися між з'єднаннями.
         const missing = [...view.knownOrderIds()].filter((id) => !byId.has(id));
-        orders.push(...(await readOrdersById(missing, read)));
+        const recovered = await readOrdersById(missing, read, resolved);
         if (signal.aborted) return;
-        view.onSnapshot({ orders, wallets }, session);
+        orders.push(...recovered.filter((order): order is Order => Boolean(order)));
+        const absentOrderIds = missing.filter((id) => resolved.get(id) === null);
+        view.onSnapshot(
+          { orders, wallets, ...(absentOrderIds.length && { absentOrderIds }) },
+          session,
+        );
         walletRefresh?.start();
         loadDelay = RETRY_MIN_MS;
       })
@@ -283,7 +295,7 @@ export function startPrivateSocket(
         if (!transient(failure)) return;
         clock.clearTimeout(loadRetry);
         loadRetry = clock.setTimeout(() => {
-          if (!session.aborted) load(session);
+          if (!session.aborted) load(session, resolved);
         }, loadDelay);
         loadDelay = Math.min(loadDelay * 2, RETRY_MAX_MS);
       })
@@ -314,7 +326,7 @@ export function startPrivateSocket(
       clock,
     );
     view.onLoading();
-    load(signal);
+    load(signal, new Map());
   });
   socket.on('disconnect', (reason: string) => {
     session?.abort();
@@ -390,6 +402,7 @@ export function usePrivateSocket(url: string | undefined) {
     }
 
     function applyOrder(update: OrderUpdate, signal: AbortSignal) {
+      if (signal.aborted) return;
       const previous = orders.get(update.orderId);
       if (previous) {
         if (update.version <= previous.version) return;
@@ -429,9 +442,14 @@ export function usePrivateSocket(url: string | undefined) {
           failure = error;
           onError(error);
         },
-        onSettled() {
+        onSettled(reason) {
           if (reads.get(update.orderId) !== signal) return;
           reads.delete(update.orderId);
+          if (reason === 'deadline') {
+            stop.resync();
+            return;
+          }
+          if (signal.aborted) return;
           pendingOrders.delete(update.orderId);
         },
       });
@@ -451,7 +469,6 @@ export function usePrivateSocket(url: string | undefined) {
       onLoading() {
         loading = true;
         reads.clear();
-        pendingOrders.clear();
         pendingWallets.clear();
         setStatus('loading');
       },
@@ -477,12 +494,14 @@ export function usePrivateSocket(url: string | undefined) {
         for (const order of submitted.values()) storeOrder(order);
         submitted.clear();
         wallets.clear();
+        for (const id of snapshot.absentOrderIds ?? []) pendingOrders.delete(id);
         for (const wallet of [...snapshot.wallets, ...pendingWallets.values()]) {
           wallets.set(wallet.asset, mergeWallet(wallets.get(wallet.asset), wallet)!);
         }
         loading = false;
         for (const [id, update] of pendingOrders) {
           applyOrder(update, signal);
+          if (signal.aborted) return;
           if (!reads.has(id)) pendingOrders.delete(id);
         }
         pendingWallets.clear();

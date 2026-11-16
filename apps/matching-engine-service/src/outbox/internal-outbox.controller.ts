@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { InternalTokenGuard } from '../security/internal-token.guard';
+import { InternalTokenGuard, OutboxTokenScope } from '../security/internal-token.guard';
 import { InstrumentCatalog } from '../orders/instrument-catalog';
 import { outboxStreamFields, OutboxStreamRow } from './streams';
 
@@ -27,6 +27,7 @@ function committed(row: Row) {
 
 @Controller('internal/outbox')
 @UseGuards(InternalTokenGuard)
+@OutboxTokenScope()
 export class InternalOutboxController {
   constructor(
     private readonly source: DataSource,
