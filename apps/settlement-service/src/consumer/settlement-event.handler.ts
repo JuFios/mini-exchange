@@ -1,5 +1,6 @@
 import { EngineOutboxClient } from './engine-outbox.client';
 import { DataSource } from 'typeorm';
+import { boundedRead, boundedTransaction } from '../database/bounded-read';
 import { ASSETS } from '../ledger/amount';
 import { traced } from '../observability/trace-context';
 import { Injectable, Logger } from '@nestjs/common';
@@ -41,22 +42,24 @@ export class SettlementEventHandler {
   }
 
   private async recoverInstrument(instrument: string, stopped: () => boolean): Promise<void> {
-    const [progress]: { position: string }[] = await this.source.query(
-      'SELECT position FROM settlement_progress WHERE instrument=$1',
-      [instrument],
+    const signal = AbortSignal.timeout(5000);
+    const [progress]: { position: string }[] = await boundedRead(this.source, signal, (db) =>
+      db.query('SELECT position FROM settlement_progress WHERE instrument=$1', [instrument]),
     );
-    const events = await this.outbox.page(instrument, progress?.position ?? '0');
+    const events = await this.outbox.page(instrument, progress?.position ?? '0', signal);
     this.stats.durableBacklog += events.length;
     for (const event of events) {
       if (stopped()) return;
-      await this.handle(`outbox:${event.position}`, event.envelope, 'recovery');
+      await this.handle(`outbox:${event.position}`, event.envelope, signal);
       // Фінансовий COMMIT уже відбувся. Падіння до цього запису дає ідемпотентний повтор.
-      await this.source.query(
-        `INSERT INTO settlement_progress(instrument,position) VALUES($1,$2)
+      await boundedTransaction(this.source, signal, (db) =>
+        db.query(
+          `INSERT INTO settlement_progress(instrument,position) VALUES($1,$2)
          ON CONFLICT(instrument) DO UPDATE
          SET position=GREATEST(settlement_progress.position,EXCLUDED.position),
              updated_at=clock_timestamp()`,
-        [instrument, event.position],
+          [instrument, event.position],
+        ),
       );
     }
   }
@@ -65,17 +68,23 @@ export class SettlementEventHandler {
   async handle(
     streamId: string,
     envelope: string | undefined,
-    mode: 'stream' | 'recovery' = 'stream',
+    recoverySignal?: AbortSignal,
   ): Promise<void> {
-    const canonical = mode === 'recovery' ? envelope : (await this.outbox.event(envelope)).envelope;
+    const canonical = recoverySignal ? envelope : (await this.outbox.event(envelope)).envelope;
     const event = parseSettlementEvent(canonical);
     if (event.type === 'order.closed') {
       const { orderId, releasedAmount, userId, releasedAsset } = event.closed;
-      await this.reservations.release(orderId, BigInt(releasedAmount), false, {
-        userId,
-        asset: releasedAsset,
-      });
-      if (mode === 'recovery') return;
+      await this.reservations.release(
+        orderId,
+        BigInt(releasedAmount),
+        false,
+        {
+          userId,
+          asset: releasedAsset,
+        },
+        recoverySignal,
+      );
+      if (recoverySignal) return;
       // Як і для угоди, повторна доставка теж публікує стан: без цього збій XADD після COMMIT
       // лишав би клієнту старий резерв до перепідключення.
       const released = await this.reservations.closedRelease(orderId);
@@ -87,11 +96,11 @@ export class SettlementEventHandler {
     const { trade } = event;
     const fields = { tradeId: trade.tradeId, instrument: trade.instrument };
     await traced('settle trade', event.traceparent, fields, async () => {
-      const result = await this.trades.settle(trade, streamId, event.traceId);
+      const result = await this.trades.settle(trade, streamId, event.traceId, recoverySignal);
       this.stats.trades[result.status]++;
       this.logger.log({ event: 'settlement.trade', ...fields, result: result.status });
       if (result.status === 'conflict') throw new PayloadConflictError('Trade payload conflict');
-      if (mode === 'recovery') return;
+      if (recoverySignal) return;
 
       // Повторна доставка теж публікує стан: попередній прогін міг впасти між COMMIT і XADD.
       const balances = await this.wallets.read([

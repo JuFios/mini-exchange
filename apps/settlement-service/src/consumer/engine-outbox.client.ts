@@ -32,10 +32,11 @@ export class EngineOutboxClient {
     return this.read(`trades/${id}`);
   }
 
-  async page(instrument: string, after: string): Promise<CommittedEvent[]> {
+  async page(instrument: string, after: string, signal?: AbortSignal): Promise<CommittedEvent[]> {
     return (
       await this.read<{ events: CommittedEvent[] }>(
         `page?instrument=${encodeURIComponent(instrument)}&after=${encodeURIComponent(after)}`,
+        signal,
       )
     ).events;
   }
@@ -45,12 +46,13 @@ export class EngineOutboxClient {
       throw new InvalidEventError('Intake has not authorized compensation');
   }
 
-  private async read<T>(path: string): Promise<T> {
+  private async read<T>(path: string, signal?: AbortSignal): Promise<T> {
     let response: Response;
     try {
+      const deadline = AbortSignal.timeout(3000);
       response = await fetch(new URL(`/internal/outbox/${path}`, this.url), {
         redirect: 'error',
-        signal: AbortSignal.timeout(3000),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         headers: { 'x-internal-token': this.token },
       });
       if (response.status === 404) throw new InvalidEventError('Event is not committed');

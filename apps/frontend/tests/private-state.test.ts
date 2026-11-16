@@ -858,3 +858,86 @@ it('resumes active pagination at the last completed cursor after an interrupted 
   assert(queries[2].endsWith(orderCursor(first)));
   assert(queries[3].endsWith(orderCursor(second)));
 });
+
+it('publishes the snapshot and queues more than eight orders that arrive during a lookup', async () => {
+  const react = require('react');
+  const socketIo = require('socket.io-client');
+  const { usePrivateSocket } = require('../lib/use-private-socket');
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  const view: string[][] = [];
+  const disconnect = mock.fn();
+  let cleanup: (() => void) | undefined;
+  mock.method(react, 'useState', (initial: unknown) => [
+    initial,
+    (value: { orders?: Order[] }) => {
+      if (!value?.orders) return;
+      view.push(value.orders.map(({ id }) => id));
+      if (value.orders.length === 13) completed.emit('all');
+    },
+  ]);
+  mock.method(react, 'useEffect', (start: () => () => void) => {
+    cleanup = start();
+  });
+  mock.method(react, 'useRef', (current: unknown) => ({ current }));
+  const order = (id: string): Order => ({
+    id,
+    instrument: 'ABC',
+    side: 'buy',
+    price: '100.00',
+    quantity: '1.00000000',
+    status: 'open',
+    version: 1,
+    remainingQuantity: '1.00000000',
+    filledQuantity: '0.00000000',
+    createdAt: '2026-11-10T00:00:00.000Z',
+  });
+  const event = (id: string) => ({ ...order(id), orderId: id });
+  mock.method(socketIo, 'io', (_url: string, options: { auth: (done: () => void) => void }) =>
+    Object.assign(socket, {
+      connect: () =>
+        options.auth(() => {
+          socket.emit('connect');
+          socket.emit('order.updated', event('seed'));
+        }),
+      disconnect,
+    }),
+  );
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let inFlight = 0;
+  let peak = 0;
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    if (id === 'seed') {
+      completed.emit('seed');
+      await wait;
+    } else {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight--;
+    }
+    return Response.json(order(id));
+  });
+  const signal = AbortSignal.timeout(2000);
+  const seed = once(completed, 'seed', { signal });
+  const all = once(completed, 'all', { signal });
+  usePrivateSocket('ws://localhost:3001');
+  try {
+    await seed;
+    for (let i = 0; i < 12; i++) socket.emit('order.updated', event('late-' + i));
+    release();
+    await all;
+    assert.deepEqual(view[0], ['seed']);
+    assert.equal(peak, 8);
+    assert.equal(disconnect.mock.callCount(), 0);
+  } finally {
+    release();
+    cleanup?.();
+  }
+});

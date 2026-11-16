@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { boundedTransaction, type DatabaseQuery } from '../database/bounded-read';
 import { Asset, MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
 import { PostingBuilder } from '../ledger/posting-builder';
@@ -21,6 +22,7 @@ export class TradesService {
     dto: SettleTradeDto,
     streamId?: string,
     traceId?: string,
+    recoverySignal?: AbortSignal,
   ): Promise<SettlementResult> {
     const { trade, price, quantity, buyLimit, hash } = describeTrade(dto);
     const {
@@ -35,7 +37,7 @@ export class TradesService {
       executedAt,
     } = trade;
 
-    return this.source.transaction(async (db) => {
+    const settle = async (db: DatabaseQuery): Promise<SettlementResult> => {
       const [inserted] = await db.query(
         `INSERT INTO settled_trades (trade_id,instrument,payload_hash,executed_at,stream_id)
          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (trade_id) DO NOTHING RETURNING trade_id`,
@@ -90,7 +92,10 @@ export class TradesService {
       await consumeReservation(db, sellOrderId, quantity);
       await db.query('UPDATE settled_trades SET entry_id=$2 WHERE trade_id=$1', [tradeId, entryId]);
       return { status: 'applied', entryId };
-    });
+    };
+    return recoverySignal
+      ? boundedTransaction(this.source, recoverySignal, settle)
+      : this.source.transaction(settle);
   }
 }
 

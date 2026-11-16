@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { boundedTransaction, type DatabaseQuery } from '../database/bounded-read';
 import { Asset, MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledger/amount';
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
 import { PostingBuilder, Wallet } from '../ledger/posting-builder';
@@ -89,9 +90,10 @@ export class ReservationsService {
     releaseAmount?: bigint,
     notify = true,
     owner?: { userId: string; asset: string },
+    recoverySignal?: AbortSignal,
   ): Promise<{ status: 'released' }> {
     const reservationId = id.toLowerCase();
-    const update = await this.source.transaction(async (db) => {
+    const release = async (db: DatabaseQuery) => {
       // Tombstone відсікає запізнілий reserve, навіть якщо engine змінив режим.
       await db.query(
         `INSERT INTO reservations (reservation_id,status) VALUES ($1,'released_tombstone')
@@ -133,7 +135,10 @@ export class ReservationsService {
       );
       await consumeReservation(db, reservationId, amount);
       return { ...accounts.wallet(wallet), entryId };
-    });
+    };
+    const update = recoverySignal
+      ? await boundedTransaction(this.source, recoverySignal, release)
+      : await this.source.transaction(release);
     if (update && notify) await this.publisher.publishBestEffort(update);
     return { status: 'released' };
   }

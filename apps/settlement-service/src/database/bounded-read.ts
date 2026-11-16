@@ -1,17 +1,23 @@
 import { Pool, PoolClient } from 'pg';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { PostgresDriver } from 'typeorm/driver/postgres/PostgresDriver';
 
-/** Дедлайн знищує зайнятий PG-клієнт, тому завислий TCP не утримує слот після відмови. */
-export async function boundedRead<T>(
+export type DatabaseQuery = Pick<EntityManager, 'query'>;
+
+export function boundedRead<T>(
   source: DataSource,
   signal: AbortSignal,
-  work: (db: {
-    query: <R extends object = Record<string, unknown>>(
-      sql: string,
-      args?: unknown[],
-    ) => Promise<R[]>;
-  }) => Promise<T>,
+  work: (db: DatabaseQuery) => Promise<T>,
+): Promise<T> {
+  return boundedTransaction(source, signal, work, true);
+}
+
+/** Дедлайн знищує зайнятий PG-клієнт, тому завислий TCP не утримує слот після відмови. */
+export async function boundedTransaction<T>(
+  source: DataSource,
+  signal: AbortSignal,
+  work: (db: DatabaseQuery) => Promise<T>,
+  readOnly = false,
 ): Promise<T> {
   signal.throwIfAborted();
   const pool = (source.driver as PostgresDriver).master as Pool;
@@ -43,10 +49,20 @@ export async function boundedRead<T>(
       signal.throwIfAborted();
     }
     try {
-      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      await client.query(readOnly ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN');
       const result = await work({
-        query: async (sql, args) => (await client!.query(sql, args)).rows,
+        async query<R>(sql: string, args?: unknown[]): Promise<R> {
+          signal.throwIfAborted();
+          const result = await client!.query(sql, args);
+          // Recovery використовує той самий контракт db.query, що й TypeORM ledger.
+          return (
+            ['UPDATE', 'DELETE'].includes(result.command)
+              ? [result.rows, result.rowCount]
+              : result.rows
+          ) as R;
+        },
       });
+      signal.throwIfAborted();
       await client.query('COMMIT');
       return result;
     } catch (error) {

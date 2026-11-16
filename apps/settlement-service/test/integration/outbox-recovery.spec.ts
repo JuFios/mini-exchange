@@ -1,4 +1,3 @@
-import { QueryRunner } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
 import { SettlementEventHandler } from '../../src/consumer/settlement-event.handler';
@@ -56,20 +55,24 @@ it('recovers the exact ledger after an interrupted checkpoint and concurrent red
   );
   const source = ledger.source();
   const query = source.query.bind(source);
-  let interrupted = false;
-  const spy = jest
-    .spyOn(source, 'query')
-    .mockImplementation(async (sql: string, args?: unknown[], runner?: QueryRunner) => {
-      if (sql.includes('INSERT INTO settlement_progress') && !interrupted) {
-        interrupted = true;
-        throw new Error('Interrupted after ledger COMMIT');
-      }
-      return query(sql, args, runner);
-    });
   const handler = ledger.app().get(SettlementEventHandler);
-  await expect(handler.recover(() => false)).rejects.toThrow('Interrupted');
-  expect(await query('SELECT * FROM settlement_progress')).toEqual([]);
-  spy.mockRestore();
+  await query(`
+    CREATE FUNCTION test_fail_checkpoint() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'Interrupted after ledger COMMIT'; END $$;
+    CREATE TRIGGER test_fail_checkpoint BEFORE INSERT ON settlement_progress
+    FOR EACH ROW EXECUTE FUNCTION test_fail_checkpoint()
+  `);
+  try {
+    await expect(handler.recover(() => false)).rejects.toThrow('Interrupted');
+    expect(await query('SELECT * FROM settlement_progress')).toEqual([]);
+    expect(
+      await query("SELECT count(*)::int AS n FROM journal_entries WHERE type='trade'"),
+    ).toEqual([{ n: 1 }]);
+  } finally {
+    await query(
+      'DROP TRIGGER test_fail_checkpoint ON settlement_progress; DROP FUNCTION test_fail_checkpoint()',
+    );
+  }
   const publish = jest
     .spyOn(ledger.app().get(WalletPublisher), 'publish')
     .mockRejectedValue(new Error('Wallet Redis unavailable'));

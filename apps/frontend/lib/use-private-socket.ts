@@ -432,10 +432,6 @@ export function usePrivateSocket(url: string | undefined) {
         return;
       }
       if (reads.get(update.orderId) === signal) return;
-      if (reads.size >= PARALLEL_ORDER_READS) {
-        stop.resync();
-        return;
-      }
       reads.set(update.orderId, signal);
       // Подія не несе ціну й сторону нової заявки, тому дочитуємо її за ID.
       let failure: unknown;
@@ -464,8 +460,17 @@ export function usePrivateSocket(url: string | undefined) {
           }
           if (signal.aborted) return;
           pendingOrders.delete(update.orderId);
+          drainOrderReads(signal);
         },
       });
+    }
+
+    function drainOrderReads(signal: AbortSignal) {
+      for (const [id, update] of pendingOrders) {
+        if (signal.aborted || reads.size >= PARALLEL_ORDER_READS) return;
+        applyOrder(update, signal);
+        if (!reads.has(id)) pendingOrders.delete(id);
+      }
     }
 
     receiveOrder.current = (order) => {
@@ -513,11 +518,6 @@ export function usePrivateSocket(url: string | undefined) {
           wallets.set(wallet.asset, mergeWallet(wallets.get(wallet.asset), wallet)!);
         }
         loading = false;
-        for (const [id, update] of pendingOrders) {
-          applyOrder(update, signal);
-          if (signal.aborted) return;
-          if (!reads.has(id)) pendingOrders.delete(id);
-        }
         pendingWallets.clear();
         if (orderOverflow) {
           // Спершу завершити snapshot, інакше повний буфер скасовує кожен новий запуск.
@@ -530,6 +530,7 @@ export function usePrivateSocket(url: string | undefined) {
         setError('');
         setStatus('live');
         publish();
+        drainOrderReads(signal);
       },
       onWallet(update) {
         if (!validWallet(update)) return onError(new Error('Invalid wallet event'));
@@ -552,7 +553,10 @@ export function usePrivateSocket(url: string | undefined) {
           }
           pendingOrders.set(update.orderId, update);
         }
-        if (!loading) applyOrder(update, signal);
+        if (!loading) {
+          if (orders.has(update.orderId)) applyOrder(update, signal);
+          else drainOrderReads(signal);
+        }
       },
     });
     return () => {

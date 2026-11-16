@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { ConfigService } from '@nestjs/config';
 import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
 import { InvalidEventError } from '../../src/consumer/settlement-event';
@@ -72,14 +73,25 @@ it('replays a committed prefix after failure between financial commit and progre
   let fail = true;
   let progress = '0';
   const source = {
-    query: async (sql: string, args: string[]) => {
-      if (sql.startsWith('SELECT')) return progress === '0' ? [] : [{ position: progress }];
-      if (fail) {
-        fail = false;
-        throw new Error('Process interrupted after financial COMMIT');
-      }
-      progress = args[1];
-      return [];
+    driver: {
+      master: {
+        connect: async () =>
+          Object.assign(new EventEmitter(), {
+            release() {},
+            query: async (sql: string, args: string[]) => {
+              if (sql.startsWith('SELECT'))
+                return { rows: progress === '0' ? [] : [{ position: progress }] };
+              if (sql.startsWith('INSERT')) {
+                if (fail) {
+                  fail = false;
+                  throw new Error('Process interrupted after financial COMMIT');
+                }
+                progress = args[1];
+              }
+              return { rows: [] };
+            },
+          }),
+      },
     },
   };
   const outbox = {
@@ -111,4 +123,53 @@ it('replays a committed prefix after failure between financial commit and progre
   expect(progress).toBe('2');
   expect(attempts).toEqual(['first', 'first', 'second']);
   expect([...applied]).toEqual(['first', 'second']);
+});
+
+it('discards a stalled progress connection and still reads the next instrument', async () => {
+  const deadline = new AbortController();
+  jest
+    .spyOn(AbortSignal, 'timeout')
+    .mockReturnValueOnce(deadline.signal)
+    .mockReturnValue(new AbortController().signal);
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocked = Object.assign(new EventEmitter(), {
+    release: jest.fn(),
+    query: async (sql: string) => {
+      if (sql.startsWith('SELECT')) {
+        entered();
+        return new Promise<never>(() => undefined);
+      }
+      return { rows: [] };
+    },
+  });
+  const healthy = Object.assign(new EventEmitter(), {
+    release: jest.fn(),
+    query: async () => ({ rows: [] }),
+  });
+  const page = jest.fn(async () => []);
+  const handler = new SettlementEventHandler(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    new SettlementStats(),
+    { page } as never,
+    {
+      driver: {
+        master: { connect: jest.fn().mockResolvedValueOnce(blocked).mockResolvedValue(healthy) },
+      },
+    } as never,
+  );
+  const recovering = handler.recover(() => false);
+  const rejected = expect(recovering).rejects.toThrow('ABC: progress deadline');
+  await started;
+  deadline.abort(new Error('progress deadline'));
+  await rejected;
+  expect(blocked.release).toHaveBeenCalledTimes(1);
+  expect(blocked.release).toHaveBeenCalledWith(true);
+  expect(page).toHaveBeenCalledTimes(1);
+  expect(page.mock.calls[0]).toEqual(['XYZ', '0', expect.any(AbortSignal)]);
 });
