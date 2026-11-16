@@ -1596,7 +1596,7 @@ Compose-проєкт зі своїми томами й динамічними п
   бути закриті або tombstone; replay, точні баланси й звірка перевіряються як раніше.
   Старий assertion «кожна 503 ORDERS_BUSY не має команди» замінено цими перевірками, бо після TX1
   номер уже видано. Повтор прийнятої заявки перевіряє той самий кінцевий ключ і той самий order ID.
-- Legacy WS assertions у `single-owner`, `market-volume`, `market-depth` і `silent-stale` включають `instrument` і `seq`.
+- Legacy WS assertions у `single-owner`, `market-volume`, `market-depth`, `silent-stale` і system `realtime-transport` включають `instrument` і `seq`.
   `market-websocket`, `order-query-isolation` та outbox-тести враховують `tradeCount` і `fillIndex`, щоб перевіряти повноту
   публічної стрічки без розкриття внутрішніх полів.
 Якщо не сказано інше, наявні assertions збережено.
