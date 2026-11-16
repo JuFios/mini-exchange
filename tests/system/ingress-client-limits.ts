@@ -18,7 +18,7 @@ import {
 const frontend = 'http://engine-public:3000';
 const internal = 'http://engine-lb:8080';
 const SLOW_BODIES = 64;
-const FLOOD_CONNECTIONS = 300;
+const FLOOD_CONNECTIONS = 100;
 const SUBMITS = 30;
 // Ті самі межі, що й для потоку читань заявок: без ліміту на `:3000` потік читань гаманців
 // одного клієнта піднімав медіану заявки іншого через BFF з ~50 мс до ~0,9 с.
@@ -107,8 +107,10 @@ async function flood(mode: Mode, address: string, accessToken: string) {
         : `/_next/static/chunks/missing-${process.pid}-${index}.js`;
   const headers = mode === 'wallets' ? { cookie: 'exchange_access=' + accessToken } : {};
   let completed = 0;
+  let started = 0;
   await Promise.all(
     Array.from({ length: FLOOD_CONNECTIONS }, async () => {
+      let first = true;
       while (running) {
         let key: string;
         try {
@@ -117,8 +119,12 @@ async function flood(mode: Mode, address: string, accessToken: string) {
           key = (error as Error).message;
         }
         counts[key] = (counts[key] ?? 0) + 1;
+        completed++;
         // Заміри починаються, коли кожне з'єднання потоку вже отримало відповідь.
-        if (++completed === FLOOD_CONNECTIONS) process.send!('ready');
+        if (first) {
+          first = false;
+          if (++started === FLOOD_CONNECTIONS) process.send!('ready');
+        }
       }
     }),
   );
