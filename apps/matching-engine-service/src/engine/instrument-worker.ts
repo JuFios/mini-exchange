@@ -266,12 +266,17 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       if (!owned || owned.lease !== lease) return;
       this.step(owned.lease);
       if (owned.halted) return;
-      const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(
-        `SELECT c.*,i.next_seq FROM instruments i
+      const [row]: (CommandRow & { next_seq: string; awaiting_reservation: boolean })[] =
+        await this.source.query(
+          `SELECT c.*,i.next_seq,
+          (r.status='reserving' AND clock_timestamp() < c.accepted_at + $3 * interval '1 millisecond')
+            IS TRUE AS awaiting_reservation
+        FROM instruments i
         LEFT JOIN LATERAL (SELECT * FROM order_commands WHERE instrument=i.symbol AND seq>$2 ORDER BY seq LIMIT 1) c ON true
+        LEFT JOIN order_requests r ON c.type='submit' AND r.order_id=c.order_id
         WHERE i.symbol=$1`,
-        [instrument, owned.seq],
-      );
+          [instrument, owned.seq, this.config.getOrThrow<number>('RESERVATION_WAIT_MS')],
+        );
       if (this.owned.get(instrument) !== owned) return;
       if (!row.seq && BigInt(row.next_seq) === BigInt(owned.seq)) {
         this.gaps.delete(instrument);
@@ -297,6 +302,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         return;
       }
       this.gaps.delete(instrument);
+      // Порядок надходження вже зафіксовано `seq`: пізніші команди чекають, поки ця дізнається
+      // результат резерву. Прохід завершується; його відновить NOTIFY intake або poll.
+      if (row.awaiting_reservation) return;
       const fields = { instrument, orderId: row.order_id, seq: row.seq, epoch: owned.epoch };
       const result = await traced('engine.apply', row.traceparent, fields, async () => {
         row.traceparent = activeTraceparent(row.traceparent ?? undefined) ?? null;
@@ -332,6 +340,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.ownership.leases.assert(owned.lease);
     if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
+    if (row.type === 'submit' && !(await this.funded(db, row.order_id))) {
+      return this.unfunded(db, owned, row, state.owner_epoch);
+    }
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });
     const command: Command =
       row.type === 'submit'
@@ -402,6 +413,18 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     }
     this.step(owned.lease);
     await insertOutboxEvents(db, row, events);
+    await this.finish(db, owned, row, result, state.owner_epoch);
+    return result;
+  }
+
+  /** Журнал команди, лічильники книги з fencing і сигнал очікувачам. */
+  private async finish(
+    db: EntityManager,
+    owned: OwnedBook,
+    row: CommandRow,
+    result: WorkerResult,
+    epoch: string,
+  ): Promise<void> {
     const [, applied] = await db.query(
       `UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
       [
@@ -410,7 +433,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         {
           status: result.outcome,
           tradeIds: result.trades.map(({ tradeId }) => tradeId),
-          epoch: state.owner_epoch,
+          epoch,
           instance: this.config.getOrThrow('INSTANCE_ID'),
         },
       ],
@@ -440,6 +463,50 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     await this.chaos.reach('after_writes_before_commit', row.seq, result.trades.length);
     await this.chaos.reach('stall_before_commit', row.seq, result.trades.length);
     this.ownership.leases.assert(owned.lease);
+  }
+
+  /**
+   * Чи можна застосувати submit. Рядок запиту блокується: intake і worker змінюють `reserving`
+   * лише з-під нього, тож заявка не стане прийнятою після того, як worker її зняв.
+   * Імпортовані заявки starter запиту не мають і вже зарезервовані.
+   */
+  private async funded(db: EntityManager, orderId: string): Promise<boolean> {
+    const [request]: { status: string }[] = await db.query(
+      'SELECT status FROM order_requests WHERE order_id=$1 FOR UPDATE',
+      [orderId],
+    );
+    if (!request || request.status === 'accepted') return true;
+    if (request.status === 'reserving') {
+      // Дедлайн минув: результат резерву вже не застосується, кошти звільнить sweeper.
+      await db.query(
+        `UPDATE order_requests SET status='releasing', updated_at=clock_timestamp(),
+          release_due_at=NULL WHERE order_id=$1`,
+        [orderId],
+      );
+    }
+    return false;
+  }
+
+  /** Submit без резерву займає свій `seq`, але книги не змінює: порожня delta тримає потік суцільним. */
+  private async unfunded(
+    db: EntityManager,
+    owned: OwnedBook,
+    row: CommandRow,
+    epoch: string,
+  ): Promise<WorkerResult> {
+    const result: WorkerResult = {
+      book: owned.book,
+      outcome: 'not_reserved',
+      orderChanges: [],
+      trades: [],
+      levelChanges: [],
+      closed: [],
+    };
+    this.step(owned.lease);
+    await insertOutboxEvents(db, row, [
+      { type: 'book.delta', payload: { instrument: row.instrument, seq: row.seq, changes: [] } },
+    ]);
+    await this.finish(db, owned, row, result, epoch);
     return result;
   }
 

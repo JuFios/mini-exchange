@@ -3,7 +3,7 @@ import { Book, BookOrder, changedLevels } from '../matching/book';
 import { apply, ApplyResult, Command } from '../matching/engine';
 
 export type WorkerResult = Omit<ApplyResult, 'outcome' | 'orderChanges' | 'closed'> & {
-  outcome: ApplyResult['outcome'] | 'rejected_internal';
+  outcome: ApplyResult['outcome'] | 'rejected_internal' | 'not_reserved';
   orderChanges: (BookOrder & {
     status: ApplyResult['orderChanges'][number]['status'];
     cancelReason?: 'user' | 'self_trade_prevented' | 'rejected';

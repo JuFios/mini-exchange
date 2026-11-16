@@ -178,16 +178,18 @@ function sweep(makers: number) {
   };
   const db = {
     query: async (sql: string) =>
-      sql.includes('FOR UPDATE')
-        ? [
-            {
-              owner_epoch: '1',
-              status: 'active',
-              legacy_verified: true,
-              last_applied_seq: '0',
-            },
-          ]
-        : [[], 1],
+      sql.includes('FROM order_requests')
+        ? [{ status: 'accepted' }]
+        : sql.includes('FOR UPDATE')
+          ? [
+              {
+                owner_epoch: '1',
+                status: 'active',
+                legacy_verified: true,
+                last_applied_seq: '0',
+              },
+            ]
+          : [[], 1],
     getRepository: () => orders,
   };
   const applier = {

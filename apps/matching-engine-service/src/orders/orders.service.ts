@@ -65,8 +65,15 @@ export class OrdersService {
 
   async submitOrder(dto: SubmitOrderDto, ownerId: string, key?: string, traceparent?: string) {
     // NOTIFY міг прийти до встановлення waiter: applied_at закриває це вікно.
-    const accepted = await this.submissions.run(() =>
-      this.intake.submit(dto, ownerId, key, traceparent, (work) => this.limit.run(work)),
+    // Черга `submissions` стоїть лише перед HTTP-резервом, після видачі `seq`: інакше заявка,
+    // що чекає на слот, поступалася б місцем пізнішій з іншої репліки.
+    const accepted = await this.intake.submit(
+      dto,
+      ownerId,
+      key,
+      traceparent,
+      (work) => this.limit.run(work),
+      (work) => this.submissions.run(work),
     );
     const wait = this.notifications.wait(
       accepted.orderId,

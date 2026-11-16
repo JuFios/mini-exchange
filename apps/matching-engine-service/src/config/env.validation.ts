@@ -193,6 +193,8 @@ const schema = {
   STREAM_MAXLEN: (value: unknown, key: string) => positiveInteger(value ?? '1000000', key),
   ORDER_SYNC_WAIT_MS: milliseconds,
   SEQ_GAP_ALERT_MS: milliseconds,
+  // Скільки worker чекає на результат резерву заявки, що вже отримала `seq`.
+  RESERVATION_WAIT_MS: (value: unknown, key: string) => milliseconds(value ?? '3000', key),
   // Змінної немає в `.env`, написаних до PR з WebSocket, тож без неї сервіс має стартувати.
   WS_REPLICA_MAX_LAG_MS: (value: unknown, key: string) => milliseconds(value ?? '5000', key),
   AUTH_RATE_LIMIT: (value: unknown, key: string) => positiveInteger(value ?? '10', key),
@@ -326,6 +328,11 @@ export function validateEnv(input: Record<string, unknown>): EngineEnv {
     throw new Error(
       'RESERVATION_SWEEP_AFTER_MS must exceed three RESERVATION_TIMEOUT_MS attempts plus 6000 ms for intake transactions',
     );
+  if (
+    parsed.RESERVATIONS_ENABLED &&
+    parsed.RESERVATION_WAIT_MS <= reservationSettings.RESERVATION_TIMEOUT_MS
+  )
+    throw new Error('RESERVATION_WAIT_MS must exceed RESERVATION_TIMEOUT_MS');
   if (parsed.JWT_REFRESH_TTL > 30 * 86400)
     throw new Error('JWT_REFRESH_TTL must not exceed 30 days');
   return { ...parsed, ...reservationSettings };

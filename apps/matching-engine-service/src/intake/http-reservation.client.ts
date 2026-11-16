@@ -57,11 +57,11 @@ export class HttpReservationClient extends ReservationClient {
       throw new Error('Settlement did not accept the reservation credentials');
   }
 
-  async reserve(request: Reservation): Promise<'accepted' | 'rejected'> {
-    for (let attempt = 0; attempt < RESERVE_ATTEMPTS; attempt++) {
+  async reserve(request: Reservation, signal?: AbortSignal): Promise<'accepted' | 'rejected'> {
+    for (let attempt = 0; attempt < RESERVE_ATTEMPTS && !signal?.aborted; attempt++) {
       let response: Response;
       try {
-        response = await this.post('/internal/reservations', request);
+        response = await this.post('/internal/reservations', request, signal);
       } catch {
         continue;
       }
@@ -110,7 +110,8 @@ export class HttpReservationClient extends ReservationClient {
     throw unavailable();
   }
 
-  private post(path: string, body?: Reservation): Promise<Response> {
+  private post(path: string, body?: Reservation, signal?: AbortSignal): Promise<Response> {
+    const timeout = AbortSignal.timeout(this.timeoutMs);
     return fetch(new URL(path, this.url), {
       method: 'POST',
       redirect: 'error',
@@ -119,7 +120,7 @@ export class HttpReservationClient extends ReservationClient {
         ...(body && { 'content-type': 'application/json' }),
       },
       body: body && JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   }
 }

@@ -184,16 +184,20 @@ it('resumes an in-flight release after the sweeper is killed and releases once',
   expect(fake.releaseIds).toEqual(Array.from({ length: 5 }, () => orderId));
 }, 25000);
 
-it('returns 422 for insufficient funds without issuing a sequence', async () => {
+it('returns 422 for insufficient funds after issuing its arrival sequence', async () => {
   const token = await engine.register();
   fake.balance = 100_000_000_000n;
   await engine.restart(settings());
-  const before = await engine.database().query('SELECT max(seq) AS seq FROM order_commands');
   const response = await repeat(token);
   expect(response.status).toBe(422);
-  expect(await engine.database().query('SELECT max(seq) AS seq FROM order_commands')).toEqual(
-    before,
-  );
+  // `seq` видано в момент надходження, до резерву; відмова не створює заявки. Worker тут
+  // вимкнено, порожнє застосування такої команди перевіряє worker-contracts.
+  expect(
+    await engine.database().query("SELECT type FROM order_commands WHERE type='submit'"),
+  ).toEqual([{ type: 'submit' }]);
+  expect(await engine.database().query('SELECT count(*)::int AS n FROM orders')).toEqual([
+    { n: 0 },
+  ]);
   expect(fake.reserveIds).toHaveLength(1);
   expect(fake.reservations.size).toBe(0);
 });

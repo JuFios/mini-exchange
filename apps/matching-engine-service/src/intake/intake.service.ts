@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -21,6 +22,22 @@ import {
 import { ReservationClient } from './reservation.client';
 import { RateLimits } from '../security/rate-limits';
 
+// Скільки нові заявки отримують 503 без `seq` після того, як settlement не відповів на резерв.
+// Кожен збій поспіль подвоює паузу: за тривалої відмови черга інструмента чекає на дедлайн
+// резерву не частіше ніж раз на 30 с.
+const RESERVATION_BACKOFF_MS = 1000;
+const RESERVATION_BACKOFF_MAX_MS = 30_000;
+const reservationUnavailable = () =>
+  new ServiceUnavailableException('Сервіс резервування недоступний');
+
+const expired = () =>
+  new ConflictException({ code: 'REQUEST_EXPIRED', message: 'Час прийому заявки вичерпано' });
+
+interface SequencedSubmit {
+  seq: string;
+  accepted_at: Date;
+  left_ms: number;
+}
 interface RequestRow {
   order_id: string;
   request_hash: string;
@@ -37,6 +54,9 @@ export type PgStep = <T>(work: () => Promise<T>) => Promise<T>;
 
 @Injectable()
 export class IntakeService {
+  private reservationsDownUntil = 0;
+  private reservationFailures = 0;
+
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
@@ -93,6 +113,7 @@ export class IntakeService {
     key?: string,
     traceparent?: string,
     pg: PgStep = (work) => work(),
+    reserving: PgStep = (work) => work(),
   ): Promise<Acceptance> {
     const payload = this.normalize(dto);
     if (key !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(key)) {
@@ -118,41 +139,101 @@ export class IntakeService {
       if (completed) return completed;
     }
     await this.limits.order(userId);
+    // Поки settlement не відповідає, нові заявки не отримують `seq`: кожна така заявка тримала б
+    // чергу інструмента до дедлайну резерву.
+    if (performance.now() < this.reservationsDownUntil) throw reservationUnavailable();
+    // Момент надходження — видача `seq`, до будь-якого виклику settlement. Повільний резерв однієї
+    // заявки не дає пізнішій обігнати її.
     const claimed = await pg(async () => {
       await this.assertActive(this.source.manager, dto.instrument);
-      const [row]: RequestRow[] = await this.source.transaction(async (db) => {
+      return this.source.transaction(async (db) => {
         // До першого блокування: старт репліки тримає рядок режиму до 60 с, і без межі заявка
         // чекала б до statement_timeout.
         await db.query("SET LOCAL lock_timeout='3s'");
         await this.assertReservationMode(db);
-        await db.query(
+        const inserted = await db.query(
           `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
-        VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING`,
+        VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING
+        RETURNING order_id`,
           [userId, idempotencyKey, requestHash, randomUUID()],
         );
-        return db.query('SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2', [
-          userId,
-          idempotencyKey,
-        ]);
+        if (inserted.length) {
+          await this.sequence(
+            db,
+            dto.instrument,
+            'submit',
+            inserted[0].order_id,
+            userId,
+            payload,
+            traceparent,
+          );
+          await this.assertActive(db, dto.instrument);
+        }
+        const [row]: RequestRow[] = await db.query(
+          'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
+          [userId, idempotencyKey],
+        );
+        if (row.status !== 'reserving') return { row, command: undefined };
+        const [command]: (SequencedSubmit | undefined)[] = await db.query(
+          `SELECT seq,accepted_at,
+            ($2::int - extract(epoch FROM clock_timestamp() - accepted_at) * 1000)::int AS left_ms
+          FROM order_commands WHERE order_id=$1 AND type='submit'`,
+          [row.order_id, this.config.getOrThrow<number>('RESERVATION_WAIT_MS')],
+        );
+        return { row, command };
       });
-      if (row.request_hash !== requestHash) throw reused();
-      return (await this.existing(row)) ?? row;
     });
-    if ('seq' in claimed) return claimed;
-    const row = claimed;
+    const { row, command } = claimed;
+    if (row.request_hash !== requestHash) throw reused();
+    const done = await pg(() => this.existing(row));
+    if (done) return done;
+    // Запит попередньої версії, що чекав на резерв без `seq`: момент його надходження втрачено,
+    // а резерв звільнить sweeper.
+    if (!command) throw expired();
     const instrument = this.catalog.list().find(({ symbol }) => symbol === dto.instrument)!;
-    // Слот PG на час HTTP до settlement не тримаємо: повільний settlement зупиняв би скасування.
-    const accepted = await this.reservations.reserve({
-      reservationId: row.order_id,
-      userId,
-      instrument: dto.instrument,
-      limitPrice: payload.price,
-      asset: dto.side === 'buy' ? instrument.quoteAsset : instrument.baseAsset,
-      amount: (dto.side === 'buy'
-        ? parsePrice(payload.price) * parseQuantity(payload.quantity)
-        : parseQuantity(payload.quantity)
-      ).toString(),
-    });
+    // Worker чекає на резерв не довше `RESERVATION_WAIT_MS` від видачі `seq`. Пізніший результат
+    // уже не застосується, тож запит до settlement обриваємо разом із цим дедлайном.
+    const deadline = AbortSignal.timeout(Math.max(command.left_ms, 0));
+    let accepted: 'accepted' | 'rejected';
+    try {
+      // Слот PG на час HTTP до settlement не тримаємо: повільний settlement зупиняв би скасування.
+      accepted = await reserving(() => {
+        deadline.throwIfAborted();
+        return this.reservations.reserve(
+          {
+            reservationId: row.order_id,
+            userId,
+            instrument: dto.instrument,
+            limitPrice: payload.price,
+            asset: dto.side === 'buy' ? instrument.quoteAsset : instrument.baseAsset,
+            amount: (dto.side === 'buy'
+              ? parsePrice(payload.price) * parseQuantity(payload.quantity)
+              : parseQuantity(payload.quantity)
+            ).toString(),
+          },
+          deadline,
+        );
+      });
+    } catch (error) {
+      // Команда вже в журналі. Відмова звільняє її місце в черзі одразу, а не за дедлайном;
+      // якщо PG недоступний, це зробить worker за дедлайном.
+      await pg(() => this.abandon(dto.instrument, row.order_id)).catch(() => undefined);
+      // Відповідь settlement (409, 500) і зайнятий слот репліки (`ORDERS_BUSY`) не означають, що
+      // settlement недоступний. Решта — мережа, 5xx чи дедлайн.
+      const answered =
+        error instanceof HttpException &&
+        (error.getStatus() !== 503 ||
+          (error.getResponse() as { code?: string }).code === 'ORDERS_BUSY');
+      if (answered) throw error;
+      this.noteReservationOutage();
+      throw reservationUnavailable();
+    }
+    // Відповідь після дедлайну вже не застосується: settlement надто повільний для черги.
+    if (deadline.aborted) this.noteReservationOutage();
+    else {
+      this.reservationFailures = 0;
+      this.reservationsDownUntil = 0;
+    }
     return pg(async () => {
       const result = await this.source.transaction(async (db) => {
         await db.query("SET LOCAL lock_timeout='3s'");
@@ -171,17 +252,9 @@ export class IntakeService {
           ],
         );
         if (!rows.length) return undefined;
+        // Worker чекає на цю команду: сигнал будить його без очікування poll.
+        await db.query("SELECT pg_notify('engine_commands',$1)", [dto.instrument]);
         if (accepted === 'rejected') return null;
-        const command = await this.sequence(
-          db,
-          dto.instrument,
-          'submit',
-          row.order_id,
-          userId,
-          payload,
-          traceparent,
-        );
-        await this.assertActive(db, dto.instrument);
         await db.getRepository(Order).insert({
           id: row.order_id,
           ownerId: userId,
@@ -205,6 +278,32 @@ export class IntakeService {
     });
   }
 
+  // Одна відмова settlement зачіпає всі заявки, що чекали на нього одночасно: пауза росте лише
+  // від збою, що стався вже після попередньої паузи.
+  private noteReservationOutage(): void {
+    const now = performance.now();
+    if (now < this.reservationsDownUntil) return;
+    this.reservationFailures++;
+    this.reservationsDownUntil =
+      now +
+      Math.min(
+        RESERVATION_BACKOFF_MS * 2 ** Math.min(this.reservationFailures - 1, 10),
+        RESERVATION_BACKOFF_MAX_MS,
+      );
+  }
+
+  /** Знімає заявку з очікування резерву; release, якщо резерв усе ж створено, виконає sweeper. */
+  private async abandon(instrument: string, orderId: string): Promise<void> {
+    await this.source.transaction(async (db) => {
+      const released = await db.query(
+        `UPDATE order_requests SET status='releasing', updated_at=clock_timestamp(),
+          release_due_at=NULL WHERE order_id=$1 AND status='reserving' RETURNING order_id`,
+        [orderId],
+      );
+      if (released.length) await db.query("SELECT pg_notify('engine_commands',$1)", [instrument]);
+    });
+  }
+
   private async existing(row: RequestRow): Promise<Acceptance | undefined> {
     if (row.status === 'accepted') {
       const [command] = await this.source.query(
@@ -215,11 +314,7 @@ export class IntakeService {
       return { orderId: row.order_id, seq: command.seq, replay: true };
     }
     if (row.status === 'rejected') throw new UnprocessableEntityException(row.response as object);
-    if (row.status !== 'reserving')
-      throw new ConflictException({
-        code: 'REQUEST_EXPIRED',
-        message: 'Час прийому заявки вичерпано',
-      });
+    if (row.status !== 'reserving') throw expired();
   }
 
   async cancel(order: Order, traceparent?: string): Promise<Acceptance> {

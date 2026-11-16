@@ -292,7 +292,7 @@ it('halts on a recovery mismatch instead of serving an empty replacement book', 
   });
 });
 
-it('rejects a failed reservation without issuing a sequence number', async () => {
+it('consumes a sequence number for a rejected reservation without touching the book', async () => {
   await restart({}, (builder) =>
     builder.overrideProvider(ReservationClient).useValue({ reserve: async () => 'rejected' }),
   );
@@ -305,18 +305,98 @@ it('rejects a failed reservation without issuing a sequence number', async () =>
   const repeated = await request('/orders', 'POST', owner, body, headers);
   expect(repeated.status).toBe(422);
   expect(await repeated.json()).toEqual(rejected);
-  expect(await database().query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).toEqual([
-    { next_seq: '0' },
-  ]);
+  // Номер видано в момент надходження; відмова резерву застосовується як порожня команда.
+  await waitFor(async () => {
+    const [state] = await database().query(
+      "SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'",
+    );
+    return state.last_applied_seq === '1';
+  });
+  expect(
+    await database().query("SELECT seq,result->>'status' AS status FROM order_commands"),
+  ).toEqual([{ seq: '1', status: 'not_reserved' }]);
+  expect(await database().query('SELECT count(*)::int AS n FROM orders')).toEqual([{ n: 0 }]);
+  expect(
+    await database().query(
+      "SELECT payload->'changes' AS changes FROM outbox WHERE type='book.delta'",
+    ),
+  ).toEqual([{ changes: [] }]);
   expect(await database().query('SELECT status FROM order_requests')).toEqual([
     { status: 'rejected' },
   ]);
 });
 
-it('cancels a resting order while settlement holds every reservation request', async () => {
+it('matches the order that arrived first even when its reservation is slower', async () => {
+  await restart({}, (builder) =>
+    builder.overrideProvider(ReservationClient).useValue({
+      reserve: async ({ limitPrice }: { limitPrice: string }) => {
+        if (limitPrice === '101.00') await new Promise((resolve) => setTimeout(resolve, 400));
+        return 'accepted';
+      },
+    }),
+  );
+  const maker = await register();
+  expect((await submit(maker, { price: 100 })).status).toBe(201);
+  const slow = request('/orders', 'POST', await register(), {
+    instrument: 'ABC',
+    side: 'buy',
+    price: 101,
+    quantity: 1,
+  });
+  await waitFor(async () => {
+    const [{ n }] = await database().query('SELECT count(*)::int AS n FROM order_commands');
+    return n === 2;
+  });
+  const fast = await request('/orders', 'POST', await register(), {
+    instrument: 'ABC',
+    side: 'buy',
+    price: 100.5,
+    quantity: 1,
+  });
+  const first = await (await slow).json();
+  const second = await fast.json();
+  expect(BigInt(first.order.prioritySeq)).toBeLessThan(BigInt(second.order.prioritySeq));
+  expect(first.order.status).toBe('filled');
+  expect(first.trades).toEqual([expect.objectContaining({ price: '100.00' })]);
+  expect(second.order.status).toBe('open');
+});
+
+it('applies a cancel after a crossing order that arrived before it', async () => {
+  await restart({}, (builder) =>
+    builder.overrideProvider(ReservationClient).useValue({
+      reserve: async ({ limitPrice }: { limitPrice: string }) => {
+        if (limitPrice === '101.00') await new Promise((resolve) => setTimeout(resolve, 400));
+        return 'accepted';
+      },
+    }),
+  );
+  const maker = await register();
+  const { order } = await (await submit(maker, { price: 100 })).json();
+  const taker = request('/orders', 'POST', await register(), {
+    instrument: 'ABC',
+    side: 'buy',
+    price: 101,
+    quantity: 1,
+  });
+  await waitFor(async () => {
+    const [{ n }] = await database().query('SELECT count(*)::int AS n FROM order_commands');
+    return n === 2;
+  });
+  const cancelled = await request(`/orders/${order.id}`, 'DELETE', maker);
+  expect(cancelled.status).toBe(409);
+  expect(await cancelled.json()).toMatchObject({ code: 'ORDER_ALREADY_FILLED' });
+  expect((await (await taker).json()).order.status).toBe('filled');
+  expect(await database().query('SELECT type,seq FROM order_commands ORDER BY seq')).toEqual([
+    { type: 'submit', seq: '1' },
+    { type: 'submit', seq: '2' },
+    { type: 'cancel', seq: '3' },
+  ]);
+});
+
+it('bounds how long a hung reservation holds the instrument queue', async () => {
   let hang = false;
   const held: ((result: 'accepted') => void)[] = [];
-  await restart({}, (builder) =>
+  await restart({ RESERVATION_WAIT_MS: 1000 }, (builder) =>
     builder.overrideProvider(ReservationClient).useValue({
       reserve: () =>
         hang ? new Promise((resolve) => held.push(resolve)) : Promise.resolve('accepted'),
@@ -331,28 +411,44 @@ it('cancels a resting order while settlement holds every reservation request', a
       'POST',
       owner,
       { instrument: 'ABC', side: 'sell', price: 101, quantity: 1 },
-      {
-        'Idempotency-Key': `stuck-${index}`,
-      },
+      { 'Idempotency-Key': `stuck-${index}` },
     ),
   );
   await waitFor(async () => held.length === 5);
 
+  // Cancel прийшов після восьми заявок і чекає на них, але не довше дедлайну резерву.
   const started = performance.now();
   const cancelled = await request(`/orders/${order.id}`, 'DELETE', owner);
-  expect(cancelled.status).toBe(200);
-  expect((await cancelled.json()).order.status).toBe('cancelled');
-  expect(performance.now() - started).toBeLessThan(2000);
-  // Межа прийому не зросла: до settlement дійшло не більше п'яти запитів.
+  expect([200, 202]).toContain(cancelled.status);
+  await waitFor(async () => {
+    const [current] = await database().query('SELECT status FROM orders WHERE id=$1', [order.id]);
+    return current.status === 'cancelled';
+  });
+  expect(performance.now() - started).toBeLessThan(2500);
   expect(held).toHaveLength(5);
 
   hang = false;
   for (const release of held) release('accepted');
-  const statuses = await Promise.all(stuck.map(async (response) => (await response).status));
-  expect(statuses.every((status) => status === 201 || status === 202)).toBe(true);
+  const responses = await Promise.all(stuck);
+  const bodies = await Promise.all(responses.map((response) => response.json()));
+  for (const [index, response] of responses.entries()) {
+    expect([409, 503]).toContain(response.status);
+    if (response.status === 409) expect(bodies[index]).toMatchObject({ code: 'REQUEST_EXPIRED' });
+  }
   expect(await database().query('SELECT count(*)::int AS n FROM orders WHERE price=101')).toEqual([
-    { n: 8 },
+    { n: 0 },
   ]);
+  expect(
+    await database().query(
+      "SELECT count(*)::int AS n FROM order_requests WHERE status IN ('releasing','expired')",
+    ),
+  ).toEqual([{ n: 8 }]);
+  // Після відмови settlement нові заявки секунду отримують 503 без `seq`. Далі номери суцільні:
+  // застосовано всі одинадцять команд.
+  await waitFor(async () => (await submit(owner, { price: 102 })).status === 201);
+  expect(
+    await database().query("SELECT last_applied_seq FROM instrument_state WHERE instrument='ABC'"),
+  ).toEqual([{ last_applied_seq: '11' }]);
 });
 
 it('returns service unavailable for Redis failure while allowing cancellation', async () => {
