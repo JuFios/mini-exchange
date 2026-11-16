@@ -25,6 +25,8 @@ export const bookRoom = (instrument: string) => `book:${instrument}`;
 export const MAX_QUEUED_PER_SOCKET = 4;
 const TOO_MANY = { ok: false, error: 'TOO_MANY_REQUESTS' } as const;
 
+type BookSnapshot = Awaited<ReturnType<CommittedBook['read']>>;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
@@ -40,6 +42,8 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
   private readonly detach: (() => void)[] = [];
   private readonly queues = new Map<string, Promise<void>>();
   private readonly depths = new Map<string, number>();
+  private readonly batches = new Map<string, Promise<BookSnapshot>>();
+  private readonly reading = new Map<string, Promise<void>>();
 
   constructor(
     config: ConfigService,
@@ -108,7 +112,7 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
       const joined = !client.rooms.has(room);
       await client.join(room);
       try {
-        return { ok: true, instance: this.instance, snapshot: await this.book.read(instrument) };
+        return { ok: true, instance: this.instance, snapshot: await this.snapshot(instrument) };
       } catch (error) {
         if (joined) await client.leave(room);
         return { ok: false, error: errorCode(error) };
@@ -153,6 +157,33 @@ export class MarketGateway implements OnGatewayInit, OnModuleDestroy {
       if (this.queues.get(key) === tail) this.queues.delete(key);
     });
     return result;
+  }
+
+  /**
+   * Підписки на інструмент ділять читання snapshot: одночасно йде не більше одного, і чекає не
+   * більше однієї пачки. Ліміт на сокет не тримав би навантаження на PG: з багатьох сокетів і
+   * адрес читання займали б усі слоти `CommittedBook`, і REST-читання книги отримували б 503.
+   * Пачка закривається, коли читання отримало слот: snapshot PG береться пізніше, тож він не
+   * старіший за вхід сокета в кімнату. Підписка, що прийшла, поки читання стоїть у черзі слотів,
+   * чекає його, а не ще одну чергу.
+   */
+  private snapshot(instrument: string): Promise<BookSnapshot> {
+    const waiting = this.batches.get(instrument);
+    if (waiting) return waiting;
+    const close = () => {
+      if (this.batches.get(instrument) === batch) this.batches.delete(instrument);
+    };
+    const batch: Promise<BookSnapshot> = (this.reading.get(instrument) ?? Promise.resolve()).then(
+      () => this.book.read(instrument, undefined, close),
+    );
+    this.batches.set(instrument, batch);
+    // Відмова до отримання слота (`BOOK_BUSY`) теж закриває пачку.
+    const tail = batch.then(close, close);
+    this.reading.set(instrument, tail);
+    void tail.then(() => {
+      if (this.reading.get(instrument) === tail) this.reading.delete(instrument);
+    });
+    return batch;
   }
 
   private publish(event: MarketEvent): void {
