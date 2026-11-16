@@ -141,8 +141,10 @@ export class OrdersService {
     if (instrumentHint !== undefined && instrumentHint !== order.instrument) {
       throw new BadRequestException('Інструмент не збігається з інструментом заявки');
     }
-    await this.limit.run(() => this.intake.assertActive(this.source.manager, order.instrument));
+    // Закрита заявка має остаточну відповідь і без worker: 503 зупиненого інструмента клієнт
+    // повторював би до кінця halt.
     if (order.status === 'filled' || order.status === 'cancelled') this.terminal(order);
+    await this.limit.run(() => this.intake.assertActive(this.source.manager, order.instrument));
     const accepted = await this.limit.run(() => this.intake.cancel(order, traceparent));
     const wait = this.notifications.wait(
       order.id,

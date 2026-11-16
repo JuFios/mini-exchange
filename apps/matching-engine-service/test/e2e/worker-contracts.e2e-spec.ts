@@ -252,6 +252,33 @@ it('halts on a persistent sequence gap and preserves that state across restart',
   ).toEqual([{ last_applied_seq: '0' }]);
 });
 
+it('answers a cancel of a closed order on a halted instrument with its final state', async () => {
+  const seller = await register();
+  const buyer = await register();
+  const { order: filled } = await (await submit(seller)).json();
+  expect((await submit(buyer, { side: 'buy' })).status).toBe(201);
+  const { order: cancelled } = await (await submit(seller, { price: 200 })).json();
+  expect((await request(`/orders/${cancelled.id}`, 'DELETE', seller)).status).toBe(200);
+  await database().query("UPDATE instrument_state SET status='halted' WHERE instrument='ABC'");
+
+  const first = await request(`/orders/${filled.id}`, 'DELETE', seller);
+  expect(first.status).toBe(409);
+  expect(await first.json()).toMatchObject({
+    code: 'ORDER_ALREADY_FILLED',
+    order: { id: filled.id, status: 'filled' },
+  });
+  const second = await request(`/orders/${cancelled.id}`, 'DELETE', seller);
+  expect(second.status).toBe(409);
+  expect(await second.json()).toMatchObject({
+    code: 'ORDER_ALREADY_CANCELLED',
+    order: { id: cancelled.id, status: 'cancelled' },
+  });
+  // Відповідь відома без worker: журнал команд не росте.
+  expect(
+    await database().query("SELECT count(*)::int AS n FROM order_commands WHERE type='cancel'"),
+  ).toEqual([{ n: 1 }]);
+});
+
 it('halts on a recovery mismatch instead of serving an empty replacement book', async () => {
   const owner = await register();
   await submit(owner);
