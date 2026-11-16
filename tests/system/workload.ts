@@ -21,6 +21,7 @@ export const SETTLEMENT = 'http://settlement-service:3002';
 export type Order = {
   auth: string;
   key: string;
+  expiredKeys?: string[];
   price: string;
   quantity: string;
   side: 'buy' | 'sell';
@@ -113,17 +114,23 @@ export async function orders(): Promise<Order[]> {
 }
 
 export async function sendOrder(order: Order, retry: boolean, fresh = true) {
-  const { auth, key, ...body } = order;
-  const response = await submit(auth, { ...body, instrument: 'ABC' }, undefined, {
-    key,
-    retry,
-    fresh,
-  });
-  return {
-    key,
-    status: response.status,
-    body: (await response.json()) as { order?: { id: string }; code?: string },
-  };
+  const { auth, price, quantity, side } = order;
+  for (let replacement = 0; ; replacement++) {
+    const response = await submit(auth, { price, quantity, side, instrument: 'ABC' }, undefined, {
+      key: order.key,
+      retry,
+      fresh,
+    });
+    const body = (await response.json()) as { order?: { id: string }; code?: string };
+    if (retry && fresh && response.status === 409 && body.code === 'REQUEST_EXPIRED') {
+      // Лише підтверджене прострочення дозволяє новий ключ; невідому відповідь повторює submit.
+      assert(replacement < 3, 'Too many expired reservation attempts');
+      (order.expiredKeys ??= []).push(order.key);
+      order.key = randomUUID();
+      continue;
+    }
+    return { key: order.key, status: response.status, body };
+  }
 }
 
 export type Receipt = Awaited<ReturnType<typeof sendOrder>>;
@@ -158,6 +165,8 @@ export async function verifyWorkload(
 ) {
   assert.equal(receipts.length, ORDER_COUNT);
   assertAccepted(receipts);
+  const expiredKeys = workload.flatMap((order) => order.expiredKeys ?? []);
+  const commandCount = ORDER_COUNT + expiredKeys.length;
   await until(
     async () => {
       const { rows } = await db.query(
@@ -174,7 +183,7 @@ export async function verifyWorkload(
       assert.equal(failures + deadLetters, 0, 'Settlement queued errors');
       const abc = streams.find(({ stream }) => stream === 'exchange:settlement:{ABC}');
       return (
-        rows[0].last_applied_seq === String(ORDER_COUNT) &&
+        rows[0].last_applied_seq === String(commandCount) &&
         rows[0].unpublished === 0 &&
         abc?.lag === 0 &&
         abc.pending === 0
@@ -190,7 +199,7 @@ export async function verifyWorkload(
   );
   assert.deepEqual(
     journal.rows.map(({ seq }) => seq),
-    Array.from({ length: ORDER_COUNT }, (_, i) => i + 1),
+    Array.from({ length: commandCount }, (_, i) => i + 1),
   );
   assert(journal.rows.every(({ type, applied_at }) => type === 'submit' && applied_at));
   // Replay бере вхід із журналу, тож журнал звіряємо з тим, що надіслав клієнт.
@@ -219,7 +228,7 @@ export async function verifyWorkload(
     );
   }
   const accepted = await db.query(
-    'SELECT idempotency_key, order_id, status FROM order_requests ORDER BY idempotency_key',
+    "SELECT idempotency_key, order_id, status FROM order_requests WHERE status='accepted' ORDER BY idempotency_key",
   );
   assert.deepEqual(
     accepted.rows,
@@ -230,6 +239,21 @@ export async function verifyWorkload(
         order_id: body.order!.id,
         status: 'accepted',
       })),
+  );
+  // Усі додаткові команди мають належати саме підтверджено простроченим спробам.
+  await until(
+    async () => {
+      const expired = await db.query(
+        "SELECT idempotency_key, status FROM order_requests WHERE status<>'accepted' ORDER BY idempotency_key",
+      );
+      assert.deepEqual(
+        expired.rows.map((row) => row.idempotency_key),
+        [...expiredKeys].sort(),
+      );
+      return expired.rows.every((row) => row.status === 'expired');
+    },
+    Boolean,
+    60000,
   );
   const applied = await db.query(
     "SELECT count(*)::int AS pending FROM orders WHERE status='pending'",
@@ -282,14 +306,14 @@ export async function verifyWorkload(
   assert.equal(snapshot.status, 200);
   assert.deepEqual(await snapshot.json(), {
     instrument: 'ABC',
-    seq: String(ORDER_COUNT),
+    seq: String(commandCount),
     bids: depth(bids),
     asks: depth(asks),
   });
   await verifyLedger(db, ledger, admin, receipts);
   await verifyBalances(ledger, workload, replay);
   console.log(
-    `accepted=${receipts.length} trades=${replay.trades.length} bids=${bids.length} asks=${asks.length} lag=0 reconciliation=ok`,
+    `accepted=${receipts.length} expired=${expiredKeys.length} commands=${commandCount} trades=${replay.trades.length} bids=${bids.length} asks=${asks.length} lag=0 reconciliation=ok`,
   );
 }
 
@@ -303,8 +327,26 @@ function decimal(units: bigint, scale: number) {
 }
 
 async function verifyLedger(db: Client, ledger: Client, admin: string, receipts: Receipt[]) {
+  const retired = await db.query("SELECT order_id FROM order_requests WHERE status='expired'");
+  const retiredIds: string[] = retired.rows.map((row) => row.order_id);
+  const released = await ledger.query(
+    'SELECT reservation_id,status,remaining::text FROM reservations WHERE reservation_id=ANY($1::uuid[]) ORDER BY reservation_id',
+    [retiredIds],
+  );
+  assert.deepEqual(
+    released.rows.map((row) => row.reservation_id),
+    [...retiredIds].sort(),
+  );
+  assert(
+    released.rows.every(
+      (row) =>
+        (row.status === 'closed' && row.remaining === '0') ||
+        (row.status === 'released_tombstone' && row.remaining === null),
+    ),
+  );
   const reservations = await ledger.query(
-    'SELECT reservation_id FROM reservations ORDER BY reservation_id',
+    'SELECT reservation_id FROM reservations WHERE NOT (reservation_id=ANY($1::uuid[])) ORDER BY reservation_id',
+    [retiredIds],
   );
   assert.deepEqual(
     reservations.rows.map(({ reservation_id }) => reservation_id),

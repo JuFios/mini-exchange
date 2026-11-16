@@ -222,7 +222,11 @@ export const units = (text: string, scale: number) => {
   return BigInt(whole + fraction.padEnd(scale, '0'));
 };
 export async function verifyReplay(db: Client) {
-  const commands = (await db.query('SELECT * FROM order_commands ORDER BY instrument,seq')).rows;
+  const commands = (
+    await db.query(`SELECT c.*, r.status AS request_status FROM order_commands c
+    LEFT JOIN order_requests r ON r.order_id=c.order_id AND c.type='submit'
+    ORDER BY c.instrument,c.seq`)
+  ).rows;
   // У кожного інструмента своя книга: інакше команди XYZ зіставлялися б із заявками ABC.
   const oracles = new Map<string, ReferenceMatcher>();
   const oracle = (instrument: string) => {
@@ -231,6 +235,27 @@ export async function verifyReplay(db: Client) {
   };
   const expected = [];
   for (const row of commands) {
+    if (row.result?.status === 'not_reserved') {
+      assert.equal(row.type, 'submit');
+      assert(['rejected', 'releasing', 'expired'].includes(row.request_status));
+      assert.deepEqual(row.result.tradeIds, []);
+      const events = await db.query(
+        'SELECT type,payload FROM outbox WHERE instrument=$1 AND seq=$2 ORDER BY id',
+        [row.instrument, row.seq],
+      );
+      assert.deepEqual(events.rows, [
+        {
+          type: 'book.delta',
+          payload: {
+            instrument: row.instrument,
+            seq: row.seq,
+            tradeCount: 0,
+            changes: [],
+          },
+        },
+      ]);
+      continue;
+    }
     const result = oracle(row.instrument).apply(
       row.type === 'submit'
         ? {

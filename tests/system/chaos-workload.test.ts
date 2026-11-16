@@ -131,3 +131,76 @@ test('external kill failure rejects held waves without submitting them', async (
   assert.equal(context.sent.size, 200);
   assert.equal(context.attempts(), 200);
 });
+
+test('replaces only confirmed expired keys and preserves the final replay key', async (t) => {
+  const calls: { body: unknown; key?: string; fresh?: boolean }[] = [];
+  t.mock.method(
+    helpers,
+    'submit',
+    async (
+      _token: string,
+      body: unknown,
+      _base: unknown,
+      options: { key: string; fresh: boolean },
+    ) => {
+      calls.push({ body, ...options });
+      return calls.length === 1
+        ? Response.json({ code: 'REQUEST_EXPIRED' }, { status: 409 })
+        : Response.json({ order: { id: 'accepted' } }, { status: options.fresh ? 201 : 200 });
+    },
+  );
+  const order: workload.Order = {
+    auth: 'token',
+    key: 'first',
+    price: '100',
+    quantity: '1',
+    side: 'buy',
+  };
+  const accepted = await workload.sendOrder(order, true);
+  assert.equal(accepted.status, 201);
+  assert.deepEqual(order.expiredKeys, ['first']);
+  assert.notEqual(order.key, 'first');
+  assert.equal(accepted.key, order.key);
+  assert.deepEqual(calls[1].body, { instrument: 'ABC', price: '100', quantity: '1', side: 'buy' });
+  const replay = await workload.sendOrder(order, true, false);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.key, accepted.key);
+});
+
+test('does not replace a key for another conflict or an explicit replay', async (t) => {
+  for (const [code, fresh] of [
+    ['IDEMPOTENCY_KEY_REUSED', true],
+    ['REQUEST_EXPIRED', false],
+  ] as const) {
+    const mocked = t.mock.method(helpers, 'submit', async () =>
+      Response.json({ code }, { status: 409 }),
+    );
+    const order: workload.Order = {
+      auth: 'token',
+      key: 'same',
+      price: '100',
+      quantity: '1',
+      side: 'buy',
+    };
+    assert.equal((await workload.sendOrder(order, true, fresh)).status, 409);
+    assert.equal(order.key, 'same');
+    assert.equal(order.expiredKeys, undefined);
+    mocked.mock.restore();
+  }
+});
+
+test('bounds replacements when every reservation expires', async (t) => {
+  const mocked = t.mock.method(helpers, 'submit', async () =>
+    Response.json({ code: 'REQUEST_EXPIRED' }, { status: 409 }),
+  );
+  const order: workload.Order = {
+    auth: 'token',
+    key: 'same',
+    price: '100',
+    quantity: '1',
+    side: 'buy',
+  };
+  await assert.rejects(workload.sendOrder(order, true), /Too many expired reservation attempts/);
+  assert.equal(mocked.mock.callCount(), 4);
+  assert.equal(order.expiredKeys?.length, 3);
+});
