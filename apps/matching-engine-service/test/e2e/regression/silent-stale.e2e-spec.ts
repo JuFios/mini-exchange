@@ -24,7 +24,7 @@ it('keeps a connected starter client up to date instead of leaving it on a stale
       socket.once('connect', () => socket.emit('subscribe', 'ABC', () => undefined));
       socket.once('book', () => resolve());
     });
-    expect(books.at(-1)).toEqual({ bids: [], asks: [] });
+    expect(books.at(-1)).toEqual({ instrument: 'ABC', seq: '0', bids: [], asks: [] });
 
     for (const price of [100, 101, 102, 103, 104])
       expect((await submit(owner, { price })).status).toBe(201);

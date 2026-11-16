@@ -23,7 +23,7 @@ export interface SubmitCommand {
   readonly type: 'submit';
   readonly instrument: string;
   readonly seq: bigint;
-  readonly acceptedAt: string;
+  readonly executedAt: string;
   readonly order: Omit<BookOrder, 'prioritySeq'>;
 }
 
@@ -145,7 +145,7 @@ export function apply(
       sellOrderId: buying ? resting.id : incoming.id,
       price: resting.price,
       quantity,
-      executedAt: command.acceptedAt,
+      executedAt: command.executedAt,
     });
 
     incoming = { ...incoming, remaining: incoming.remaining - quantity };

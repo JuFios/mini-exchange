@@ -218,3 +218,12 @@ it('rejects realtime events outside the producer and stream contract', () => {
   expect(parseEnvelope(wallet, 'exchange:wallet-events')).toBeDefined();
   expect(parseEnvelope(wallet, 'exchange:user-events')).toBeUndefined();
 });
+
+it('preserves trade counts and fill positions while accepting old events', () => {
+  expect(publicDelta({ ...delta, tradeCount: 2 })).toEqual({ ...delta, tradeCount: 2 });
+  expect(publicTrade({ ...trade, fillIndex: 1 } as never)).toEqual({ ...trade, fillIndex: 1 });
+  for (const value of [-1, 1.5, '2', null]) {
+    expect(parseEnvelope(entry('book.delta', { ...delta, tradeCount: value }))).toBeUndefined();
+    expect(parseEnvelope(entry('trade.public', { ...trade, fillIndex: value }))).toBeUndefined();
+  }
+});

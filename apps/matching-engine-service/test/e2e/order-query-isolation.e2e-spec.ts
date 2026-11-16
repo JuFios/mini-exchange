@@ -72,6 +72,7 @@ it.each([true, false])(
         payload: {
           instrument: 'ABC',
           seq,
+          tradeCount: 0,
           changes: [
             {
               side: 'ask',

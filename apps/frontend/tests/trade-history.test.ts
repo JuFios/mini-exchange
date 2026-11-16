@@ -43,7 +43,16 @@ function history() {
   };
   const heartbeat = (instrument = 'ABC') =>
     handlers.get('book.heartbeat')!({ instrument, seq: '1' });
-  return { session, reads, rows, errors, timers, advance, heartbeat };
+  return {
+    session,
+    reads,
+    rows,
+    errors,
+    timers,
+    advance,
+    heartbeat,
+    emit: (name: string, event: unknown) => handlers.get(name)!(event),
+  };
 }
 
 it('refreshes trade history on heartbeats at a bounded interval when the book is current', async () => {
@@ -154,4 +163,61 @@ it('cancels the read and stops refreshing once stopped', async () => {
   state.session.refresh();
   assert.equal(state.reads.length, 1);
   assert.deepEqual(state.errors, []);
+});
+
+it('refreshes a missing fill at the next delta or after one second on a quiet market', async () => {
+  for (const trigger of ['delta', 'timeout']) {
+    const state = history();
+    state.emit('book.delta', { instrument: 'ABC', seq: '1', tradeCount: 2 });
+    state.emit('trade', { instrument: 'ABC', seq: '1', fillIndex: 0 });
+    state.emit('trade', { instrument: 'ABC', seq: '1', fillIndex: 0 });
+    state.emit('trade', { instrument: 'XYZ', seq: '1', fillIndex: 1 });
+    state.emit('trade', { instrument: 'ABC', seq: '1', fillIndex: 2 });
+    state.advance(999);
+    assert.equal(state.reads.length, 0);
+    if (trigger === 'delta')
+      state.emit('book.delta', { instrument: 'ABC', seq: '2', tradeCount: 0 });
+    else state.advance(1);
+    assert.equal(state.reads.length, 1, trigger);
+    state.reads[0].resolve(['recovered']);
+    await flush();
+    assert.deepEqual(state.rows, [['recovered']]);
+    state.session.stop();
+  }
+});
+
+it('keeps complete, repeated and old deltas from causing false trade refreshes', () => {
+  const state = history();
+  for (let seq = 1; seq <= 50; seq++) {
+    const event = { instrument: 'ABC', seq: String(seq), tradeCount: seq % 4 };
+    state.emit('book.delta', event);
+    for (let fillIndex = event.tradeCount - 1; fillIndex >= 0; fillIndex--) {
+      state.emit('trade', { ...event, fillIndex });
+      state.emit('trade', { ...event, fillIndex });
+    }
+    state.emit('book.delta', event);
+    state.emit('book.delta', { ...event, seq: String(seq - 1) });
+    state.advance(1000);
+    assert.equal(state.reads.length, 0);
+  }
+  state.emit('book.delta', { instrument: 'ABC', seq: '51' });
+  state.advance(1000);
+  assert.equal(state.reads.length, 0, 'old events without tradeCount remain supported');
+  state.session.stop();
+  assert.equal(state.timers.size, 0);
+});
+
+it('clears a pending fill check on snapshot and shutdown', async () => {
+  const state = history();
+  state.emit('book.delta', { instrument: 'ABC', seq: '1', tradeCount: 1 });
+  state.session.refresh();
+  state.reads[0].resolve([]);
+  await flush();
+  state.advance(1000);
+  assert.equal(state.reads.length, 1);
+  state.emit('book.delta', { instrument: 'ABC', seq: '2', tradeCount: 1 });
+  state.session.stop();
+  state.advance(1000);
+  assert.equal(state.reads.length, 1);
+  assert.equal(state.timers.size, 0);
 });

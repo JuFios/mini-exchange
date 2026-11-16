@@ -660,7 +660,7 @@ describe('snapshots taken while commands are being applied', () => {
         type: 'submit',
         instrument: row.instrument,
         seq: BigInt(row.seq),
-        acceptedAt: row.accepted_at.toISOString(),
+        executedAt: row.applied_at.toISOString(),
         order: {
           id: row.order_id,
           ownerId: row.user_id,

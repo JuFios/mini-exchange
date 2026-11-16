@@ -81,10 +81,13 @@ export async function runChaos(fault: Fault) {
         retries.map(({ body }) => body.order!.id),
         receipts.map(({ body }) => body.order!.id),
       );
-      assert.equal((await owner(db)).last_applied_seq, String(ORDER_COUNT));
+      const commandCount =
+        ORDER_COUNT +
+        workload.reduce((count, order) => count + (order.expiredKeys?.length ?? 0), 0);
+      assert.equal((await owner(db)).last_applied_seq, String(commandCount));
       assert.equal(
         (await db.query("SELECT next_seq FROM instruments WHERE symbol='ABC'")).rows[0].next_seq,
-        String(ORDER_COUNT),
+        String(commandCount),
       );
     } catch (error) {
       failure = error;

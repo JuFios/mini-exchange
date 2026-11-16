@@ -11,7 +11,7 @@ export interface Reservation {
 
 export abstract class ReservationClient {
   abstract assertReady(): Promise<void>;
-  abstract reserve(request: Reservation): Promise<'accepted' | 'rejected'>;
+  abstract reserve(request: Reservation, signal?: AbortSignal): Promise<'accepted' | 'rejected'>;
   abstract release(reservationId: string): Promise<void>;
 }
 

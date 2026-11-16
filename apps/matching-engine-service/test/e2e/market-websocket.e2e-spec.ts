@@ -42,6 +42,7 @@ it('sends one delta per command with the command number, the trade and nothing p
   await waitFor(async () => events(received, 'book.delta').length === 3, 5000);
   const commands = await api.database().query('SELECT seq FROM order_commands ORDER BY seq');
   const deltas = events(received, 'book.delta') as { seq: string; changes: unknown[] }[];
+  expect(deltas.map((delta) => (delta as { tradeCount?: number }).tradeCount)).toEqual([0, 1, 0]);
   expect(deltas.map(({ seq }) => seq)).toEqual(commands.map(({ seq }: { seq: string }) => seq));
   expect(deltas.map(({ changes }) => changes)).toEqual([
     [{ side: 'ask', price: '100.00', quantity: '2.00000000', orders: 1 }],
@@ -56,6 +57,7 @@ it('sends one delta per command with the command number, the trade and nothing p
     instrument: 'ABC',
     tradeId: latest.tradeId,
     seq: '2',
+    fillIndex: 0,
     price: '100.00',
     quantity: '1.00000000',
     takerSide: 'buy',

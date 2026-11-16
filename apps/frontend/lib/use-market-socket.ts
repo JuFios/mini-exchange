@@ -8,6 +8,7 @@ import { startTradeHistory } from './trade-history';
 
 export interface Trade {
   tradeId: string;
+  fillIndex?: number;
   seq: string;
   price: string;
   quantity: string;
@@ -24,16 +25,26 @@ function validTrade(trade: Trade) {
     typeof trade.price === 'string' &&
     typeof trade.quantity === 'string' &&
     (trade.takerSide === 'buy' || trade.takerSide === 'sell') &&
-    typeof trade.executedAt === 'string'
+    typeof trade.executedAt === 'string' &&
+    (trade.fillIndex === undefined ||
+      (Number.isSafeInteger(trade.fillIndex) && trade.fillIndex >= 0))
   );
 }
 
 function tradeRows(...groups: Trade[][]) {
   const unique = new Map<string, Trade>();
   for (const rows of groups) {
-    for (const { tradeId, seq, price, quantity, takerSide, executedAt } of rows) {
+    for (const { tradeId, seq, price, quantity, takerSide, executedAt, fillIndex } of rows) {
       if (!unique.has(tradeId))
-        unique.set(tradeId, { tradeId, seq, price, quantity, takerSide, executedAt });
+        unique.set(tradeId, {
+          tradeId,
+          seq,
+          price,
+          quantity,
+          takerSide,
+          executedAt,
+          ...(fillIndex !== undefined && { fillIndex }),
+        });
     }
   }
   return [...unique.values()]

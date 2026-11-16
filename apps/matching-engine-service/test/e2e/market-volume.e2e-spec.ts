@@ -32,7 +32,7 @@ it('returns exact price-level volumes beyond the precision of an individual orde
       });
       socket.emit('subscribe', 'ABC');
     });
-    expect(await book).toEqual(expected);
+    expect(await book).toEqual({ instrument: 'ABC', seq: '0', ...expected });
   } finally {
     socket.disconnect();
   }

@@ -6,6 +6,8 @@ import { engineApp } from './engine-app';
 const { app, register, submit, url } = engineApp();
 
 interface Book {
+  instrument: string;
+  seq: string;
   bids: unknown[];
   asks: { price: string }[];
 }
@@ -38,6 +40,15 @@ it('never replaces a newer book with the result of an older, slower read', async
 
       await waitFor(async () => books.at(-1)?.asks.length === 2, 5000);
       await new Promise((resolve) => setTimeout(resolve, 1500));
+      expect(
+        books.every(
+          (book, i) =>
+            book.instrument === 'ABC' &&
+            /^\d+$/.test(book.seq) &&
+            (i === 0 || BigInt(book.seq) >= BigInt(books[i - 1].seq)),
+        ),
+      ).toBe(true);
+      expect(books.at(-1)?.seq).toBe('2');
       expect(books.at(-1)?.asks.map(({ price }) => price)).toEqual(['100.00', '101.00']);
     } finally {
       read.mockRestore();

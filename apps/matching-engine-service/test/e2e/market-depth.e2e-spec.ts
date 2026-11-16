@@ -42,6 +42,8 @@ it('sends only aggregated levels to an unauthenticated WebSocket subscriber', as
       socket.emit('subscribe', 'ABC');
     });
     expect(book).toEqual({
+      instrument: 'ABC',
+      seq: '2',
       bids: [],
       asks: [{ price: '100.00', quantity: '0.30000000', orders: 2 }],
     });

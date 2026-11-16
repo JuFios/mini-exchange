@@ -6,6 +6,8 @@ import { transient } from './use-private-socket';
 export const HISTORY_REFRESH_MS = 10_000;
 // Скільки чекати на відповідь історії, перш ніж показати помилку.
 export const HISTORY_TIMEOUT_MS = 3000;
+// Delta передує угодам: тихий ринок теж має виявити втрату останнього fill.
+export const TRADE_WAIT_MS = 1000;
 
 export interface HistoryView<T> {
   onRows(rows: T): void;
@@ -29,6 +31,20 @@ export function startTradeHistory<T>(
   let nextAt = Infinity;
   let retryDelay = RETRY_MAX_MS;
   let stopped = false;
+  let batch: { seq: string; count: number; fills: Set<number> } | undefined;
+  let tradeDeadline: unknown;
+  let lastSeq: bigint | undefined;
+
+  function clearBatch() {
+    clock.clearTimeout(tradeDeadline);
+    batch = undefined;
+  }
+
+  function checkBatch() {
+    const missing = batch && batch.fills.size < batch.count;
+    clearBatch();
+    if (missing) load();
+  }
 
   function cancel() {
     request?.abort();
@@ -72,14 +88,42 @@ export function startTradeHistory<T>(
     );
   }
 
+  socket.on('book.delta', (event: { instrument: string; seq: string; tradeCount?: number }) => {
+    if (stopped || event?.instrument !== instrument || !/^\d+$/.test(event.seq)) return;
+    if (lastSeq !== undefined && BigInt(event.seq) <= lastSeq) return;
+    lastSeq = BigInt(event.seq);
+    checkBatch();
+    if (!Number.isSafeInteger(event.tradeCount) || event.tradeCount! < 0) return;
+    batch = { seq: event.seq, count: event.tradeCount!, fills: new Set() };
+    if (batch.count > 0) tradeDeadline = clock.setTimeout(checkBatch, TRADE_WAIT_MS);
+  });
+  socket.on('trade', (event: { instrument: string; seq: string; fillIndex?: number }) => {
+    if (
+      stopped ||
+      event?.instrument !== instrument ||
+      event.seq !== batch?.seq ||
+      !Number.isSafeInteger(event.fillIndex) ||
+      event.fillIndex! < 0 ||
+      event.fillIndex! >= batch.count
+    )
+      return;
+    batch.fills.add(event.fillIndex!);
+    if (batch.fills.size === batch.count) clock.clearTimeout(tradeDeadline);
+  });
+
   socket.on('book.heartbeat', (event: { instrument: string }) => {
     if (event?.instrument === instrument && !request && now() >= nextAt) load();
   });
 
   return {
-    refresh: load,
+    refresh() {
+      lastSeq = undefined;
+      clearBatch();
+      load();
+    },
     stop() {
       stopped = true;
+      clearBatch();
       cancel();
     },
   };

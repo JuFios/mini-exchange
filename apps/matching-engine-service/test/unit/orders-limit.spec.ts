@@ -16,20 +16,28 @@ function setup(submit: jest.Mock, source: object = {}, intake: object = {}) {
   );
 }
 
-it('leaves pool connections for the worker while orders flood in', async () => {
+// Intake сам викликає межу резерву вже після видачі `seq`; тут вона тримає HTTP до settlement.
+type Step = (work: () => Promise<unknown>) => Promise<unknown>;
+const reserving = (work: jest.Mock) =>
+  jest.fn((_dto, _user, _key, _trace, _pg: Step, reserve: Step) => reserve(work));
+
+it('limits concurrent reservation calls while orders flood in', async () => {
   jest.useFakeTimers();
-  const submit = jest.fn(never);
+  const reserve = jest.fn(never);
+  const submit = reserving(reserve);
   const orders = setup(submit);
 
   for (let index = 0; index < 8; index++) void orders.submitOrder(dto, 'u').catch(() => undefined);
   await jest.advanceTimersByTimeAsync(0);
 
-  expect(submit).toHaveBeenCalledTimes(5);
+  // Усі вісім отримали `seq`, до settlement пішли п'ять.
+  expect(submit).toHaveBeenCalledTimes(8);
+  expect(reserve).toHaveBeenCalledTimes(5);
 });
 
 it('answers a retriable busy error when the queue wait runs out', async () => {
   jest.useFakeTimers();
-  const orders = setup(jest.fn(never));
+  const orders = setup(reserving(jest.fn(never)));
   for (let index = 0; index < 5; index++) void orders.submitOrder(dto, 'u').catch(() => undefined);
 
   const waiting = orders.submitOrder(dto, 'u');

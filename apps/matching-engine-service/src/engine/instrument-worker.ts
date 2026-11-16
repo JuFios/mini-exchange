@@ -266,12 +266,17 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       if (!owned || owned.lease !== lease) return;
       this.step(owned.lease);
       if (owned.halted) return;
-      const [row]: (CommandRow & { next_seq: string })[] = await this.source.query(
-        `SELECT c.*,i.next_seq FROM instruments i
+      const [row]: (CommandRow & { next_seq: string; awaiting_reservation: boolean })[] =
+        await this.source.query(
+          `SELECT c.*,i.next_seq,
+          (r.status='reserving' AND clock_timestamp() < c.accepted_at + $3 * interval '1 millisecond')
+            IS TRUE AS awaiting_reservation
+        FROM instruments i
         LEFT JOIN LATERAL (SELECT * FROM order_commands WHERE instrument=i.symbol AND seq>$2 ORDER BY seq LIMIT 1) c ON true
+        LEFT JOIN order_requests r ON c.type='submit' AND r.order_id=c.order_id
         WHERE i.symbol=$1`,
-        [instrument, owned.seq],
-      );
+          [instrument, owned.seq, this.config.getOrThrow<number>('RESERVATION_WAIT_MS')],
+        );
       if (this.owned.get(instrument) !== owned) return;
       if (!row.seq && BigInt(row.next_seq) === BigInt(owned.seq)) {
         this.gaps.delete(instrument);
@@ -297,6 +302,9 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         return;
       }
       this.gaps.delete(instrument);
+      // Порядок надходження вже зафіксовано `seq`: пізніші команди чекають, поки ця дізнається
+      // результат резерву. Прохід завершується; його відновить NOTIFY intake або poll.
+      if (row.awaiting_reservation) return;
       const fields = { instrument, orderId: row.order_id, seq: row.seq, epoch: owned.epoch };
       const result = await traced('engine.apply', row.traceparent, fields, async () => {
         row.traceparent = activeTraceparent(row.traceparent ?? undefined) ?? null;
@@ -332,6 +340,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.ownership.leases.assert(owned.lease);
     if (state.status === 'halted' || state.legacy_verified !== true) return;
     if (state.last_applied_seq !== owned.seq) throw new Error('Committed book sequence changed');
+    // Один час БД після fencing-lock: усі записи apply переживають зміну годинника репліки.
+    const [{ applied_at: appliedAt }]: { applied_at: Date }[] = await db.query(
+      "SELECT date_trunc('milliseconds', clock_timestamp()) AS applied_at",
+    );
+    if (row.type === 'submit' && !(await this.funded(db, row.order_id))) {
+      return this.unfunded(db, owned, row, state.owner_epoch, appliedAt);
+    }
     const target = await db.getRepository(Order).findOneByOrFail({ id: row.order_id });
     const command: Command =
       row.type === 'submit'
@@ -339,7 +354,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
             type: 'submit',
             instrument: row.instrument,
             seq: BigInt(row.seq),
-            acceptedAt: row.accepted_at.toISOString(),
+            executedAt: appliedAt.toISOString(),
             order: bookOrder(target),
           }
         : {
@@ -370,6 +385,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       payload: {
         instrument: row.instrument,
         seq: row.seq,
+        tradeCount: result.trades.length,
         changes: result.levelChanges.map((level) => ({
           side: level.side === 'buy' ? 'bid' : 'ask',
           price: formatPrice(level.price),
@@ -380,7 +396,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     };
     const events: EngineEvent[] = [
       delta,
-      ...(await this.writeOrders(db, owned.lease, target, result.orderChanges)),
+      ...(await this.writeOrders(db, owned.lease, target, result.orderChanges, appliedAt)),
       ...(await this.writeTrades(db, owned.lease, row, target, result.trades)),
     ];
     for (const closed of result.closed) {
@@ -401,18 +417,32 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       });
     }
     this.step(owned.lease);
-    await insertOutboxEvents(db, row, events);
+    await insertOutboxEvents(db, row, events, appliedAt);
+    await this.finish(db, owned, row, result, state.owner_epoch, appliedAt);
+    return result;
+  }
+
+  /** Журнал команди, лічильники книги з fencing і сигнал очікувачам. */
+  private async finish(
+    db: EntityManager,
+    owned: OwnedBook,
+    row: CommandRow,
+    result: WorkerResult,
+    epoch: string,
+    appliedAt: Date,
+  ): Promise<void> {
     const [, applied] = await db.query(
-      `UPDATE order_commands SET applied_at=now(),result=$3 WHERE instrument=$1 AND seq=$2`,
+      `UPDATE order_commands SET applied_at=$4,result=$3 WHERE instrument=$1 AND seq=$2`,
       [
         row.instrument,
         row.seq,
         {
           status: result.outcome,
           tradeIds: result.trades.map(({ tradeId }) => tradeId),
-          epoch: state.owner_epoch,
+          epoch,
           instance: this.config.getOrThrow('INSTANCE_ID'),
         },
+        appliedAt,
       ],
     );
     if (applied !== 1) throw new Error('Command journal row changed');
@@ -440,6 +470,59 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     await this.chaos.reach('after_writes_before_commit', row.seq, result.trades.length);
     await this.chaos.reach('stall_before_commit', row.seq, result.trades.length);
     this.ownership.leases.assert(owned.lease);
+  }
+
+  /**
+   * Чи можна застосувати submit. Рядок запиту блокується: intake і worker змінюють `reserving`
+   * лише з-під нього, тож заявка не стане прийнятою після того, як worker її зняв.
+   * Імпортовані заявки starter запиту не мають і вже зарезервовані.
+   */
+  private async funded(db: EntityManager, orderId: string): Promise<boolean> {
+    const [request]: { status: string }[] = await db.query(
+      'SELECT status FROM order_requests WHERE order_id=$1 FOR UPDATE',
+      [orderId],
+    );
+    if (!request || request.status === 'accepted') return true;
+    if (request.status === 'reserving') {
+      // Дедлайн минув: результат резерву вже не застосується, кошти звільнить sweeper.
+      await db.query(
+        `UPDATE order_requests SET status='releasing', updated_at=clock_timestamp(),
+          release_due_at=NULL WHERE order_id=$1`,
+        [orderId],
+      );
+    }
+    return false;
+  }
+
+  /** Submit без резерву займає свій `seq`, але книги не змінює: порожня delta тримає потік суцільним. */
+  private async unfunded(
+    db: EntityManager,
+    owned: OwnedBook,
+    row: CommandRow,
+    epoch: string,
+    appliedAt: Date,
+  ): Promise<WorkerResult> {
+    const result: WorkerResult = {
+      book: owned.book,
+      outcome: 'not_reserved',
+      orderChanges: [],
+      trades: [],
+      levelChanges: [],
+      closed: [],
+    };
+    this.step(owned.lease);
+    await insertOutboxEvents(
+      db,
+      row,
+      [
+        {
+          type: 'book.delta',
+          payload: { instrument: row.instrument, seq: row.seq, tradeCount: 0, changes: [] },
+        },
+      ],
+      appliedAt,
+    );
+    await this.finish(db, owned, row, result, epoch, appliedAt);
     return result;
   }
 
@@ -448,6 +531,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     lease: InstrumentLease,
     target: Order,
     changes: WorkerResult['orderChanges'],
+    appliedAt: Date,
   ): Promise<EngineEvent[]> {
     const events: EngineEvent[] = [];
     for (const change of changes) {
@@ -466,7 +550,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         .getRepository(Order)
         .update(
           { id: change.id, version: previous.version },
-          { ...state, cancelReason: change.cancelReason ?? null, updatedAt: new Date() },
+          { ...state, cancelReason: change.cancelReason ?? null, updatedAt: appliedAt },
         );
       if (updated.affected !== 1) throw new Error('Order version changed');
       events.push({
@@ -499,12 +583,13 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
       const sell = await db.getRepository(Order).findOneByOrFail({ id: fill.sellOrderId });
       const publicTrade: TradePublicV1 = {
         tradeId: fill.tradeId,
+        fillIndex,
         instrument: row.instrument,
         seq: row.seq,
         price: formatPrice(fill.price),
         quantity: formatQuantity(fill.quantity),
         takerSide: target.side,
-        executedAt: row.accepted_at.toISOString(),
+        executedAt: fill.executedAt,
       };
       const execution: TradeExecutedV1 = {
         ...publicTrade,
@@ -535,7 +620,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
           execution.buyerUserId,
           execution.sellerUserId,
           execution.takerSide,
-          row.accepted_at,
+          new Date(fill.executedAt),
           row.traceparent?.split('-')[1] ?? null,
         ],
       );

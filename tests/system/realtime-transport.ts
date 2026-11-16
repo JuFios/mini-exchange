@@ -124,12 +124,14 @@ async function main() {
     for (const base of ['http://engine-lb:3001', 'http://engine-lb:8080']) {
       const rest = await request('/instruments/ABC/book', 'GET', undefined, undefined, base);
       assert.equal(rest.status, 200);
-      const { bids, asks } = (await rest.json()) as {
+      const expected = (await rest.json()) as {
+        instrument: string;
+        seq: string;
         bids: unknown[];
         asks: { price: string }[];
       };
       assert(
-        asks.some(({ price }) => price === '9999.00'),
+        expected.asks.some(({ price }) => price === '9999.00'),
         'The resting order must be in the book',
       );
       const metrics = await request('/metrics', 'GET', undefined, undefined, base);
@@ -178,7 +180,7 @@ async function main() {
             socket.connect();
           });
           assert.equal(socket.io.engine.transport.name, 'websocket');
-          assert.deepEqual(snapshot, { bids, asks });
+          assert.deepEqual(snapshot, expected);
           socket.disconnect();
         }
       } finally {

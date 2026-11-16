@@ -1,5 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import { io, Socket } from 'socket.io-client';
+import { RealtimeStreamReader } from '../../src/realtime/realtime-stream-reader.service';
 import { CommittedBook } from '../../src/engine/committed-book';
 import { waitFor } from '../helpers/wait-for';
 import { engineApp } from './engine-app';
@@ -13,6 +14,8 @@ afterEach(() => {
 });
 
 interface Book {
+  seq: string;
+  instrument: string;
   asks: { price: string }[];
 }
 
@@ -63,4 +66,28 @@ it('closes the connection when every retry fails, and a new client gets the book
 
   const again = await subscribed();
   expect(again.books.at(-1)?.asks.map(({ price }) => price)).toEqual(['100.00']);
+}, 30000);
+
+it('recovers a lost legacy push on a heartbeat without another command', async () => {
+  const owner = await register();
+  const { socket, books } = await subscribed();
+  const heartbeats: { instrument: string; seq: string }[] = [];
+  socket.on('book.heartbeat', (event) => heartbeats.push(event));
+  const reader = app().get(RealtimeStreamReader);
+  const dispatch = reader['dispatch'].bind(reader);
+  jest
+    .spyOn(reader as unknown as { dispatch: typeof dispatch }, 'dispatch')
+    .mockImplementation((stream, fields) => {
+      const index = fields.indexOf('type');
+      return fields[index + 1] === 'book.delta' ? true : dispatch(stream, fields);
+    });
+  expect((await submit(owner)).status).toBe(201);
+  await waitFor(async () => books.at(-1)?.seq === '1', 6000);
+  expect(heartbeats).toContainEqual({ instrument: 'ABC', seq: '1' });
+  expect(
+    books.every(
+      (book, i) =>
+        book.instrument === 'ABC' && (i === 0 || BigInt(book.seq) >= BigInt(books[i - 1].seq)),
+    ),
+  ).toBe(true);
 }, 30000);

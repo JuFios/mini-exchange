@@ -22,7 +22,7 @@ type ReferenceCommand =
       type: 'submit';
       instrument: string;
       seq: bigint;
-      acceptedAt: string;
+      executedAt: string;
       order: Omit<ReferenceOrder, 'prioritySeq'>;
     }
   | { type: 'cancel'; orderId: string };
@@ -123,7 +123,7 @@ export class ReferenceMatcher {
         sellOrderId: sell.id,
         price: maker.price,
         quantity: amount,
-        executedAt: command.acceptedAt,
+        executedAt: command.executedAt,
       });
     }
 

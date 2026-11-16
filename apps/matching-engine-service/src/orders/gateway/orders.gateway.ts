@@ -17,7 +17,7 @@ import { InstrumentCatalog } from '../instrument-catalog';
 export const LEGACY_BOOK_THROTTLE_MS = 100;
 
 // Невдале читання повторюється через ці паузи; після вичерпання кімнату розривають, і клієнт
-// сам перепідключається та підписується заново. Без seq застарілу книгу інакше не помітити.
+// сам перепідключається та підписується заново.
 export const LEGACY_PUSH_RETRY_MS = [100, 400, 1600];
 
 interface Waiting {
@@ -25,11 +25,7 @@ interface Waiting {
   done: Promise<void>;
 }
 
-/**
- * Застаріла сумісність зі starter (namespace `/`): `subscribe` повертає агреговану книгу без
- * номера послідовності, а після кожної зміни книги надходить нова. Виявити пропуск тут
- * неможливо, тому нові клієнти використовують namespace `/market`.
- */
+/** Сумісність зі starter: повні книги з seq та heartbeat для виявлення пропущеної розсилки. */
 @WebSocketGateway({ transports: ['websocket'] })
 export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModuleDestroy {
   @WebSocketServer()
@@ -40,6 +36,7 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
   private readonly reads = new Map<string, Promise<void>>();
   private readonly waiting = new Map<string, Waiting>();
   private readonly subscribing = new WeakSet<Socket>();
+  private readonly broadcastSeq = new Map<string, bigint>();
   // Скільки розсилок інструмента поспіль не вдалося; скидається першою вдалою.
   private readonly failures = new Map<string, number>();
   private readonly detach: (() => void)[] = [];
@@ -57,10 +54,13 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
       this.reader.onMarket((event) => {
         if (event.type === 'book.delta') this.schedule(event.payload.instrument);
       }),
-      // Пропущені delta не скличуть розсилку, а без `seq` клієнт прогалини не помітить.
       this.reader.onGap((stream) => {
         const instrument = /^exchange:market:\{(.+)\}$/.exec(stream)?.[1];
         if (instrument) this.schedule(instrument);
+      }),
+      this.monitor.onHeartbeat((instrument, seq) => {
+        server.to(instrument).emit('book.heartbeat', { instrument, seq });
+        if (BigInt(seq) > (this.broadcastSeq.get(instrument) ?? -1n)) this.schedule(instrument);
       }),
       this.monitor.onStale(() => server.disconnectSockets(true)),
     );
@@ -112,8 +112,8 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
       created.done = this.exclusive(instrument, async () => {
         if (this.waiting.get(instrument) === created) this.waiting.delete(instrument);
         if (![...sockets].some((socket) => socket.connected)) return;
-        const { bids, asks } = await this.orderBook.read(instrument);
-        for (const socket of sockets) if (socket.connected) socket.emit('book', { bids, asks });
+        const book = await this.orderBook.read(instrument);
+        for (const socket of sockets) if (socket.connected) socket.emit('book', book);
       });
       this.waiting.set(instrument, created);
       batch = created;
@@ -123,8 +123,9 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
   }
 
   private async push(instrument: string): Promise<void> {
-    const { bids, asks } = await this.orderBook.read(instrument);
-    this.server.to(instrument).emit('book', { bids, asks });
+    const book = await this.orderBook.read(instrument);
+    this.server.to(instrument).emit('book', book);
+    this.broadcastSeq.set(instrument, BigInt(book.seq));
   }
 
   /** Читання одного інструмента не перетинаються: пізніше завершене не може бути старішим. */
@@ -166,11 +167,7 @@ export class OrdersGateway implements OnGatewayInit, OnGatewayConnection, OnModu
     this.pending.set(instrument, timer);
   }
 
-  /**
-   * Книга без `seq`: пропущену розсилку клієнт не помітить, а нової команди може не бути. Тому
-   * повторюємо з паузами, а коли спроби вичерпано, розриваємо кімнату: клієнт підключається
-   * знову й бере свіжу книгу.
-   */
+  /** Після вичерпання повторів reconnect змушує клієнта взяти свіжу книгу. */
   private pushFailed(instrument: string, error: unknown): void {
     const failed = (this.failures.get(instrument) ?? 0) + 1;
     this.logger.warn({
