@@ -207,7 +207,8 @@ export async function token(path: string, email: string, password: string) {
   let response = await request(`/auth/${path}`, 'POST', undefined, { email, password });
   while (response.status === 429 && performance.now() < deadline) {
     await response.arrayBuffer();
-    // Не раніше за `Retry-After`; випадкова добавка розводить паралельні реєстрації в часі.
+    // Не раніше за `Retry-After`, крім останньої спроби перед дедлайном; випадкова добавка
+    // розводить паралельні реєстрації в часі.
     const retry = Number(response.headers.get('retry-after')) || 1;
     const pause = Math.min(retry * 1000 + Math.random() * 1000, deadline - performance.now());
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, pause)));
