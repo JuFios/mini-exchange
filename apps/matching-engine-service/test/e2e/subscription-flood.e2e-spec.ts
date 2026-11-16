@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 import { CommittedBook } from '../../src/engine/committed-book';
 import { waitFor } from '../helpers/wait-for';
-import { connect } from '../helpers/websocket';
+import { connect, emitWithAck } from '../helpers/websocket';
 import { engineApp } from './engine-app';
 
 const { app, register, submit, url } = engineApp();
@@ -136,5 +136,31 @@ describe('the market namespace under a flood of book.subscribe calls', () => {
       FLOOD - 10,
     );
     expect(reads.length).toBeLessThanOrEqual(5);
+  }, 30000);
+
+  it('shares one snapshot read among many sockets subscribing at once', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const reads = jest
+      .spyOn(app().get(CommittedBook), 'read')
+      .mockImplementation(async (instrument: string, _limit?: number, started?: () => void) => {
+        maxActive = Math.max(maxActive, ++active);
+        started?.();
+        await new Promise((resolve) => setTimeout(resolve, READ_MS));
+        active--;
+        return { instrument, seq: '0', bids: [], asks: [] };
+      });
+    const crowd = await Promise.all(Array.from({ length: 30 }, () => connect(url(), '/market')));
+    sockets.push(...crowd);
+
+    const acks = await Promise.all(
+      crowd.map((socket) =>
+        emitWithAck<{ ok: boolean }>(socket, 'book.subscribe', { instrument: 'ABC' }),
+      ),
+    );
+    expect(acks.every(({ ok }) => ok)).toBe(true);
+    // Одне читання триває, решта підписок чекає в одній пачці.
+    expect(maxActive).toBe(1);
+    expect(reads.mock.calls.length).toBeLessThanOrEqual(2);
   }, 30000);
 });

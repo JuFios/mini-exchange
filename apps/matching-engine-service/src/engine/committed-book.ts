@@ -21,9 +21,11 @@ export class CommittedBook extends ConcurrencyLimit {
     super(MAX_CONCURRENT_READS, MAX_WAITING_READS, MAX_QUEUE_WAIT_MS, 'BOOK_BUSY');
   }
 
-  read(instrument: string, limit = BOOK_DEPTH) {
-    return this.run(() =>
-      this.source.transaction('REPEATABLE READ', async (db) => {
+  /** `started` викликається, коли читання отримало слот: snapshot PG береться вже після нього. */
+  read(instrument: string, limit = BOOK_DEPTH, started?: () => void) {
+    return this.run(() => {
+      started?.();
+      return this.source.transaction('REPEATABLE READ', async (db) => {
         await db.query('SET TRANSACTION READ ONLY');
         const [state] = await db.query(
           'SELECT last_applied_seq,legacy_verified FROM instrument_state WHERE instrument=$1',
@@ -48,7 +50,7 @@ export class CommittedBook extends ConcurrencyLimit {
           bids: bids.map(pick),
           asks: asks.map(pick),
         };
-      }),
-    );
+      });
+    });
   }
 }
