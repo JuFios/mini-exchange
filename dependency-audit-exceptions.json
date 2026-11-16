@@ -1,4 +1,12 @@
 {
+  "matching-engine-service:bcrypt": {
+    "versions": ["5.1.1"],
+    "advisories": [],
+    "expires": "2026-12-16",
+    "decision": "documented limitation; isolated synthetic demonstration only",
+    "control": "No user-supplied archives; pinned trusted build inputs; no public deployment",
+    "revisit": "A compatible patch, permission to change the starter major, or any public/valuable-data deployment"
+  },
   "matching-engine-service:@mapbox/node-pre-gyp": {
     "versions": ["1.0.11"],
     "advisories": [],
