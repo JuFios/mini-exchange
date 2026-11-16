@@ -1,4 +1,5 @@
 import { RateLimits } from '../../src/security/rate-limits';
+import { IntakeService } from '../../src/intake/intake.service';
 import { ReservationClient } from '../../src/intake/reservation.client';
 import { waitFor } from '../helpers/wait-for';
 import { Logger } from '@nestjs/common';
@@ -510,4 +511,120 @@ it('timestamps a queued trade at apply after ownership recovery', async () => {
       (order: { updated_at: Date }) => order.updated_at.getTime() === trade.executed_at.getTime(),
     ),
   ).toBe(true);
+});
+
+it.each(['pg_queue', 'request_lock', 'before_reserve'] as const)(
+  'rejects a reservation finalized beyond its database deadline during %s without a worker',
+  async (phase) => {
+    let reserved = false;
+    const reserve = jest.fn(async () => {
+      reserved = true;
+      return 'accepted';
+    });
+    await restart({ ENGINE_WORKER_ENABLED: false, RESERVATION_WAIT_MS: 200 }, (builder) =>
+      builder.overrideProvider(ReservationClient).useValue({ reserve }),
+    );
+    const token = await register();
+    const owner = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
+    const dto = { instrument: 'ABC', side: 'sell' as const, price: '100', quantity: '1' };
+    const intake = app().get(IntakeService);
+    const pg = async <T>(work: () => Promise<T>): Promise<T> => {
+      if (phase === 'before_reserve' && !reserved) {
+        const [{ n }] = await database().query('SELECT count(*)::int AS n FROM order_commands');
+        if (n > 0) await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      if (!reserved || phase === 'before_reserve') return work();
+      if (phase === 'pg_queue') {
+        // Резерв уже відповів; наступний слот PG надійшов після абсолютного дедлайну.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return work();
+      }
+      const lock = database().createQueryRunner();
+      await lock.connect();
+      await lock.startTransaction();
+      try {
+        await lock.query('SELECT order_id FROM order_requests FOR UPDATE');
+        // TX2 стартує вчасно, але її блокування рядка завершується вже після дедлайну.
+        const unlock = new Promise((resolve) => setTimeout(resolve, 300)).then(() =>
+          lock.commitTransaction(),
+        );
+        try {
+          return await work();
+        } finally {
+          await unlock;
+        }
+      } finally {
+        if (lock.isTransactionActive) await lock.rollbackTransaction();
+        await lock.release();
+      }
+    };
+    await expect(intake.submit(dto, owner, `late-${phase}`, undefined, pg)).rejects.toMatchObject({
+      response: { code: 'REQUEST_EXPIRED' },
+    });
+    expect(reserve).toHaveBeenCalledTimes(phase === 'before_reserve' ? 0 : 1);
+    expect(await database().query('SELECT count(*)::int AS n FROM orders')).toEqual([{ n: 0 }]);
+    expect(await database().query('SELECT status FROM order_requests')).toEqual([
+      { status: 'releasing' },
+    ]);
+    await expect(intake.submit(dto, owner, `late-${phase}`)).rejects.toMatchObject({
+      response: { code: 'REQUEST_EXPIRED' },
+    });
+    await restart();
+    expect(
+      await database().query("SELECT seq,result->>'status' AS status FROM order_commands"),
+    ).toEqual([{ seq: '1', status: 'not_reserved' }]);
+    expect(await database().query('SELECT type,payload FROM outbox ORDER BY id')).toEqual([
+      { type: 'book.delta', payload: { instrument: 'ABC', seq: '1', tradeCount: 0, changes: [] } },
+    ]);
+  },
+);
+
+it('replays a concurrent acceptance when a delayed duplicate exhausts its reservation budget', async () => {
+  let finishReserve!: (result: string) => void;
+  const reserve = jest
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishReserve = resolve;
+        }),
+    )
+    .mockResolvedValue('accepted');
+  await restart({ ENGINE_WORKER_ENABLED: false, RESERVATION_WAIT_MS: 1000 }, (builder) =>
+    builder.overrideProvider(ReservationClient).useValue({ reserve }),
+  );
+  const token = await register();
+  const owner = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
+  const intake = app().get(IntakeService);
+  const dto = { instrument: 'ABC', side: 'sell' as const, price: '100', quantity: '1' };
+  const first = intake.submit(dto, owner, 'concurrent-deadline');
+  await waitFor(async () => reserve.mock.calls.length === 1);
+  let queued!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    queued = resolve;
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let steps = 0;
+  const duplicate = intake.submit(dto, owner, 'concurrent-deadline', undefined, async (work) => {
+    // Readonly replay, TX1, потім перевірка кешованого status перед HTTP.
+    if (++steps === 3) {
+      queued();
+      await held;
+    }
+    return work();
+  });
+  await reached;
+  finishReserve('accepted');
+  const accepted = await first;
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  release();
+  expect(await duplicate).toEqual({ ...accepted, replay: true });
+  expect(reserve).toHaveBeenCalledTimes(1);
+  expect(await database().query('SELECT count(*)::int AS n FROM order_commands')).toEqual([
+    { n: 1 },
+  ]);
+  expect(await database().query('SELECT count(*)::int AS n FROM orders')).toEqual([{ n: 1 }]);
 });

@@ -144,6 +144,7 @@ export class IntakeService {
     if (performance.now() < this.reservationsDownUntil) throw reservationUnavailable();
     // Момент надходження — видача `seq`, до будь-якого виклику settlement. Повільний резерв однієї
     // заявки не дає пізнішій обігнати її.
+    let budgetSampledAt = 0;
     const claimed = await pg(async () => {
       await this.assertActive(this.source.manager, dto.instrument);
       return this.source.transaction(async (db) => {
@@ -174,9 +175,10 @@ export class IntakeService {
           [userId, idempotencyKey],
         );
         if (row.status !== 'reserving') return { row, command: undefined };
+        budgetSampledAt = performance.now();
         const [command]: (SequencedSubmit | undefined)[] = await db.query(
           `SELECT seq,accepted_at,
-            ($2::int - extract(epoch FROM clock_timestamp() - accepted_at) * 1000)::int AS left_ms
+            floor($2::int - extract(epoch FROM clock_timestamp() - accepted_at) * 1000)::int AS left_ms
           FROM order_commands WHERE order_id=$1 AND type='submit'`,
           [row.order_id, this.config.getOrThrow<number>('RESERVATION_WAIT_MS')],
         );
@@ -193,7 +195,21 @@ export class IntakeService {
     const instrument = this.catalog.list().find(({ symbol }) => symbol === dto.instrument)!;
     // Worker чекає на резерв не довше `RESERVATION_WAIT_MS` від видачі `seq`. Пізніший результат
     // уже не застосується, тож запит до settlement обриваємо разом із цим дедлайном.
-    const deadline = AbortSignal.timeout(Math.max(command.left_ms, 0));
+    // COMMIT TX1 і черга наступного PG-кроку теж витрачають уже виданий бюджет.
+    const budgetMs = Math.floor(command.left_ms - (performance.now() - budgetSampledAt));
+    if (budgetMs <= 0) {
+      this.noteReservationOutage();
+      return pg(async () => {
+        await this.abandon(dto.instrument, row.order_id);
+        // Конкурентний повтор міг уже прийняти заявку: прострочення не скасовує її результат.
+        const [latest] = await this.source.query(
+          'SELECT * FROM order_requests WHERE user_id=$1 AND idempotency_key=$2',
+          [userId, idempotencyKey],
+        );
+        return (await this.existing(latest))!;
+      });
+    }
+    const deadline = AbortSignal.timeout(budgetMs);
     let accepted: 'accepted' | 'rejected';
     try {
       // Слот PG на час HTTP до settlement не тримаємо: повільний settlement зупиняв би скасування.
@@ -238,9 +254,23 @@ export class IntakeService {
       const result = await this.source.transaction(async (db) => {
         await db.query("SET LOCAL lock_timeout='3s'");
         await this.assertReservationMode(db);
+        // Дедлайн рахується після очікування row lock, а не до нього чи за годинником репліки.
+        await db.query(
+          'SELECT order_id FROM order_requests WHERE user_id=$1 AND idempotency_key=$2 FOR UPDATE',
+          [userId, idempotencyKey],
+        );
         const [rows] = await db.query(
-          `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
-        WHERE user_id=$1 AND idempotency_key=$2 AND status='reserving' RETURNING order_id`,
+          `WITH deadline AS MATERIALIZED (
+            SELECT clock_timestamp() >= accepted_at + $6::int * interval '1 millisecond' AS expired
+            FROM order_commands WHERE order_id=$7 AND type='submit'
+          )
+          UPDATE order_requests r SET
+            status=CASE WHEN deadline.expired THEN 'releasing' ELSE $3 END,
+            updated_at=clock_timestamp(),
+            response=CASE WHEN deadline.expired THEN NULL ELSE $4::jsonb END,
+            reserved=NOT deadline.expired AND $5::boolean, release_due_at=NULL
+          FROM deadline WHERE r.user_id=$1 AND r.idempotency_key=$2 AND r.status='reserving'
+          RETURNING r.order_id,r.status`,
           [
             userId,
             idempotencyKey,
@@ -249,11 +279,17 @@ export class IntakeService {
               ? null
               : new UnprocessableEntityException('Недостатньо коштів').getResponse(),
             accepted === 'accepted' && this.config.getOrThrow('RESERVATIONS_ENABLED'),
+            this.config.getOrThrow<number>('RESERVATION_WAIT_MS'),
+            row.order_id,
           ],
         );
         if (!rows.length) return undefined;
         // Worker чекає на цю команду: сигнал будить його без очікування poll.
         await db.query("SELECT pg_notify('engine_commands',$1)", [dto.instrument]);
+        if (rows[0].status === 'releasing') {
+          this.noteReservationOutage();
+          return undefined;
+        }
         if (accepted === 'rejected') return null;
         await db.getRepository(Order).insert({
           id: row.order_id,
