@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { Header } from '../components/header';
 import { type Instrument } from '../components/order-form';
-import { apiJson, errorMessage } from '../../lib/client-api';
+import { ApiError, apiJson, errorMessage } from '../../lib/client-api';
 import { watchSessionChange } from '../../lib/session-binding';
 import { usePrivateSocket } from '../../lib/use-private-socket';
 
@@ -34,17 +34,31 @@ export function ExchangeShell({ admin, children }: { admin: boolean; children: R
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
-    void Promise.all([
-      apiJson<{ wsUrl: string }>('/api/config', { signal }),
-      apiJson<Instrument[]>('/api/engine/instruments', { signal }),
-    ])
-      .then(([{ wsUrl }, instruments]) => {
-        if (!signal.aborted) setConfig({ wsUrl, instruments });
-      })
-      .catch((error: unknown) => {
-        if (!signal.aborted) setError(errorMessage(error));
-      });
-    return () => controller.abort();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = () =>
+      void Promise.all([
+        apiJson<{ wsUrl: string }>('/api/config', { signal }),
+        apiJson<Instrument[]>('/api/engine/instruments', { signal }),
+      ])
+        .then(([{ wsUrl }, instruments]) => {
+          if (signal.aborted) return;
+          setConfig({ wsUrl, instruments });
+          setError('');
+        })
+        .catch((error: unknown) => {
+          if (signal.aborted) return;
+          setError(errorMessage(error));
+          // Ingress обмежує адресу клієнта й повертає квоту щосекунди. Без повтору термінал
+          // лишався б без конфігурації до перезавантаження; пауза 1–2 с розводить вкладки за NAT.
+          if (error instanceof ApiError && error.status === 429) {
+            retry = setTimeout(load, 1000 + Math.random() * 1000);
+          }
+        });
+    load();
+    return () => {
+      controller.abort();
+      clearTimeout(retry);
+    };
   }, []);
 
   // Вхід або вихід в іншій вкладці міняє спільні cookie: оновлюємо сторінку, щоб не показувати чужий рахунок.
