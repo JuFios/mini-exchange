@@ -4,6 +4,7 @@ import { Asset, MAX_PRICE_TICKS, MAX_QUANTITY_LOTS, parseAmount } from '../ledge
 import { LedgerWriter, requestHash } from '../ledger/ledger-writer';
 import { PostingBuilder, Wallet } from '../ledger/posting-builder';
 import { WalletPublisher } from '../wallets/wallet-publisher';
+import { InvalidEventError } from '../consumer/settlement-event';
 import { consumeReservation, lockReservations } from './reservation-record';
 import { ReserveDto } from './reserve.dto';
 
@@ -78,11 +79,16 @@ export class ReservationsService {
     return { status: result.status };
   }
 
-  /** `notify: false` — для викликача, який сам публікує гаманець і повторює публікацію після збою. */
+  /**
+   * `notify: false` — для викликача, який сам публікує гаманець і повторює публікацію після збою.
+   * `owner` — власник і актив із події `order.closed`: stream не підписаний, тож подія, що не
+   * збігається з резервом, нічого не звільняє й іде в DLQ.
+   */
   async release(
     id: string,
     releaseAmount?: bigint,
     notify = true,
+    owner?: { userId: string; asset: string },
   ): Promise<{ status: 'released' }> {
     const reservationId = id.toLowerCase();
     const update = await this.source.transaction(async (db) => {
@@ -93,6 +99,13 @@ export class ReservationsService {
         [reservationId],
       );
       const [reservation] = await lockReservations(db, [reservationId]);
+      // Tombstone не має власника: подія про заявку без резерву нічого не звільняє.
+      if (
+        owner &&
+        reservation.user_id !== null &&
+        (reservation.user_id !== owner.userId.toLowerCase() || reservation.asset !== owner.asset)
+      )
+        throw new InvalidEventError('Order close does not match the reservation owner or asset');
       const operationId =
         releaseAmount === undefined ? `release:full:${reservationId}` : `release:${reservationId}`;
       if (releaseAmount !== undefined) {

@@ -5,14 +5,16 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import type { Request, Response } from 'express';
+import { ReplyError } from 'ioredis';
 import { createHash } from 'node:crypto';
-import { rateLimited } from '../observability/metrics';
+import { rateLimitBypassed, rateLimited } from '../observability/metrics';
 import type { EngineEnv } from '../config/env.validation';
 import { asciiLowerCase } from '../auth/auth.service';
 
@@ -20,6 +22,17 @@ class RateLimited extends HttpException {
   constructor(readonly retryAfter: number) {
     super('Забагато запитів', HttpStatus.TOO_MANY_REQUESTS);
   }
+}
+
+// Збій обмежувача з первинною помилкою: відмову Redis можна відрізнити від недоступного Redis.
+class LimiterUnavailable extends ServiceUnavailableException {
+  constructor(cause: unknown) {
+    super('Обмежувач запитів тимчасово недоступний', { cause });
+  }
+}
+
+function sessionIdentity(userId: string, sessionId: string): string {
+  return `${userId.toLowerCase()}:${sessionId.toLowerCase()}`;
 }
 
 @Catch(RateLimited)
@@ -38,7 +51,15 @@ interface Taken {
   window: number;
 }
 
-type Scope = 'auth' | 'login_email' | 'login_email_total' | 'public' | 'orders' | 'orders_minute';
+type Scope =
+  | 'auth'
+  | 'login_email'
+  | 'login_email_total'
+  | 'ws_ticket'
+  | 'orders_write'
+  | 'public'
+  | 'orders'
+  | 'orders_minute';
 
 // Невдалі входи рахуються у фіксованому вікні від першої спроби. Відхилена спроба не рахується
 // й не подовжує вікно, на відміну від скрипта бібліотеки: інакше потік відхилених запитів з
@@ -65,12 +86,16 @@ return 0`;
 export class RateLimits implements OnModuleDestroy {
   private readonly storage: ThrottlerStorageRedisService;
   private readonly prefix: string;
+  private readonly logger = new Logger(RateLimits.name);
+  private bypassLoggedAt = 0;
 
   constructor(private readonly config: ConfigService<EngineEnv, true>) {
     this.prefix = 'exchange:limit:' + config.getOrThrow('DATABASE_NAME', { infer: true });
     this.storage = new ThrottlerStorageRedisService({
       host: config.getOrThrow('REDIS_HOST', { infer: true }),
       port: config.getOrThrow('REDIS_PORT', { infer: true }),
+      username: config.getOrThrow('REDIS_USERNAME', { infer: true }),
+      disableClientInfo: true,
       password: config.getOrThrow('REDIS_PASSWORD', { infer: true }),
       enableOfflineQueue: false,
       maxRetriesPerRequest: 0,
@@ -131,6 +156,34 @@ export class RateLimits implements OnModuleDestroy {
     );
   }
 
+  // На сесію, щоб спільна адреса за NAT або відкликаний sid не забирали чужу квоту.
+  async webSocketTicket(userId: string, sessionId: string): Promise<void> {
+    await this.attempt('ws_ticket', sessionIdentity(userId, sessionId), 60_000, 120);
+  }
+
+  async orderWrite(userId: string, sessionId: string): Promise<void> {
+    try {
+      await this.attempt(
+        'orders_write',
+        sessionIdentity(userId, sessionId),
+        this.config.getOrThrow('ORDER_WRITE_RATE_TTL_MS', { infer: true }),
+        this.config.getOrThrow('ORDER_WRITE_RATE_LIMIT', { infer: true }),
+      );
+    } catch (error) {
+      // Скасування й завершений повтор лишаються доступними без Redis. Нові заявки
+      // перевіряють обов’язковий ліміт у intake; ingress також обмежує всі записи. Пропуск лише
+      // для недоступного Redis: відповідь Redis (`NOPERM` після помилки в ACL тощо) означає
+      // зламану конфігурацію, і тихо вимкнений ліміт її б сховав.
+      if (!(error instanceof LimiterUnavailable) || error.cause instanceof ReplyError) throw error;
+      rateLimitBypassed.inc({ scope: 'orders_write' });
+      const now = Date.now();
+      if (now - this.bypassLoggedAt >= 60_000) {
+        this.bypassLoggedAt = now;
+        this.logger.warn({ event: 'rate_limit.bypassed', scope: 'orders_write' });
+      }
+    }
+  }
+
   async order(userId: string): Promise<void> {
     await this.check(
       'orders',
@@ -160,8 +213,8 @@ export class RateLimits implements OnModuleDestroy {
     let result: unknown;
     try {
       result = await this.storage.redis.eval(LOGIN_ATTEMPT, 1, key, ttl, limit);
-    } catch {
-      throw new ServiceUnavailableException('Обмежувач запитів тимчасово недоступний');
+    } catch (error) {
+      throw new LimiterUnavailable(error);
     }
     const [allowed, remaining, window] = result as [number, number, number];
     if (allowed === 1) return { key, window };

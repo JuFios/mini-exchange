@@ -1,0 +1,13 @@
+map "" $exchange_ingress_token {
+  default "${INGRESS_TOKEN}";
+}
+
+map $http_x_frontend_proxy $exchange_frontend_trusted {
+  default 0;
+  "~^${FRONTEND_PROXY_TOKEN}$" 1;
+}
+
+map "$server_port:$exchange_frontend_trusted:$http_x_forwarded_for" $exchange_client_address {
+  "~^8080:1:(?<exchange_forwarded_address>.+)$" $exchange_forwarded_address;
+  default $remote_addr;
+}

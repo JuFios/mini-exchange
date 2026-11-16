@@ -5,6 +5,7 @@ import {
   ActiveReservation,
   scanStuckReservations,
   stuckReservations,
+  unreservedOrders,
 } from '../../src/reconciliation/stuck-reservations';
 
 const now = Date.parse('2026-01-01T12:00:00.000Z');
@@ -160,5 +161,27 @@ describe('scanStuckReservations', () => {
         .map((r) => r.reservation_id)
         .sort(),
     );
+  });
+});
+
+describe('unreservedOrders', () => {
+  const order = (orderId: string, ageMs: number) => ({
+    orderId,
+    userId: '00000000-0000-4000-8000-000000000001',
+    instrument: 'ABC',
+    createdAt: new Date(now - ageMs).toISOString(),
+  });
+
+  it('reports a resting order without an active reservation once it is older than the grace', () => {
+    const covered = 'aaaaaaaa-0000-4000-8000-000000000000';
+    const uncovered = 'bbbbbbbb-0000-4000-8000-000000000000';
+    const fresh = 'cccccccc-0000-4000-8000-000000000000';
+    const found = unreservedOrders(
+      [order(covered.toUpperCase(), 60_000), order(uncovered, 60_000), order(fresh, 1_000)],
+      new Set([covered]),
+      { now, graceMs: 30_000 },
+    );
+    expect(found.map(({ actual }) => (actual as { orderId: string }).orderId)).toEqual([uncovered]);
+    expect(found[0]).toMatchObject({ type: 'unreserved_order', instrument: 'ABC' });
   });
 });

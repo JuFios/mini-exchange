@@ -86,6 +86,17 @@ function consumerName(value: unknown, key: string): string {
 }
 
 const schema = {
+  DEPLOYMENT_MODE: (value: unknown) => {
+    if (value === undefined || value === 'local') return 'local' as const;
+    if (value === 'remote') return 'remote' as const;
+    throw new Error('DEPLOYMENT_MODE must be local or remote');
+  },
+  REDIS_USERNAME: (value: unknown) => {
+    if (value === undefined || value === '') return 'default';
+    if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value))
+      throw new Error('Invalid REDIS_USERNAME');
+    return value;
+  },
   CORS_ORIGINS: (value: unknown, key: string) =>
     required(value, key)
       .split(',')
@@ -134,7 +145,21 @@ export function validateDatabaseEnv(input: Record<string, unknown>): LedgerDatab
 }
 
 export function validateEnv(input: Record<string, unknown>): SettlementEnv {
-  return Object.fromEntries(
+  const parsed = Object.fromEntries(
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as SettlementEnv;
+  if (parsed.DEPLOYMENT_MODE === 'remote') {
+    if (parsed.REDIS_USERNAME === 'default')
+      throw new Error('REDIS_USERNAME must identify a restricted role in remote mode');
+    for (const key of [
+      'JWT_ACCESS_SECRET',
+      'INTERNAL_API_TOKEN',
+      'REDIS_PASSWORD',
+      'LEDGER_DATABASE_PASSWORD',
+    ] as const) {
+      if (parsed[key].includes('local-only'))
+        throw new Error(`${key} must not use a local-only value in remote mode`);
+    }
+  }
+  return parsed;
 }

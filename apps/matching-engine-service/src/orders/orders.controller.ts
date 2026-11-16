@@ -18,7 +18,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ListOrdersQueryDto } from './dto/list-orders-query.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { JwtAuthGuard, LimitOrderWrites } from '../auth/guards/jwt-auth.guard';
 import { OrdersService } from './orders.service';
 import { CancelOrderQueryDto } from './dto/cancel-order-query.dto';
 import { InstrumentCatalog } from './instrument-catalog';
@@ -62,6 +62,7 @@ export class OrdersController {
   ) {}
 
   @Post()
+  @LimitOrderWrites(true)
   async submit(
     @Body() dto: SubmitOrderDto,
     @Request() req: AuthenticatedRequest,
@@ -113,6 +114,7 @@ export class OrdersController {
   }
 
   @Delete(':id')
+  @LimitOrderWrites(true)
   async cancel(
     @Param(
       'id',

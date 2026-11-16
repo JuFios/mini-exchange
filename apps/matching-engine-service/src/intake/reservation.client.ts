@@ -10,12 +10,15 @@ export interface Reservation {
 }
 
 export abstract class ReservationClient {
+  abstract assertReady(): Promise<void>;
   abstract reserve(request: Reservation): Promise<'accepted' | 'rejected'>;
   abstract release(reservationId: string): Promise<void>;
 }
 
 @Injectable()
 export class NoopReservationClient extends ReservationClient {
+  async assertReady(): Promise<void> {}
+
   async reserve(_request: Reservation): Promise<'accepted'> {
     return 'accepted';
   }

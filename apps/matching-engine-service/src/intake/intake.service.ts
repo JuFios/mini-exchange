@@ -76,6 +76,17 @@ export class IntakeService {
     }
   }
 
+  private async assertReservationMode(db: EntityManager): Promise<void> {
+    if (this.config.getOrThrow<boolean>('RESERVATIONS_ENABLED')) return;
+    // SHARE тримається до commit: ввімкнення резервів не може випередити цю транзакцію.
+    const [settings] = await db.query(
+      'SELECT reservations_required FROM engine_settings WHERE id=true FOR SHARE',
+    );
+    if (!settings || settings.reservations_required) {
+      throw new ServiceUnavailableException('Резервування обов’язкове для цієї бази даних');
+    }
+  }
+
   async submit(
     dto: SubmitOrderDto,
     userId: string,
@@ -110,6 +121,10 @@ export class IntakeService {
     const claimed = await pg(async () => {
       await this.assertActive(this.source.manager, dto.instrument);
       const [row]: RequestRow[] = await this.source.transaction(async (db) => {
+        // До першого блокування: старт репліки тримає рядок режиму до 60 с, і без межі заявка
+        // чекала б до statement_timeout.
+        await db.query("SET LOCAL lock_timeout='3s'");
+        await this.assertReservationMode(db);
         await db.query(
           `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status)
         VALUES ($1,$2,$3,$4,'reserving') ON CONFLICT (user_id,idempotency_key) DO NOTHING`,
@@ -141,6 +156,7 @@ export class IntakeService {
     return pg(async () => {
       const result = await this.source.transaction(async (db) => {
         await db.query("SET LOCAL lock_timeout='3s'");
+        await this.assertReservationMode(db);
         const [rows] = await db.query(
           `UPDATE order_requests SET status=$3, updated_at=now(), response=$4, reserved=$5
         WHERE user_id=$1 AND idempotency_key=$2 AND status='reserving' RETURNING order_id`,

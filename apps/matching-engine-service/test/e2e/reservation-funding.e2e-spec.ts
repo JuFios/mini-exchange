@@ -1,10 +1,255 @@
+import { randomUUID } from 'node:crypto';
+import Redis from 'ioredis';
+import { DataSource } from 'typeorm';
 import { engineApp } from './engine-app';
 import { FakeSettlement } from './fakes/settlement.fake';
+import { ReservationClient, Reservation } from '../../src/intake/reservation.client';
 
 const api = engineApp();
+let settlement: FakeSettlement;
+let settlementUrl: string;
+
+beforeEach(async () => {
+  settlement = new FakeSettlement(process.env.INTERNAL_API_TOKEN!);
+  settlementUrl = await settlement.start();
+});
+
+afterEach(() => settlement.close());
+
+function fundedSettings() {
+  return {
+    RESERVATIONS_ENABLED: true,
+    ENGINE_WORKER_ENABLED: false,
+    SETTLEMENT_URL: settlementUrl,
+  };
+}
+
+async function expectUnfundedIntake(token: string) {
+  expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual([
+    { reservations_required: false },
+  ]);
+  expect([201, 202]).toContain((await api.submit(token)).status);
+  expect(await api.database().query('SELECT status, reserved FROM order_requests')).toEqual([
+    { status: 'accepted', reserved: false },
+  ]);
+}
+
+it('preserves unfunded intake if the first funded replica fails startup validation', async () => {
+  const token = await api.register();
+  await expect(
+    api.build({
+      ...fundedSettings(),
+      DEPLOYMENT_MODE: 'remote',
+      ADMIN_PASSWORD: 'different-remote-password',
+    }),
+  ).rejects.toThrow(/Remote seeded admin credentials/);
+
+  await expectUnfundedIntake(token);
+});
+
+it.each([
+  [{ INTERNAL_API_TOKEN: 'incorrect-internal-token-for-tests' }, /reservation credentials/],
+  [{ REDIS_USERNAME: 'unknown-role' }, /Engine Redis is unavailable/],
+] as const)(
+  'keeps unfunded intake available when a funded dependency is misconfigured',
+  async (settings, error) => {
+    const token = await api.register();
+    await expect(
+      api.build({ ...fundedSettings(), ...settings }).then((instance) => instance.close()),
+    ).rejects.toThrow(error);
+    await expectUnfundedIntake(token);
+  },
+);
+
+it('keeps unfunded intake when the Redis role can ping but cannot acquire a lease', async () => {
+  const token = await api.register();
+  const name = `limited-${randomUUID()}`;
+  const password = randomUUID();
+  const redis = new Redis({
+    host: process.env.REDIS_HOST,
+    port: Number(process.env.REDIS_PORT),
+    password: process.env.REDIS_PASSWORD,
+  });
+  try {
+    await redis.call('ACL', 'SETUSER', name, 'on', `>${password}`, '+ping', '+config|get', '+info');
+    await expect(
+      api
+        .build({ ...fundedSettings(), REDIS_USERNAME: name, REDIS_PASSWORD: password })
+        .then((instance) => instance.close()),
+    ).rejects.toThrow(/Engine Redis is unavailable/);
+    await expectUnfundedIntake(token);
+  } finally {
+    await redis.call('ACL', 'DELUSER', name).finally(() => redis.disconnect());
+  }
+});
+
+it('scans the history once when funded replicas race on first startup', async () => {
+  const query = DataSource.prototype.query;
+  let reads = 0;
+  let scans = 0;
+  let releaseReads!: () => void;
+  const bothRead = new Promise<void>((resolve) => (releaseReads = resolve));
+  const spy = jest.spyOn(DataSource.prototype, 'query').mockImplementation(async function (
+    this: DataSource,
+    sql,
+    ...args
+  ) {
+    const result = await query.call(this, sql, ...args);
+    if (sql === 'SELECT reservations_required FROM engine_settings WHERE id=true') {
+      if (++reads === 2) releaseReads();
+      await bothRead;
+    }
+    if (sql.includes('SELECT EXISTS (SELECT 1 FROM orders o WHERE o.status')) scans++;
+    return result;
+  });
+  const starts = [enabled(), enabled()];
+  try {
+    await Promise.all(starts);
+    expect(reads).toBe(2);
+    expect(scans).toBe(1);
+    expect(await api.database().query('SELECT reservations_required FROM engine_settings')).toEqual(
+      [{ reservations_required: true }],
+    );
+  } finally {
+    releaseReads();
+    await Promise.allSettled(starts);
+    spy.mockRestore();
+  }
+});
+
+it('rejects an unfunded insert from a writer that does not know the application guard', async () => {
+  const token = await api.register();
+  const ownerId = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
+  const funded = await api.build(fundedSettings());
+  try {
+    await expect(
+      api.database().query(
+        `INSERT INTO orders
+      (id,owner_id,instrument,side,price,quantity,remaining_quantity,status,created_at)
+      VALUES (gen_random_uuid(),$1,'ABC','sell',100,1,1,'pending',now())`,
+        [ownerId],
+      ),
+    ).rejects.toMatchObject({ driverError: { code: '23514' } });
+    expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+  } finally {
+    await funded.close();
+  }
+});
+
+function permutations(values: number[]): number[][] {
+  if (values.length === 0) return [[]];
+  return values.flatMap((value) =>
+    permutations(values.filter((other) => other !== value)).map((tail) => [value, ...tail]),
+  );
+}
+
+it.each(permutations([0, 1, 2, 3]).map((order) => ({ order, completion: order.join(', ') })))(
+  'never commits an unfunded order across reservation enablement with completion order $completion',
+  async ({ order }) => {
+    const count = order.length;
+    const releases: (() => void)[] = [];
+    let arrived = 0;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => (entered = resolve));
+    await api.restart({ RESERVATIONS_ENABLED: false }, (builder) => {
+      builder.overrideProvider(ReservationClient).useValue({
+        reserve: (reservation: Reservation) =>
+          new Promise<'accepted'>((resolve) => {
+            releases[Number(reservation.limitPrice) - 100] = () => resolve('accepted');
+            if (++arrived === count) entered();
+          }),
+        release: async () => undefined,
+      });
+    });
+    const token = await api.register();
+    const pending = Array.from({ length: count }, (_, index) =>
+      api.submit(token, { price: 100 + index }),
+    );
+    for (const response of pending) void response.catch(() => undefined);
+    let funded: Awaited<ReturnType<typeof api.build>> | undefined;
+    try {
+      await Promise.race([
+        waiting,
+        Promise.all(pending).then(() => {
+          throw new Error('Submits completed before the reservation barrier');
+        }),
+      ]);
+      funded = await api.build(fundedSettings());
+      for (const index of order) {
+        releases[index]();
+        expect((await pending[index]).status).toBe(503);
+        expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+      }
+    } finally {
+      for (const release of releases) release?.();
+      await Promise.allSettled(pending);
+      await funded?.close();
+    }
+  },
+);
+
+it('refuses an unfunded replica and its writes after another replica requires reservations', async () => {
+  const token = await api.register();
+  const funded = await api.build(fundedSettings());
+  try {
+    expect((await api.submit(token)).status).toBe(503);
+    await expect(api.build({ RESERVATIONS_ENABLED: false })).rejects.toThrow(
+      /reservations are required/,
+    );
+    expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+  } finally {
+    await funded.close();
+  }
+});
+
+it('gives up an unfunded submit after 3 s while a starting replica holds the mode row', async () => {
+  const token = await api.register();
+  const runner = api.database().createQueryRunner();
+  await runner.connect();
+  await runner.startTransaction();
+  try {
+    // Як старт репліки: тримає рядок довше за межу простою сесії.
+    await runner.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+    await runner.query('SELECT 1 FROM engine_settings WHERE id=true FOR UPDATE');
+    const started = Date.now();
+    const response = await api.request(
+      '/orders',
+      'POST',
+      token,
+      { instrument: 'ABC', side: 'sell', price: 100, quantity: 1 },
+      {},
+      10_000,
+    );
+    // Межа блокування 3 с, а не statement_timeout сесії (5 с).
+    expect(response.status).toBe(503);
+    expect(Date.now() - started).toBeLessThan(4500);
+  } finally {
+    await runner.rollbackTransaction();
+    await runner.release();
+  }
+  expect(await api.database().query('SELECT id FROM orders')).toEqual([]);
+});
+
+it('starts a funded replica again without locking the mode row once reservations are required', async () => {
+  await enabled();
+  const runner = api.database().createQueryRunner();
+  await runner.connect();
+  await runner.startTransaction();
+  try {
+    // Як старт репліки: тримає рядок довше за межу простою сесії.
+    await runner.query('SET LOCAL idle_in_transaction_session_timeout = 0');
+    await runner.query('SELECT 1 FROM engine_settings WHERE id=true FOR UPDATE');
+    const started = Date.now();
+    await enabled();
+    expect(Date.now() - started).toBeLessThan(10_000);
+  } finally {
+    await runner.rollbackTransaction();
+    await runner.release();
+  }
+});
 
 async function enabled() {
-  const app = await api.build({ RESERVATIONS_ENABLED: true, ENGINE_WORKER_ENABLED: false });
+  const app = await api.build(fundedSettings());
   await app.close();
 }
 
@@ -43,6 +288,8 @@ it('marks an order as funded only when a real reservation was made', async () =>
     await api.database().query('SELECT reserved FROM order_requests ORDER BY created_at'),
   ).toEqual([{ reserved: false }, { reserved: true }]);
   // Заявка з резервом не блокує повторне ввімкнення.
-  await api.restart({ RESERVATIONS_ENABLED: false });
+  await expect(api.build({ RESERVATIONS_ENABLED: false })).rejects.toThrow(
+    /reservations are required/,
+  );
   await enabled();
 });

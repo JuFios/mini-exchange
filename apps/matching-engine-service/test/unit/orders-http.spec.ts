@@ -57,6 +57,7 @@ beforeAll(async () => {
     controllers: [OrdersController],
     providers: [
       OrdersService,
+      { provide: RateLimits, useValue: { orderWrite: async () => undefined } },
       { provide: DataSource, useValue: source },
       { provide: IntakeService, useValue: intake },
       {

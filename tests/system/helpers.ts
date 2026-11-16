@@ -6,6 +6,7 @@ import { Client } from 'pg';
 import { ReferenceMatcher } from '../../apps/matching-engine-service/test/helpers/reference-matcher';
 
 export const engine = process.env.ENGINE_URL ?? 'http://engine-lb:3001';
+let frontendClientAddress: string | undefined;
 export function docker(...args: string[]) {
   return execFileSync('docker', args, { encoding: 'utf8' }).trim();
 }
@@ -77,10 +78,30 @@ export async function request(
   headers: Record<string, string> = {},
   timeoutMs = 15000,
 ) {
+  const target = new URL(base);
+  const forwarded = target.port === '8080' && target.hostname === 'engine-lb';
+  if (forwarded && !headers['x-forwarded-for']) {
+    if (!frontendClientAddress) {
+      const networks = JSON.parse(
+        docker('inspect', '--format', '{{json .NetworkSettings.Networks}}', hostname()),
+      ) as Record<string, { IPAddress: string }>;
+      frontendClientAddress = Object.entries(networks).find(([name]) =>
+        name.endsWith('_frontend'),
+      )?.[1].IPAddress;
+    }
+    assert(frontendClientAddress, 'Missing frontend address on the harness');
+    headers = { ...headers, 'x-forwarded-for': frontendClientAddress };
+  }
   return fetch(`${base}${path}`, {
     method,
     headers: {
       ...headers,
+      ...(forwarded
+        ? {
+            'x-frontend-proxy':
+              process.env.FRONTEND_PROXY_TOKEN ?? 'demo-frontend-proxy-local-only-000001',
+          }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
@@ -158,9 +179,19 @@ export async function cleanup(failure: unknown, ...steps: (() => unknown)[]): Pr
   throw problems.length === 1 ? problems[0] : new AggregateError(problems, 'Cleanup failed');
 }
 
-/** Скасовує заявку. Виконана (409 `ORDER_ALREADY_FILLED`) теж годиться: залишку в неї немає. */
-export async function cancelOrder(accessToken: string, id: string) {
-  const response = await request(`/orders/${id}`, 'DELETE', accessToken);
+/**
+ * Скасовує заявку. Виконана (409 `ORDER_ALREADY_FILLED`) теж годиться: залишку в неї немає.
+ * `waitLimited` — для прибирання, що скасовує понад запас токена в nginx: після 429 чекає
+ * `Retry-After`, як клієнт, до 30 спроб. Решта сценаріїв вважає 429 помилкою.
+ */
+export async function cancelOrder(accessToken: string, id: string, waitLimited = false) {
+  let response = await request(`/orders/${id}`, 'DELETE', accessToken);
+  for (let attempt = 1; waitLimited && response.status === 429 && attempt < 30; attempt++) {
+    await response.arrayBuffer();
+    const seconds = Number(response.headers.get('retry-after')) || 1;
+    await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+    response = await request(`/orders/${id}`, 'DELETE', accessToken);
+  }
   const body = await response.text();
   const filled = response.status === 409 && body.includes('ORDER_ALREADY_FILLED');
   assert(

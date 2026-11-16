@@ -28,6 +28,7 @@ export function engineApp() {
     PUBLIC_RATE_LIMIT: '10000',
     ORDER_RATE_LIMIT: '1000',
     ORDER_RATE_LIMIT_MIN: '1000',
+    ORDER_WRITE_RATE_LIMIT: '10000',
     WS_SUBSCRIBE_RATE_LIMIT: '10000',
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: process.env.REDIS_PORT ?? '6379',
@@ -126,6 +127,7 @@ export function engineApp() {
     try {
       // Worker зупинено до TRUNCATE, тому жодна команда не відновить книгу під час cleanup.
       await cleanup.query('TRUNCATE orders,order_commands,order_requests,trades,outbox');
+      await cleanup.query('UPDATE engine_settings SET reservations_required=false');
       await cleanup.query('UPDATE instruments SET next_seq=0');
       await cleanup.query(
         "UPDATE instrument_state SET status='active',last_applied_seq=0,resting_count=0,resting_quantity=0,resting_bid_count=0,resting_ask_count=0,resting_bid_lots=0,resting_ask_lots=0",
@@ -167,6 +169,10 @@ export function engineApp() {
       method,
       headers: {
         ...headers,
+        // Тестовий HTTP-клієнт моделює довірений ingress, який перезаписує цей маркер.
+        'x-exchange-ingress': String(
+          process.env.INGRESS_TOKEN ?? 'demo-ingress-token-local-only-00000001',
+        ),
         ...(token && { Authorization: `Bearer ${token}` }),
         ...(body !== undefined && { 'Content-Type': 'application/json' }),
       },

@@ -1,4 +1,6 @@
 import { ReservationFundingAndRedrive1793980800006 } from './migrations/1793980800006-reservation-funding-and-redrive';
+import { LiveOrdersIndex1793980800008 } from './migrations/1793980800008-live-orders-index';
+import { ReservationMode1793980800007 } from './migrations/1793980800007-reservation-mode';
 import { ReservationReleaseClaims1793980800005 } from './migrations/1793980800005-reservation-release-claims';
 import { QuarantineLegacyState1793980800004 } from './migrations/1793980800004-quarantine-legacy-state';
 import { LegacyOrdersAndTradeLookups1793980800003 } from './migrations/1793980800003-legacy-orders-and-trade-lookups';
@@ -8,6 +10,7 @@ import { User } from './auth/entities/user.entity';
 import { Order } from './orders/entities/order.entity';
 import { Instrument } from './orders/entities/instrument.entity';
 import {
+  EngineSettings,
   InstrumentState,
   OrderCommand,
   OrderRequest,
@@ -39,6 +42,7 @@ export function engineDataSourceOptions(
       User,
       Order,
       Instrument,
+      EngineSettings,
       InstrumentState,
       OrderCommand,
       OrderRequest,
@@ -53,6 +57,8 @@ export function engineDataSourceOptions(
       QuarantineLegacyState1793980800004,
       ReservationReleaseClaims1793980800005,
       ReservationFundingAndRedrive1793980800006,
+      ReservationMode1793980800007,
+      LiveOrdersIndex1793980800008,
     ],
     synchronize: false,
     migrationsRun: false,

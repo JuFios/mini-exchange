@@ -31,6 +31,7 @@ it.each(['true', 'false'])(
       REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
       CHAOS_ENABLED: flag,
       ENGINE_WORKER_ENABLED: 'false',
+      RESERVATIONS_ENABLED: 'false',
     };
     writeFileSync(
       join(directory, '.env'),

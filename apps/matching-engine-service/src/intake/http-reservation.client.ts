@@ -4,10 +4,12 @@ import {
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ConfigService } from '@nestjs/config';
 import { Reservation, ReservationClient } from './reservation.client';
 
 const RESERVE_ATTEMPTS = 3;
+const ACTIVATION_TIMEOUT_MS = 60_000;
 const unavailable = () => new ServiceUnavailableException('Сервіс резервування недоступний');
 
 export class HttpReservationClient extends ReservationClient {
@@ -21,6 +23,38 @@ export class HttpReservationClient extends ReservationClient {
     this.url = config.getOrThrow('SETTLEMENT_URL');
     this.token = config.getOrThrow('INTERNAL_API_TOKEN');
     this.timeoutMs = config.getOrThrow('RESERVATION_TIMEOUT_MS');
+  }
+
+  async assertReady(): Promise<void> {
+    // Під час першого запуску settlement і engine стартують паралельно. Чекаємо поза TX.
+    const deadline = AbortSignal.timeout(ACTIVATION_TIMEOUT_MS);
+    for (;;) {
+      try {
+        const response = await fetch(new URL('/ready', this.url), {
+          redirect: 'error',
+          signal: AbortSignal.any([deadline, AbortSignal.timeout(this.timeoutMs)]),
+        });
+        if ((await response.json())?.status === 'ok' && response.status === 200) break;
+      } catch {
+        // До дедлайну settlement ще може закінчувати запуск.
+      }
+      await delay(250, undefined, { signal: deadline }).catch(() => {
+        throw new Error('Settlement is unavailable before enabling reservations');
+      });
+    }
+
+    // Існуючий маршрут спочатку звіряє внутрішній токен, а потім відхиляє невалідний UUID.
+    // Це працює зі старою версією settlement і не викликає жодного запису.
+    const response = await this.post('/internal/reservations/readiness-probe/release').catch(
+      () => undefined,
+    );
+    const validation = await response?.json().catch(() => undefined);
+    if (
+      response?.status !== 400 ||
+      validation?.statusCode !== 400 ||
+      validation?.message !== 'Validation failed (uuid is expected)'
+    )
+      throw new Error('Settlement did not accept the reservation credentials');
   }
 
   async reserve(request: Reservation): Promise<'accepted' | 'rejected'> {

@@ -36,8 +36,12 @@ describe('frontend route handlers', () => {
 
   it('accepts mutations only from the same origin', async () => {
     const { engine, login, token } = routes();
-    mock.method(globalThis, 'fetch', async () =>
-      Response.json({ accessToken: 'access', refreshToken: 'refresh' }),
+    mock.method(globalThis, 'fetch', async (url: string) =>
+      Response.json(
+        url.endsWith('/auth/ws-token')
+          ? { token: 'ws-only', userId: 'user-a' }
+          : { accessToken: 'access', refreshToken: 'refresh' },
+      ),
     );
     const order = { params: { path: ['orders'] } };
     const orderId = { params: { path: ['orders', 'id'] } };
@@ -93,6 +97,7 @@ describe('frontend route handlers', () => {
     assert.equal(String(url), backend + '/orders');
     assert.deepEqual(Object.fromEntries(new Headers(options?.headers)), {
       authorization: 'Bearer access',
+      'x-frontend-proxy': 'demo-frontend-proxy-local-only-000001',
       'x-forwarded-for': '127.0.0.1',
     });
   });

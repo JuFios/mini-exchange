@@ -305,3 +305,64 @@ it('rejects startup when an admin address belongs to a regular account', async (
 it('rejects startup when the configured instruments differ from the migrated catalog', async () => {
   await expect(restart({ INSTRUMENTS: ['ABC'] })).rejects.toThrow(/INSTRUMENTS.*instruments table/);
 });
+
+describe('refresh without rotation', () => {
+  const state = async (email: string) =>
+    (
+      (await database().query(
+        'SELECT refresh_token_hash, refresh_prev_hash, refresh_rotated_at FROM users WHERE email = $1',
+        [email],
+      )) as Record<string, unknown>[]
+    )[0];
+
+  it('issues only an access token and leaves the session unchanged, however often it is lost', async () => {
+    const { credentials, tokens } = await registerAccount();
+    const before = await state(credentials.email);
+    // Відповідь, яку обірвала чужа сторінка, нічого не змінила: той самий токен працює далі.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await post('refresh', { refreshToken: tokens.refreshToken, rotate: false });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Tokens;
+      expect(body).toEqual({ accessToken: expect.any(String) });
+      expect(jwt.decode(body.accessToken)).toMatchObject({ typ: 'access' });
+    }
+    expect(await state(credentials.email)).toEqual(before);
+    await database().query(
+      "UPDATE users SET refresh_rotated_at = now() - interval '11 seconds' WHERE email = $1",
+      [credentials.email],
+    );
+    // Після будь-якої паузи токен лишається чинним і для звичайної ротації.
+    await rotate(tokens.refreshToken);
+  });
+
+  it('still revokes the session when a rotated token is used after grace', async () => {
+    const { credentials, tokens: first } = await registerAccount();
+    const second = await rotate(first.refreshToken);
+    const inGrace = await post('refresh', { refreshToken: first.refreshToken, rotate: false });
+    expect(inGrace.status).toBe(200);
+    expect(await inGrace.json()).toEqual({ accessToken: expect.any(String) });
+    await database().query(
+      "UPDATE users SET refresh_rotated_at = now() - interval '11 seconds' WHERE email = $1",
+      [credentials.email],
+    );
+    expect(
+      (await post('refresh', { refreshToken: first.refreshToken, rotate: false })).status,
+    ).toBe(401);
+    expect(
+      (await post('refresh', { refreshToken: second.refreshToken, rotate: false })).status,
+    ).toBe(401);
+  });
+
+  it('accepts the flag only on refresh and only as a boolean', async () => {
+    const { tokens } = await registerAccount();
+    expect(
+      (await post('refresh', { refreshToken: tokens.refreshToken, rotate: 'false' })).status,
+    ).toBe(400);
+    expect(
+      (await post('logout', { refreshToken: tokens.refreshToken, rotate: false })).status,
+    ).toBe(400);
+    expect(
+      (await post('refresh', { refreshToken: tokens.refreshToken, rotate: true })).status,
+    ).toBe(200);
+  });
+});

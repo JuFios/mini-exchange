@@ -38,6 +38,8 @@ export class OutboxRelay implements OnApplicationBootstrap, OnModuleDestroy {
     this.redis = new Redis({
       host: config.getOrThrow<string>('REDIS_HOST'),
       port: config.getOrThrow<number>('REDIS_PORT'),
+      username: config.getOrThrow<string>('REDIS_USERNAME'),
+      disableClientInfo: true,
       password: config.getOrThrow<string>('REDIS_PASSWORD'),
       commandTimeout: REDIS_TIMEOUT_MS,
       socketTimeout: REDIS_TIMEOUT_MS,

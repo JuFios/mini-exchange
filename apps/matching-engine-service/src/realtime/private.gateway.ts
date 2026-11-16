@@ -23,6 +23,24 @@ export const SESSION_CHECK_DEADLINE_MS = 2000;
 
 export const userRoom = (userId: string) => `user:${userId.toLowerCase()}`;
 
+type PrivatePayload = Omit<JwtPayload, 'typ'> & {
+  typ: 'access' | 'ws';
+  aud?: string;
+  accessExp?: number;
+};
+
+function privateAccessPayload(payload: PrivatePayload): JwtPayload {
+  if (payload.typ !== 'ws') return payload as JwtPayload;
+  if (
+    payload.aud !== 'private' ||
+    typeof payload.accessExp !== 'number' ||
+    !Number.isInteger(payload.accessExp) ||
+    payload.accessExp < payload.exp
+  )
+    throw new Error('Invalid websocket token');
+  return { ...payload, typ: 'access', exp: payload.accessExp };
+}
+
 /**
  * Приватний namespace: токен у handshake, кімната користувача визначається сервером за `sub`.
  * Події не мають `seq` і під час розриву губляться, тож клієнт перечитує REST після reconnect.
@@ -83,10 +101,11 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
     const checkedAt = performance.now();
     try {
       if (typeof token !== 'string' || token === '') throw new Error();
-      const payload = await this.jwt.verifyAsync<JwtPayload>(token, {
+      const claims = await this.jwt.verifyAsync<PrivatePayload>(token, {
         secret: this.secret,
         algorithms: ['HS256'],
       });
+      const payload = privateAccessPayload(claims);
       const { userId } = await accessPrincipal(payload, this.auth);
       socket.data = { userId, sid: payload.sid, exp: payload.exp, verifiedAt: checkedAt };
       // Перевірка токена асинхронна: репліка могла стати завислою після охорони, а розрив за

@@ -7,6 +7,7 @@ it('expires a crashed owner lock and lets another owner acquire it', async () =>
   const values = {
     REDIS_HOST: process.env.REDIS_HOST ?? '127.0.0.1',
     REDIS_PORT: Number(process.env.REDIS_PORT ?? 6379),
+    REDIS_USERNAME: 'default',
     REDIS_PASSWORD: process.env.REDIS_PASSWORD ?? 'exchange-redis-local-only',
     LEASE_TTL_MS: 120,
   };

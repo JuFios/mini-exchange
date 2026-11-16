@@ -14,6 +14,10 @@ export class FakeSettlement {
 
   private readonly server = createServer((req, res) => {
     const run = async () => {
+      if (req.method === 'GET' && req.url === '/ready') {
+        this.respond(res, 200, { status: 'ok' });
+        return;
+      }
       if (req.method !== 'POST' || req.headers['x-internal-token'] !== this.token) {
         this.respond(res, 401);
         return;
@@ -40,6 +44,13 @@ export class FakeSettlement {
         return;
       }
       const [, id] = match;
+      if (id === 'readiness-probe') {
+        this.respond(res, 400, {
+          statusCode: 400,
+          message: 'Validation failed (uuid is expected)',
+        });
+        return;
+      }
       this.releaseIds.push(id);
       if (this.releaseIds.length <= this.failReleases) {
         this.respond(res, 503);

@@ -23,8 +23,11 @@ export class SettlementEventHandler {
   async handle(streamId: string, envelope: string | undefined): Promise<void> {
     const event = parseSettlementEvent(envelope);
     if (event.type === 'order.closed') {
-      const { orderId, releasedAmount } = event.closed;
-      await this.reservations.release(orderId, BigInt(releasedAmount), false);
+      const { orderId, releasedAmount, userId, releasedAsset } = event.closed;
+      await this.reservations.release(orderId, BigInt(releasedAmount), false, {
+        userId,
+        asset: releasedAsset,
+      });
       // Як і для угоди, повторна доставка теж публікує стан: без цього збій XADD після COMMIT
       // лишав би клієнту старий резерв до перепідключення.
       const released = await this.reservations.closedRelease(orderId);

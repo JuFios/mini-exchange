@@ -5,6 +5,9 @@ x-test-engine: &test-engine
   environment:
     NODE_OPTIONS: --require=/app/system-crash.cjs
     SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
+    # Ключ і записи stream для фікстури crash недоступні ролі сервісу в ACL Redis: фікстура
+    # відкриває власне з'єднання користувачем default. Лише в тестовому стеку.
+    SYSTEM_CRASH_REDIS_PASSWORD: ${REDIS_PASSWORD:-exchange-redis-local-only}
     CHAOS_ENABLED: 'true'
     ADMIN_EMAILS: admin@system.test
     ADMIN_PASSWORD: system-test-password-only
@@ -14,6 +17,7 @@ x-test-engine: &test-engine
     PUBLIC_RATE_LIMIT: ${SYSTEM_PUBLIC_RATE_LIMIT:-100000}
     ORDER_RATE_LIMIT: ${SYSTEM_ORDER_RATE_LIMIT:-1000}
     ORDER_RATE_LIMIT_MIN: ${SYSTEM_ORDER_RATE_LIMIT_MIN:-1000}
+    ORDER_WRITE_RATE_LIMIT: ${SYSTEM_ORDER_WRITE_RATE_LIMIT:-10000}
 
 services:
   exchange-db:
@@ -23,7 +27,8 @@ services:
   redis:
     restart: 'no'
     ports: !reset []
-    volumes: !override ['system-redis-data:/data']
+    # Заміна за ціллю /data зберігає bind ACL startup script з основного Compose.
+    volumes: ['system-redis-data:/data']
   matching-engine-1:
     <<: *test-engine
     ports: !reset []
@@ -33,6 +38,14 @@ services:
   engine-lb:
     restart: 'no'
     ports: !reset []
+    volumes:
+      - './tests/system/fixtures/write-pulse.conf:/etc/nginx/conf.d/90-write-pulse.conf:ro'
+    environment:
+      PUBLIC_ORIGINS: http://engine-lb:3001,http://engine-public:3001,http://engine-lb:3000,http://engine-public:3000,http://frontend:3000,http://localhost:3000,http://127.0.0.1:3000
+    networks:
+      default:
+      frontend:
+        aliases: [engine-public]
   settlement-service:
     restart: 'no'
     ports: !reset []
@@ -40,16 +53,20 @@ services:
     environment:
       NODE_OPTIONS: --require=/app/system-crash.cjs
       SYSTEM_CRASH_ENABLED: ${SYSTEM_CRASH_ENABLED:-0}
+      SYSTEM_CRASH_REDIS_PASSWORD: ${REDIS_PASSWORD:-exchange-redis-local-only}
       # Коротка пауза дає звірці побачити втрачену угоду без очікування 30 с.
       SETTLEMENT_GRACE_MS: '1000'
   frontend:
     restart: 'no'
+    environment:
+      PUBLIC_ORIGINS: http://frontend:3000,http://engine-lb:3000,http://engine-public:3000,http://localhost:3000,http://127.0.0.1:3000
   system-tests:
     profiles: [test]
     build:
       context: .
       dockerfile: tests/system/Dockerfile
     volumes: ['/var/run/docker.sock:/var/run/docker.sock']
+    networks: [default, frontend]
     environment:
       DATABASE_HOST: exchange-db
       DATABASE_PORT: '5432'
@@ -59,7 +76,8 @@ services:
       LEDGER_DATABASE_USER: ledger
       LEDGER_DATABASE_PASSWORD: ledger-local-only
       LEDGER_DATABASE_NAME: ledger
-      ENGINE_URL: http://engine-lb:3001
+      ENGINE_URL: http://engine-public:3001
+      FRONTEND_PROXY_TOKEN: ${FRONTEND_PROXY_TOKEN:-demo-frontend-proxy-local-only-000001}
       ADMIN_EMAIL: admin@system.test
       ADMIN_PASSWORD: system-test-password-only
 

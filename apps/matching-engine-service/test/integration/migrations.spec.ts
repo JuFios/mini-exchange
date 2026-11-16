@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { MigrationInterface, QueryRunner } from 'typeorm';
 import { advisoryLocks } from '../../src/database/advisory-lock';
 import { migrate } from '../../src/database/migrate';
+import { LIVE_ORDERS_SQL } from '../../src/outbox/internal-orders.controller';
 import { formatPrice, formatQuantity, parsePrice, parseQuantity } from '../../src/matching/decimal';
 import { testDatabase } from '../test-database';
 
@@ -50,7 +51,19 @@ it('applies, reverts, and reapplies the schema with database constraints', async
         WHERE table_name='order_requests' AND column_name='reserved') AS funded,
       to_regclass('outbox_trade_executed_idx') IS NOT NULL
         AND to_regclass('outbox_order_closed_idx') IS NOT NULL AS redrive`);
+  const reservationMode = () =>
+    source.query(`SELECT to_regclass('engine_settings') IS NOT NULL AS settings,
+      EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='orders'::regclass
+        AND tgname='orders_reservation_mode') AS trigger`);
   for (let cycle = 0; cycle < 2; cycle++) {
+    const liveIndex = () =>
+      source.query("SELECT to_regclass('orders_live_id_idx') IS NOT NULL AS present");
+    expect(await liveIndex()).toEqual([{ present: true }]);
+    await migrate(source, 'revert');
+    expect(await liveIndex()).toEqual([{ present: false }]);
+    expect(await reservationMode()).toEqual([{ settings: true, trigger: true }]);
+    await migrate(source, 'revert');
+    expect(await reservationMode()).toEqual([{ settings: false, trigger: false }]);
     expect(await objects()).toEqual([{ claim: true, funded: true, redrive: true }]);
     await migrate(source, 'revert');
     expect(await objects()).toEqual([{ claim: true, funded: false, redrive: false }]);
@@ -79,13 +92,67 @@ it('applies, reverts, and reapplies the schema with database constraints', async
   }
 });
 
+it('pages the live book without scanning the terminal order history', async () => {
+  await migrate(source, 'run');
+  const live = await source.transaction(async (db) => {
+    // Більша фікстура готується окремо, щоб перевіряти план під звичайним лімітом запиту.
+    await db.query("SET LOCAL statement_timeout='30s'");
+    await db.query(`INSERT INTO orders
+      (owner_id, instrument, side, price, quantity, remaining_quantity, filled_quantity, status, created_at)
+    SELECT gen_random_uuid(), 'ABC', 'sell', 100, 1, 0, 1, 'filled', now()
+    FROM generate_series(1, 20000)`);
+    const orders: { id: string }[] = await db.query(`INSERT INTO orders
+      (owner_id, instrument, side, price, quantity, remaining_quantity, status, priority_seq, created_at)
+    SELECT gen_random_uuid(), 'ABC', 'sell', 100 + i, 1, 1, 'open', i, now()
+    FROM generate_series(1, 2500) i RETURNING id`);
+    await db.query(
+      `INSERT INTO order_requests (user_id, idempotency_key, request_hash, order_id, status, reserved)
+     SELECT gen_random_uuid(), id::text, 'hash', id, 'accepted', true FROM unnest($1::uuid[]) id`,
+      [orders.map(({ id }) => id)],
+    );
+    return orders;
+  });
+  await source.query('ANALYZE orders');
+  await source.query('ANALYZE order_requests');
+  type PlanNode = {
+    'Node Type': string;
+    'Relation Name'?: string;
+    'Index Name'?: string;
+    'Index Cond'?: string;
+    Plans?: PlanNode[];
+  };
+  const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+  let after = '00000000-0000-0000-0000-000000000000';
+  const read: string[] = [];
+  for (const size of [1000, 1000, 500]) {
+    const params = [after, null];
+    const [{ 'QUERY PLAN': plan }] = await source.query(
+      `EXPLAIN (FORMAT JSON) ${LIVE_ORDERS_SQL}`,
+      params,
+    );
+    // Для короткого хвоста planner може обрати bitmap scan. Обидва плани мають
+    // читати той самий частковий індекс з умовою курсора, а не перечитувати попередні id.
+    expect(nodes(plan[0].Plan)).toContainEqual(
+      expect.objectContaining({
+        'Index Name': 'orders_live_id_idx',
+        'Index Cond': expect.stringMatching(/\bid > /),
+      }),
+    );
+    const rows: { orderId: string }[] = await source.query(LIVE_ORDERS_SQL, params);
+    expect(rows).toHaveLength(size);
+    after = rows.at(-1)!.orderId;
+    read.push(...rows.map(({ orderId }) => orderId));
+  }
+  expect(read).toEqual(live.map(({ id }) => id).sort());
+}, 45000);
+
 it('serializes concurrent migrations on an empty schema', async () => {
   const second = database.source();
   await second.initialize();
   try {
     await Promise.all([migrate(source, 'run'), migrate(second, 'run')]);
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 7 },
+      { count: 9 },
     ]);
     expect(await source.query('SELECT count(*)::int AS count FROM instruments')).toEqual([
       { count: 2 },
@@ -120,7 +187,7 @@ it('rolls back schema and history when the migration connection is terminated', 
   ).toEqual([{ orders: null, migrations: null, probe: null }]);
   await migrate(source, 'run');
   expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-    { count: 7 },
+    { count: 9 },
   ]);
 });
 
@@ -142,7 +209,7 @@ it('fails with a clear error instead of waiting forever for a migration lock hel
     await runner.commitTransaction();
     await migrate(source, 'run', { lockTimeoutMs: 200 });
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 7 },
+      { count: 9 },
     ]);
   } finally {
     if (runner.isTransactionActive) await runner.rollbackTransaction();

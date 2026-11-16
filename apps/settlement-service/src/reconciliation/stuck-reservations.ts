@@ -1,6 +1,6 @@
 import { EntityManager } from 'typeorm';
 import type { Asset } from '../ledger/amount';
-import type { EngineOrdersClient, TerminalOrder } from './engine-orders.client';
+import type { EngineOrdersClient, LiveOrder, TerminalOrder } from './engine-orders.client';
 import type { Discrepancy } from './trade-comparison';
 
 const PAGE_SIZE = 1000;
@@ -80,6 +80,66 @@ export async function scanStuckReservations(
     found.push(...stuck.slice(0, Math.max(0, context.limit - found.length)));
     if (page.length < PAGE_SIZE) break;
     after = page[page.length - 1].reservation_id;
+  }
+  return { count, found };
+}
+
+/**
+ * Заявка в книзі з відсутнім або передчасно зменшеним резервом: її кошти звільнено, наприклад підробленим
+ * `order.closed`, і власник може витратити їх удруге. Резерв створюється до прийому заявки, тож
+ * свіжа заявка без нього означала б лише, що snapshot звірки старший за неї: її пропускаємо.
+ */
+export function unreservedOrders(
+  orders: readonly LiveOrder[],
+  funded: ReadonlySet<string>,
+  { now, graceMs }: { now: number; graceMs: number },
+): Discrepancy[] {
+  return orders
+    .filter(
+      (order) =>
+        !funded.has(order.orderId.toLowerCase()) && now - Date.parse(order.createdAt) >= graceMs,
+    )
+    .map((order) => ({
+      type: 'unreserved_order' as const,
+      tradeId: null,
+      instrument: order.instrument,
+      executedAt: null,
+      expected: { orderId: order.orderId, reservation: 'active' },
+      actual: { orderId: order.orderId, userId: order.userId, createdAt: order.createdAt },
+    }));
+}
+
+/** Проходить сторінками книгу engine і шукає заявки без належного забезпечення. */
+export async function scanUnreservedOrders(
+  db: EntityManager,
+  engine: Pick<EngineOrdersClient, 'live'>,
+  context: { instrument?: string; now: number; graceMs: number; limit: number },
+): Promise<{ count: number; found: Discrepancy[] }> {
+  let count = 0;
+  const found: Discrepancy[] = [];
+  let after = NIL_UUID;
+  for (;;) {
+    const page = await engine.live(after, context.instrument);
+    if (page.length === 0) break;
+    const rows: { reservation_id: string }[] = await db.query(
+      // Справжній order.closed з’являється лише після виходу заявки з книги. Частковий
+      // release інакше лишив би active та не порушив би рівність журналу й балансів.
+      `SELECT r.reservation_id FROM reservations r
+       WHERE r.reservation_id = ANY($1::uuid[]) AND r.status = 'active'
+         AND NOT EXISTS (
+           SELECT 1 FROM journal_entries j WHERE j.operation_id = 'release:' || r.reservation_id::text
+         )`,
+      [page.map(({ orderId }) => orderId)],
+    );
+    const missing = unreservedOrders(
+      page,
+      new Set(rows.map(({ reservation_id }) => reservation_id)),
+      context,
+    );
+    count += missing.length;
+    found.push(...missing.slice(0, Math.max(0, context.limit - found.length)));
+    if (page.length < PAGE_SIZE) break;
+    after = page[page.length - 1].orderId;
   }
   return { count, found };
 }

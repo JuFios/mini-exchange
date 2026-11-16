@@ -2,9 +2,10 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
-import { isUUID } from 'class-validator';
 import { AuthService } from '../auth.service';
 import { bearerToken } from '../bearer-token';
+import { accessPrincipal } from '../access-principal';
+export { accessPrincipal } from '../access-principal';
 import type { Role } from '../guards/roles.guard';
 
 export interface JwtPayload {
@@ -28,7 +29,7 @@ export class JwtStrategy {
     this.secret = config.getOrThrow<string>('JWT_ACCESS_SECRET');
   }
 
-  async authenticate(request: Request) {
+  async authenticate(request: Request, beforeSession?: (payload: JwtPayload) => Promise<void>) {
     const token = bearerToken(request.headers.authorization);
     if (!token) throw new UnauthorizedException();
     let payload: JwtPayload;
@@ -40,31 +41,6 @@ export class JwtStrategy {
     } catch {
       throw new UnauthorizedException();
     }
-    return accessPrincipal(payload, this.auth);
+    return accessPrincipal(payload, this.auth, beforeSession);
   }
-}
-
-/** Перевірка claims access-токена; спільна для HTTP і WebSocket. */
-export async function accessPrincipal(payload: JwtPayload, auth: AuthService) {
-  if (
-    payload?.typ !== 'access' ||
-    !isUUID(payload.sub) ||
-    !isUUID(payload.sid) ||
-    typeof payload.email !== 'string' ||
-    !Number.isInteger(payload.exp)
-  ) {
-    throw new UnauthorizedException('Некоректний токен доступу');
-  }
-  if (!(await auth.isSessionActive(payload.sub, payload.sid))) {
-    throw new UnauthorizedException('Сесію оновлення відкликано');
-  }
-  // Роль у claims лише показує, що токен видано адміну. Без звірки з ADMIN_EMAILS прибрана
-  // адреса лишалася б адміном до `exp`.
-  const roles: Role[] | undefined =
-    Array.isArray(payload.roles) &&
-    payload.roles.includes('admin') &&
-    auth.isAdminEmail(payload.email)
-      ? ['admin']
-      : undefined;
-  return { userId: payload.sub, email: payload.email, roles };
 }

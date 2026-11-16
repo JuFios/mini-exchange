@@ -40,8 +40,8 @@ jobs:
       run:
         working-directory: apps/matching-engine-service
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: npm
@@ -111,8 +111,8 @@ jobs:
       run:
         working-directory: apps/settlement-service
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: npm
@@ -161,8 +161,8 @@ jobs:
       run:
         working-directory: apps/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: npm
@@ -180,8 +180,10 @@ jobs:
     timeout-minutes: 15
     env:
       ENGINE_PUBLIC_WS_URL: wss://exchange.example.test
+      PUBLIC_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://exchange-extra.example.test:3000
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://exchange-extra.example.test:3000
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       # Правила алертів живуть поза стеком; promtool перевіряє і синтаксис, і поведінку.
       - name: Check the settlement alert rules
         run: |
@@ -195,12 +197,32 @@ jobs:
         run: scripts/ci/check-postgres-bootstrap.sh
       - name: Build and start the stack
         run: docker compose up -d --build --wait --wait-timeout 240
+      - name: Verify remote frontend startup requires a proxy token
+        run: |
+          status=0
+          output=$(docker compose run --rm --no-deps -T -e COOKIE_SECURE=true -e FRONTEND_PROXY_TOKEN= frontend timeout 20 node server.js 2>&1) || status=$?
+          printf '%s\n' "$output"
+          test "$status" = 1
+          printf '%s\n' "$output" | grep -qF 'FRONTEND_PROXY_TOKEN must be a non-demo base64url token in remote mode'
       - name: Verify the frontend address and Redis port
         run: |
           for service in postgres-bootstrap engine-migrate settlement-migrate; do
             test "$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps -a -q "$service")")" = 0
           done
           curl -fsS http://127.0.0.1:3000/api/config | jq -e --arg url "$ENGINE_PUBLIC_WS_URL" '.wsUrl == $url'
+          curl -fsS -H 'Host: exchange-extra.example.test:3000' http://127.0.0.1:3000/login >/dev/null
+          extra_origin_status=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/auth/login \
+            -H 'Host: exchange-extra.example.test:3000' -H 'Origin: http://exchange-extra.example.test:3000' \
+            -H 'Content-Type: application/json' -d '{}')
+          test "$extra_origin_status" = 400
+          ws_status=$(curl -s -o /dev/null -w '%{http_code}' --http1.1 --max-time 2 \
+            -H 'Origin: http://exchange-extra.example.test:3000' \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            'http://127.0.0.1:3001/socket.io/?EIO=4&transport=websocket' || true)
+          test "$ws_status" = 101
+          curl -fsS -H 'Host: localhost:3001' http://127.0.0.1:3001/health >/dev/null
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:3001' http://127.0.0.1:3000/login)" = 421
           # Заголовки безпеки frontend: відсутній заголовок інакше ніхто не помітить.
           headers=$(curl -fsSI http://127.0.0.1:3000/login)
           for header in 'x-content-type-options: nosniff' 'x-frame-options: deny' 'referrer-policy: strict-origin-when-cross-origin'; do
@@ -211,6 +233,10 @@ jobs:
           docker compose exec -T redis sh -ec 'test "$(awk "/^Uid:/ { print \$2 }" /proc/1/status)" -ne 0'
       - name: Verify Redis volume migration
         run: scripts/ci/check-redis-migration.sh
+      - name: Verify Redis role permissions
+        run: scripts/ci/check-redis-acl.sh
+      - name: Verify frontend network isolation
+        run: scripts/ci/check-frontend-isolation.sh
       - name: Diagnose failure
         if: failure()
         run: docker compose ps -a && docker compose logs --no-color --tail=200
@@ -228,7 +254,7 @@ jobs:
       COMPOSE_PROJECT_NAME: exchange-system-${{ github.run_id }}
       COMPOSE_FILE: docker-compose.yml:docker-compose.test.yml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
       - name: Build and check the system runner
@@ -246,6 +272,8 @@ jobs:
         run: |
           docker compose up -d --wait --wait-timeout 240 matching-engine-1 matching-engine-2
           docker compose up -d --wait --force-recreate --no-deps engine-lb
+      - name: Check public security boundaries
+        run: docker compose run --rm --no-deps system-tests npm run security:boundaries
       - name: Check trace propagation, redaction and Redis authentication
         run: docker compose run --rm --no-deps system-tests npm run trace
       - name: Check session revocation across HTTP and WebSocket
@@ -270,6 +298,8 @@ jobs:
         run: docker compose run --rm system-tests npm run orders:sync
       - name: Check that one user's order reads do not slow other submits
         run: docker compose run --rm system-tests npm run orders:read-flood
+      - name: Check that one user's cancels and replays do not slow other submits
+        run: docker compose run --rm system-tests npm run orders:write-flood
       # Зупиняє обидві репліки, тож іде останнім перед прогонами на окремих стеках.
       - name: Check CORS on responses that nginx builds itself
         run: docker compose run --rm system-tests npm run engine-lb:errors

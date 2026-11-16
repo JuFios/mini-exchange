@@ -11,6 +11,8 @@ import { User } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { passwordFitsBcrypt, passwordIsWellFormed } from './password';
+import { accessPrincipal } from './access-principal';
+import type { JwtPayload } from './strategies/jwt.strategy';
 import {
   hashRefreshToken,
   matchesRefreshHash,
@@ -81,12 +83,52 @@ export class AuthService {
     return this.startSession(user);
   }
 
-  async refresh(token: string): Promise<TokenPair | { accessToken: string }> {
+  /**
+   * `beforeSession` отримує перевірені claims до звірки сесії в PostgreSQL, щоб відкликаний
+   * sid не витрачав квоту нового входу.
+   */
+  async webSocketToken(
+    token: string,
+    beforeSession: (payload: JwtPayload) => Promise<void>,
+  ): Promise<{ token: string; userId: string }> {
+    let payload: JwtPayload;
+    const secret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
+    try {
+      payload = await this.jwt.verifyAsync<JwtPayload>(token, { secret, algorithms: ['HS256'] });
+    } catch {
+      throw new UnauthorizedException('Некоректний токен доступу');
+    }
+    const { userId } = await accessPrincipal(payload, this, beforeSession);
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp <= now) throw new UnauthorizedException('Некоректний токен доступу');
+    return {
+      userId,
+      token: this.jwt.sign(
+        {
+          sub: payload.sub,
+          sid: payload.sid,
+          email: payload.email,
+          typ: 'ws',
+          aud: 'private',
+          accessExp: payload.exp,
+          exp: Math.min(payload.exp, now + 60),
+        },
+        { secret, algorithm: 'HS256', jwtid: randomUUID() },
+      ),
+    };
+  }
+
+  async refresh(token: string, rotate = true): Promise<TokenPair | { accessToken: string }> {
     const claims = readRefreshClaims(this.jwt, token, this.refreshSecret());
     const presentedHash = hashRefreshToken(token);
     let session = await this.readSession(claims);
+    // Без ротації чинний токен лише подовжує доступ до того самого абсолютного строку сесії.
+    // Викрадений токен так не сховати: перша ж ротація клієнта робить його попереднім, і його
+    // використання після grace відкликає сесію, як і з ротацією.
+    if (!rotate && matchesRefreshHash(session.user.refreshTokenHash, presentedHash))
+      return { accessToken: this.issueAccessToken(session.user, claims.sid, claims.exp) };
     if (matchesRefreshHash(session.user.refreshTokenHash, presentedHash)) {
-      const refreshToken = this.issueRefreshToken(claims.sub, claims.sid);
+      const refreshToken = this.issueRefreshToken(claims.sub, claims.sid, claims.exp);
       const update = await this.users.update(
         { id: claims.sub, refreshSessionId: claims.sid, refreshTokenHash: presentedHash },
         {
@@ -96,13 +138,16 @@ export class AuthService {
         },
       );
       if (update.affected === 1)
-        return { accessToken: this.issueAccessToken(session.user, claims.sid), refreshToken };
+        return {
+          accessToken: this.issueAccessToken(session.user, claims.sid, claims.exp),
+          refreshToken,
+        };
 
       // Після невдалого CAS читаємо стан, який записав паралельний запит.
       session = await this.readSession(claims);
     }
     if (session.withinGrace && matchesRefreshHash(session.user.refreshPrevHash, presentedHash)) {
-      return { accessToken: this.issueAccessToken(session.user, claims.sid) };
+      return { accessToken: this.issueAccessToken(session.user, claims.sid, claims.exp) };
     }
 
     await this.revokeSession(claims);
@@ -178,29 +223,34 @@ export class AuthService {
       refreshPrevHash: null,
       refreshRotatedAt: null,
     });
-    return { accessToken: this.issueAccessToken(user, sid), refreshToken };
+    const expiresAt = (this.jwt.decode(refreshToken) as RefreshClaims).exp;
+    return { accessToken: this.issueAccessToken(user, sid, expiresAt), refreshToken };
   }
 
-  private issueAccessToken(user: User, sid: string): string {
+  private issueAccessToken(user: User, sid: string, sessionExpiresAt: number): string {
+    const now = Math.floor(Date.now() / 1000);
+    if (sessionExpiresAt <= now) throw new UnauthorizedException('Сесію оновлення відкликано');
+    const exp = Math.min(sessionExpiresAt, now + this.config.getOrThrow<number>('JWT_ACCESS_TTL'));
     const roles = user.adminSeeded && this.isAdminEmail(user.email) ? ['admin'] : undefined;
     return this.jwt.sign(
-      { sub: user.id, sid, email: user.email, typ: 'access', roles },
+      { sub: user.id, sid, email: user.email, typ: 'access', roles, exp },
       {
         algorithm: 'HS256',
         secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
-        expiresIn: this.config.getOrThrow<number>('JWT_ACCESS_TTL'),
         jwtid: randomUUID(),
       },
     );
   }
 
-  private issueRefreshToken(sub: string, sid: string): string {
+  private issueRefreshToken(sub: string, sid: string, expiresAt?: number): string {
     return this.jwt.sign(
-      { sub, sid, typ: 'refresh' },
+      { sub, sid, typ: 'refresh', ...(expiresAt === undefined ? {} : { exp: expiresAt }) },
       {
         algorithm: 'HS256',
         secret: this.refreshSecret(),
-        expiresIn: this.config.getOrThrow<number>('JWT_REFRESH_TTL'),
+        ...(expiresAt === undefined
+          ? { expiresIn: this.config.getOrThrow<number>('JWT_REFRESH_TTL') }
+          : {}),
         jwtid: randomUUID(),
       },
     );

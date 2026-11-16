@@ -97,6 +97,15 @@ docker rm -f "$holder"
 holder=
 sh scripts/migrate-redis-volume.sh "$fixture/dump.rdb"
 docker compose up -d --wait --wait-timeout 60 redis
+# SIGKILL до rename лишає тимчасовий ACL. Старт має прибрати його, навіть якщо вже є users.acl.
+docker compose exec -T redis sh -ec 'umask 077; printf partial > /data/.users-acl.CItest'
 docker compose up -d --force-recreate --wait --wait-timeout 60 redis
+docker compose exec -T redis sh -ec '
+  if [ -e /data/.users-acl.CItest ]; then
+    echo "Redis startup retained the stale ACL file" >&2
+    exit 1
+  fi
+'
+printf 'Redis startup removed the ACL file left by an interrupted start\n'
 test "$(docker compose exec -T redis redis-cli -e --raw GET smoke:upgrade)" = preserved
 test "$(docker compose exec -T redis redis-cli -e --raw TTL smoke:upgrade)" -gt 0

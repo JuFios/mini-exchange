@@ -69,3 +69,72 @@ it('answers an empty list with an empty result and rejects malformed bodies', as
   const maximum = Array.from({ length: 1000 }, () => randomUUID());
   expect((await lookup({ orderIds: maximum }, authorized())).status).toBe(200);
 });
+
+describe('live reserved orders', () => {
+  const NIL = '00000000-0000-0000-0000-000000000000';
+  const live = (body: unknown, headers: Record<string, string> = authorized()) =>
+    api.request('/internal/orders/live', 'POST', undefined, body, headers);
+
+  it('pages the resting orders accepted with a reservation in id order', async () => {
+    const [seller, buyer] = await Promise.all([api.register(), api.register()]);
+    const reserved = [
+      await place(seller, { price: 400, quantity: 2 }),
+      await place(seller, { price: 401 }),
+      await place(seller, { price: 402 }),
+    ];
+    const plain = await place(seller, { price: 403 });
+    const cancelled = await place(seller, { price: 404 });
+    const filled = await place(seller, { price: 100 });
+    await place(buyer, { side: 'buy', price: 100 });
+    // Частково виконана лишається в книзі.
+    await place(buyer, { side: 'buy', price: 400 });
+    expect((await api.request(`/orders/${cancelled}`, 'DELETE', seller)).status).toBe(200);
+    expect(
+      await api
+        .database()
+        .query('SELECT status FROM orders WHERE id = ANY($1::uuid[]) ORDER BY price', [
+          [reserved[0], filled],
+        ]),
+    ).toEqual([{ status: 'filled' }, { status: 'partially_filled' }]);
+    await api
+      .database()
+      .query('UPDATE order_requests SET reserved = true WHERE order_id = ANY($1::uuid[])', [
+        [...reserved, cancelled, filled],
+      ]);
+
+    const ids = async (body: Record<string, unknown>) => {
+      const response = await live(body);
+      expect(response.status).toBe(200);
+      const { orders } = await response.json();
+      return orders.filter(({ orderId }: { orderId: string }) =>
+        [...reserved, plain, cancelled, filled].includes(orderId),
+      );
+    };
+    const all = await ids({ after: NIL });
+    expect(all.map(({ orderId }: { orderId: string }) => orderId)).toEqual([...reserved].sort());
+    expect(all[0]).toEqual({
+      orderId: expect.any(String),
+      userId: expect.any(String),
+      instrument: 'ABC',
+      createdAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.+Z$/),
+    });
+    const sorted = [...reserved].sort();
+    expect(
+      (await ids({ after: sorted[0] })).map(({ orderId }: { orderId: string }) => orderId),
+    ).toEqual(sorted.slice(1));
+    expect(await ids({ after: NIL, instrument: 'XYZ' })).toEqual([]);
+    expect((await ids({ after: NIL, instrument: 'ABC' })).length).toBe(3);
+  });
+
+  it('rejects the page without a token and malformed bodies', async () => {
+    expect((await live({ after: NIL }, {})).status).toBe(401);
+    for (const body of [
+      {},
+      { after: 'x' },
+      { after: NIL, instrument: 'NOPE' },
+      { after: NIL, instrument: 1 },
+      { after: NIL, extra: 1 },
+    ])
+      expect((await live(body)).status).toBe(400);
+  });
+});

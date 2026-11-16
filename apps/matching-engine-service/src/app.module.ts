@@ -1,6 +1,6 @@
 import { LoggingModule } from './observability/logging';
 import { TerminusModule } from '@nestjs/terminus';
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from './auth/auth.module';
@@ -9,6 +9,7 @@ import { engineDataSourceOptions } from './data-source';
 import { HealthController } from './health.controller';
 import { EngineEnv, validateEnv } from './config/env.validation';
 import { OutboxRelay } from './outbox/outbox-relay.service';
+import { ReservationFundingCheck } from './intake/reservation-funding.check';
 
 @Module({
   imports: [
@@ -30,6 +31,13 @@ import { OutboxRelay } from './outbox/outbox-relay.service';
     OrdersModule.register(),
   ],
   controllers: [HealthController],
-  providers: [OutboxRelay],
+  providers: [OutboxRelay, ReservationFundingCheck],
 })
-export class AppModule {}
+export class AppModule implements OnModuleInit {
+  constructor(private readonly funding: ReservationFundingCheck) {}
+
+  async onModuleInit(): Promise<void> {
+    // Імпортовані модулі вже перевірили каталог і admin credentials. Worker стартує пізніше.
+    await this.funding.ensureMode();
+  }
+}

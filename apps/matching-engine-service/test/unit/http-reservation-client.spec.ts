@@ -77,6 +77,20 @@ it.each([
 
 const text = (status: number, body: string) => async () => new Response(body, { status });
 
+it('requires the guarded UUID validation response before activating reservations', async () => {
+  fetch
+    .mockImplementationOnce(reply(200, { status: 'ok' }))
+    .mockImplementationOnce(reply(400, { statusCode: 400, message: 'Rejected by proxy' }));
+  await expect(client().assertReady()).rejects.toThrow(/reservation credentials/);
+
+  fetch
+    .mockImplementationOnce(reply(200, { status: 'ok' }))
+    .mockImplementationOnce(
+      reply(400, { statusCode: 400, message: 'Validation failed (uuid is expected)' }),
+    );
+  await expect(client().assertReady()).resolves.toBeUndefined();
+});
+
 it('classifies a refusal by its status even when the body is not JSON', async () => {
   fetch.mockImplementation(text(401, 'Unauthorized'));
   expect(await statusOf(client().reserve(request))).toBe(500);

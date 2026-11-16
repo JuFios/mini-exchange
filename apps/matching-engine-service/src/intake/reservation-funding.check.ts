@@ -1,39 +1,64 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
+import { LeaseManager } from '../ownership/lease-manager';
+import { ReservationClient } from './reservation.client';
 
 /**
  * Резерви вмикаються лише на історії, де кожна жива або виконана заявка має резерв.
  * Інакше угоди без резервів не розрахувати, а звірка показувала б їх як пропуски.
  */
 @Injectable()
-export class ReservationFundingCheck implements OnModuleInit {
+export class ReservationFundingCheck {
   constructor(
     private readonly source: DataSource,
     private readonly config: ConfigService,
+    private readonly leases: LeaseManager,
+    private readonly reservations: ReservationClient,
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    if (!this.config.getOrThrow('RESERVATIONS_ENABLED')) return;
-    // Пошук зупиняється на першій заявці без резерву; великий том читається довше за 5 с сесії.
-    const [found]: { live: boolean; traded: boolean }[] = await this.source.transaction(
-      async (db) => {
-        await db.query("SET LOCAL statement_timeout='60s'");
-        return db.query(
-          `SELECT EXISTS (SELECT 1 FROM orders o WHERE o.status IN ('pending','open','partially_filled')
-               AND NOT EXISTS (SELECT 1 FROM order_requests r WHERE r.order_id = o.id AND r.reserved)) AS live,
-             EXISTS (SELECT 1 FROM orders o WHERE o.filled_quantity > 0
-               AND NOT EXISTS (SELECT 1 FROM order_requests r WHERE r.order_id = o.id AND r.reserved)) AS traded`,
-        );
-      },
-    );
-    if (found.live || found.traded)
-      throw new Error(
-        'RESERVATIONS_ENABLED=true needs an order history with reservations: found ' +
-          `${found.live ? 'a live order' : 'no live order'} and ` +
-          `${found.traded ? 'a traded order' : 'no traded order'} without one. ` +
-          'Cancel the live orders with RESERVATIONS_ENABLED=false; if traded orders remain, ' +
-          'recreate the database volume.',
+  async ensureMode(): Promise<void> {
+    const enabled = this.config.getOrThrow<boolean>('RESERVATIONS_ENABLED');
+    // Після першого ввімкнення інваріант тримає тригер, а прапорець назад не змінюється. Тож
+    // повторний старт не сканує всю історію й не блокує рядок режиму, на якому чекають заявки.
+    if (enabled) {
+      const [current] = await this.source.query(
+        'SELECT reservations_required FROM engine_settings WHERE id=true',
       );
+      if (current?.reservations_required) return;
+      await this.reservations.assertReady();
+      if (!(await this.leases.redisReadyForActivation().catch(() => false))) {
+        throw new Error('Engine Redis is unavailable before enabling reservations');
+      }
+    }
+    await this.source.transaction(async (db) => {
+      await db.query("SET LOCAL statement_timeout='60s'");
+      await db.query("SET LOCAL lock_timeout='60s'");
+      const [settings] = await db.query(
+        'SELECT reservations_required FROM engine_settings WHERE id=true FOR UPDATE',
+      );
+      if (!settings) throw new Error('Reservation mode settings are missing');
+      if (!enabled) {
+        if (settings.reservations_required)
+          throw new Error(
+            'RESERVATIONS_ENABLED=false is not allowed: reservations are required by this database',
+          );
+        return;
+      }
+      if (settings.reservations_required) return;
+      const [found]: { live: boolean; traded: boolean }[] = await db.query(
+        `SELECT EXISTS (SELECT 1 FROM orders o WHERE o.status IN ('pending','open','partially_filled')
+          AND NOT EXISTS (SELECT 1 FROM order_requests r WHERE r.order_id=o.id AND r.reserved)) AS live,
+          EXISTS (SELECT 1 FROM orders o WHERE o.filled_quantity>0
+          AND NOT EXISTS (SELECT 1 FROM order_requests r WHERE r.order_id=o.id AND r.reserved)) AS traded`,
+      );
+      if (found.live || found.traded)
+        throw new Error(
+          'RESERVATIONS_ENABLED=true needs an order history with reservations: found ' +
+            `${found.live ? 'a live order' : 'no live order'} and ${found.traded ? 'a traded order' : 'no traded order'} without one. ` +
+            'Cancel the live orders with RESERVATIONS_ENABLED=false; if traded orders remain, recreate the database volume.',
+        );
+      await db.query('UPDATE engine_settings SET reservations_required=true WHERE id=true');
+    });
   }
 }

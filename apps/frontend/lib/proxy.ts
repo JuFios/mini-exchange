@@ -42,7 +42,7 @@ export async function proxy(request: NextRequest, service: Service, path: string
     );
   }
 
-  const headers = backendHeaders(request);
+  const headers = backendHeaders(request, service);
   if (token) headers.set('authorization', 'Bearer ' + token);
   try {
     const result = await fetch(backendUrl(service) + '/' + route + request.nextUrl.search, {

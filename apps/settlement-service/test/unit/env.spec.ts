@@ -4,6 +4,36 @@ import { parseEnv } from 'node:util';
 import { validateEnv } from '../../src/config/env.validation';
 
 const example = parseEnv(readFileSync(join(__dirname, '../../.env.example'), 'utf8'));
+const remote = {
+  ...example,
+  DEPLOYMENT_MODE: 'remote',
+  JWT_ACCESS_SECRET: 'remote-access-secret-value-000001',
+  INTERNAL_API_TOKEN: 'remote-internal-token-value-00001',
+  REDIS_USERNAME: 'settlement',
+  REDIS_PASSWORD: 'remote-redis-password-only',
+  LEDGER_DATABASE_PASSWORD: 'remote-ledger-password-only',
+  DEMO_INITIAL_BALANCES: 'USD:0,ABC:0,XYZ:0',
+};
+
+it('rejects demo secrets in remote mode and preserves the configured demo balances', () => {
+  expect(() => validateEnv(remote)).not.toThrow();
+  expect(
+    validateEnv({ ...remote, DEMO_INITIAL_BALANCES: example.DEMO_INITIAL_BALANCES })
+      .DEMO_INITIAL_BALANCES.USD,
+  ).toBeGreaterThan(0n);
+  for (const key of [
+    'JWT_ACCESS_SECRET',
+    'INTERNAL_API_TOKEN',
+    'REDIS_PASSWORD',
+    'LEDGER_DATABASE_PASSWORD',
+  ] as const) {
+    expect(() => validateEnv({ ...remote, [key]: example[key] })).toThrow(key);
+  }
+});
+
+it.each(['default', '', undefined])('rejects remote Redis username %j', (username) => {
+  expect(() => validateEnv({ ...remote, REDIS_USERNAME: username })).toThrow('REDIS_USERNAME');
+});
 
 it('validates all and only the keys from the env example', () => {
   const parsed = validateEnv(example);

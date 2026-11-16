@@ -8,6 +8,11 @@ const gauge = <Label extends string>(name: string, help: string, ...labelNames: 
   new Gauge({ name, help, labelNames, registers: [engineMetrics] });
 
 export const rateLimited = counter('rate_limited_total', 'Requests denied by the limiter', 'scope');
+export const rateLimitBypassed = counter(
+  'rate_limit_bypassed_total',
+  'Requests let through because the optional limiter could not reach Redis',
+  'scope',
+);
 export const ordersRejected = counter(
   'orders_rejected_total',
   'Order submissions rejected',
@@ -64,11 +69,14 @@ for (const scope of [
   'auth',
   'login_email',
   'login_email_total',
+  'ws_ticket',
   'public',
   'orders',
   'orders_minute',
+  'orders_write',
   'ws_subscribe',
 ]) {
   rateLimited.inc({ scope }, 0);
 }
+rateLimitBypassed.inc({ scope: 'orders_write' }, 0);
 ordersRejected.inc({ reason: 'internal' }, 0);

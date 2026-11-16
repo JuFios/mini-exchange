@@ -76,11 +76,17 @@ describe('session binding in the proxy', () => {
   });
 
   it('exposes the user id with the websocket token', async () => {
+    mock.method(globalThis, 'fetch', async () =>
+      Response.json({ token: 'ws-only', userId: 'user-a' }),
+    );
     const { POST } = require('../app/api/auth/ws-token/route') as {
-      POST: (request: NextRequest) => Response;
+      POST: (request: NextRequest) => Promise<Response>;
     };
-    const body = await POST(request('/api/auth/ws-token', 'POST', cookie, { origin })).json();
+    const body = await (
+      await POST(request('/api/auth/ws-token', 'POST', cookie, { origin }))
+    ).json();
     assert.equal(body.userId, 'user-a');
+    assert.equal(body.token, 'ws-only');
   });
 });
 
