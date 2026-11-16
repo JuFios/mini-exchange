@@ -38,7 +38,12 @@ export function buildLegacyGateway(fail: () => boolean = () => false) {
       const version = state.version;
       await new Promise((resolve) => setTimeout(resolve, 50));
       if (fail()) throw new Error('BOOK_BUSY');
-      return { bids: [{ price: String(version) }], asks: [] };
+      return {
+        instrument: 'ABC',
+        seq: String(version),
+        bids: [{ price: String(version) }],
+        asks: [],
+      };
     }),
   };
   let onMarket: (event: unknown) => void = () => undefined;
@@ -73,7 +78,10 @@ export function buildLegacyGateway(fail: () => boolean = () => false) {
     book as unknown as CommittedBook,
     { has: () => true } as unknown as InstrumentCatalog,
     reader as unknown as RealtimeStreamReader,
-    { onStale: () => () => undefined } as unknown as ReplicaLagMonitor,
+    {
+      onStale: () => () => undefined,
+      onHeartbeat: () => () => undefined,
+    } as unknown as ReplicaLagMonitor,
   );
   gateway.server = server as never;
   gateway.afterInit(server as never);

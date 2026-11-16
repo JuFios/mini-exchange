@@ -43,8 +43,7 @@ it('keeps one writer while both replicas run workers and transfers ownership aft
         });
         socket.emit('subscribe', 'ABC');
       });
-      const { bids, asks } = peerBook;
-      expect(await snapshot).toEqual({ bids, asks });
+      expect(await snapshot).toEqual(peerBook);
     } finally {
       socket.disconnect();
     }
