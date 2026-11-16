@@ -164,8 +164,12 @@ it('reserves separate connection capacity for internal committed outbox reads', 
   const outbox = /\n {2}location ~\* \^\/internal\/outbox\/ \{\n([\s\S]*?)\n {2}\}/.exec(
     internal ?? '',
   );
-  expect(outbox?.[1]).toContain('limit_conn engine_outbox_total 8;');
+  expect(outbox?.[1]).toContain('limit_conn engine_outbox_total 24;');
   expect(outbox?.[1]).toContain('proxy_pass http://engines_outbox;');
   expect(outbox?.[1]).not.toContain('engine_rest_total');
   expect(config).toContain('limit_conn_zone $server_port zone=engine_outbox_total:64k;');
+  // Обидві репліки, позначені недоступними, не дають 502 на кожне читання outbox.
+  const upstream = /\nupstream engines_outbox \{\n([\s\S]*?)\n\}/.exec(config)?.[1] ?? '';
+  expect(upstream.match(/ max_fails=1 fail_timeout=5s;/g)).toHaveLength(2);
+  expect(upstream.match(/ max_fails=0 backup;/g)).toHaveLength(2);
 });
