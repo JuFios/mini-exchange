@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, it, mock } from 'node:test';
 
 const input = { instrument: 'ABC', side: 'buy' as const, price: '100', quantity: '1' };
 const keys: string[] = [];
+const firstId = randomUUID();
+const secondId = randomUUID();
+const ownerId = randomUUID();
 let answers: (() => Response)[] = [];
 
 beforeEach(() => {
@@ -27,22 +31,35 @@ afterEach(() => {
 
 const send = () =>
   (require('../lib/order-attempt') as typeof import('../lib/order-attempt')).sendOrder(input);
-const pending = (id: string) => () => Response.json({ order: { id }, trades: [] }, { status: 202 });
+const pending = (id: string) => () =>
+  Response.json(
+    {
+      order: {
+        id,
+        ownerId,
+        instrument: input.instrument,
+        side: input.side,
+        status: 'pending',
+      },
+      trades: [],
+    },
+    { status: 202 },
+  );
 
 it('sends an identical second order with its own key after a pending acceptance', async () => {
-  answers = [pending('first'), pending('second')];
+  answers = [pending(firstId), pending(secondId)];
 
   const first = await send();
   const second = await send();
 
   assert.deepEqual([first.status, second.status], ['pending', 'pending']);
-  assert.deepEqual([first.id, second.id], ['first', 'second']);
+  assert.deepEqual([first.id, second.id], [firstId, secondId]);
   assert.equal(keys.length, 2);
   assert.notEqual(keys[0], keys[1]);
 });
 
 it('repeats the key after a gateway failure and drops it once the order is accepted', async () => {
-  answers = [() => new Response('{}', { status: 503 }), pending('first'), pending('second')];
+  answers = [() => new Response('{}', { status: 503 }), pending(firstId), pending(secondId)];
 
   await assert.rejects(send());
   await send();
@@ -53,7 +70,7 @@ it('repeats the key after a gateway failure and drops it once the order is accep
 });
 
 it('drops the key when the request was refused', async () => {
-  answers = [() => new Response('{}', { status: 422 }), pending('first')];
+  answers = [() => new Response('{}', { status: 422 }), pending(firstId)];
 
   await assert.rejects(send());
   await send();
@@ -71,7 +88,7 @@ it('keeps a separate retry key for each different order after a gateway failure'
     { ...input, quantity: '1.5' },
   ];
   const failed = () => new Response('{}', { status: 503 });
-  answers = [failed, ...others.map(() => failed), pending('first')];
+  answers = [failed, ...others.map(() => failed), pending(firstId)];
 
   await assert.rejects(send());
   for (const order of others) await assert.rejects(sendWith(order));
@@ -80,4 +97,50 @@ it('keeps a separate retry key for each different order after a gateway failure'
 
   assert.equal(new Set(keys.slice(0, 5)).size, 5);
   assert.equal(keys[5], keys[0]);
+});
+
+it('retains the same key after an incomplete successful acknowledgement', async () => {
+  answers = [
+    () =>
+      Response.json(
+        { order: { id: firstId, instrument: 'ABC', side: 'buy' }, trades: [] },
+        { status: 201 },
+      ),
+    () =>
+      Response.json(
+        {
+          order: {
+            id: secondId,
+            instrument: 'XYZ',
+            side: 'buy',
+            status: 'pending',
+            ownerId,
+          },
+          trades: [],
+        },
+        { status: 202 },
+      ),
+    pending('invalid-id'),
+    pending(firstId),
+  ];
+  await assert.rejects(send());
+  await assert.rejects(send());
+  await assert.rejects(send());
+  await send();
+  assert.equal(keys[0], keys[1]);
+  assert.equal(keys[0], keys[2]);
+  assert.equal(keys[0], keys[3]);
+});
+
+it('retains a retry key when sessionStorage is unavailable', async () => {
+  Reflect.deleteProperty(globalThis, 'sessionStorage');
+  answers = [
+    () => {
+      throw new Error('Connection reset after acceptance');
+    },
+    pending(firstId),
+  ];
+  await assert.rejects(send());
+  await send();
+  assert.equal(keys[0], keys[1]);
 });

@@ -1,0 +1,56 @@
+{
+  "matching-engine-1": [
+    {
+      "package": "tar",
+      "version": "6.2.1",
+      "advisories": [
+        "CVE-2026-23745",
+        "CVE-2026-23950",
+        "CVE-2026-24842",
+        "CVE-2026-26960",
+        "CVE-2026-29786",
+        "CVE-2026-31802",
+        "CVE-2026-59873",
+        "CVE-2026-59874",
+        "CVE-2026-73566"
+      ],
+      "expires": "2026-12-16",
+      "control": "Isolated synthetic demo and trusted build inputs. No user-supplied archives. Revisit when bcrypt5 has a compatible patch or before public deployment."
+    }
+  ],
+  "frontend": [
+    {
+      "package": "next",
+      "version": "14.2.35",
+      "advisories": [
+        "CVE-2026-44573",
+        "CVE-2026-44578",
+        "CVE-2026-64641",
+        "CVE-2026-64645",
+        "CVE-2026-64649",
+        "CVE-2026-75604",
+        "CVE-2026-94482",
+        "GHSA-2464-fhr4-w9xw",
+        "GHSA-2xp9-vwfh-vxw4",
+        "GHSA-8h8q-6873-q5fj",
+        "GHSA-h25m-26qc-wcjf",
+        "GHSA-q4gf-8mx6-v5v3"
+      ],
+      "expires": "2026-12-16",
+      "control": "Isolated synthetic demo, allowlisted network and disposable browser. Revisit for a Next14 patch, permission to change the starter major, or before public deployment."
+    }
+  ],
+  "engine-lb": [
+    {
+      "package": "libxslt",
+      "version": "1.1.43-r3",
+      "advisories": [
+        "CVE-2026-125350",
+        "CVE-2026-87636",
+        "CVE-2026-9947"
+      ],
+      "expires": "2026-12-16",
+      "control": "Pinned patched nginx binary. No XSLT filter configured and no user stylesheets. Revisit on nginx digest update or use of XSLT."
+    }
+  ]
+}

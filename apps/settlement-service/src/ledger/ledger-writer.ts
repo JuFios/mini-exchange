@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
-import { EntityManager } from 'typeorm';
+import type { DatabaseQuery } from '../database/bounded-read';
 import type { SettlementEnv } from '../config/env.validation';
 import { ASSET_SCALES, Asset, formatAmount } from './amount';
 import { AccountRef, Posting, PostingBuilder, Wallet } from './posting-builder';
@@ -69,7 +69,7 @@ export class LockedAccounts {
 export class LedgerWriter {
   constructor(private readonly config: ConfigService<SettlementEnv, true>) {}
 
-  async lockWallets(db: EntityManager, wallets: Wallet[]): Promise<LockedAccounts> {
+  async lockWallets(db: DatabaseQuery, wallets: Wallet[]): Promise<LockedAccounts> {
     const refs = new Map<string, AccountRef>();
     for (const wallet of wallets) {
       for (const account of walletAccounts(wallet)) refs.set(key(account), account);
@@ -112,7 +112,7 @@ export class LedgerWriter {
     return locked;
   }
 
-  private async ensureAccount(db: EntityManager, { userId, asset, kind }: AccountRef) {
+  private async ensureAccount(db: DatabaseQuery, { userId, asset, kind }: AccountRef) {
     const [inserted]: { id: string }[] = await db.query(
       `INSERT INTO accounts (user_id, asset, kind) VALUES ($1, $2, $3)
        ON CONFLICT (user_id, asset, kind) DO NOTHING RETURNING id`,
@@ -134,7 +134,7 @@ export class LedgerWriter {
   }
 
   async write(
-    db: EntityManager,
+    db: DatabaseQuery,
     accounts: LockedAccounts,
     entry: JournalEntry,
     postings: Posting[],

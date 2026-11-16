@@ -78,27 +78,52 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
       this.redis.ping(),
       this.redis.config('GET', 'maxmemory-policy'),
     ]);
-    return ping === 'PONG' && Array.isArray(policy) && policy[1] === 'noeviction';
+    if (ping !== 'PONG' || !Array.isArray(policy) || policy[1] !== 'noeviction') return false;
+    await this.ensureGroups();
+    // ID 0 читає лише PEL службового consumer, який ніколи не отримує нових подій.
+    await this.redis.xreadgroup(
+      'GROUP',
+      GROUP,
+      `readiness-${this.name}`,
+      'COUNT',
+      1,
+      'STREAMS',
+      ...SETTLEMENT_STREAMS,
+      ...SETTLEMENT_STREAMS.map(() => '0'),
+    );
+    return true;
   }
 
   /** Стан черги для адміністратора й метрик. */
   async queue() {
     const streams = await Promise.all(
       SETTLEMENT_STREAMS.map(async (stream) => {
-        const [length, groups] = await Promise.all([
+        const [length, groups, pending] = await Promise.all([
           this.redis.xlen(stream),
           (this.redis.xinfo('GROUPS', stream) as Promise<unknown[][]>).catch(
             () => [] as unknown[][],
           ),
+          (
+            this.redis.xpending(stream, GROUP, '-', '+', 1) as Promise<
+              [string, string, number, number][]
+            >
+          ).catch((error: Error) => {
+            if (error.message.includes('NOGROUP')) return [];
+            throw error;
+          }),
         ]);
-        // XINFO повертає пари ключ-значення; lag є в Redis 7.0+.
         const info =
           groups.map((fields) => Object.fromEntries(pairs(fields))).find((g) => g.name === GROUP) ??
           {};
+        // Вік від XADD не скидається під час reclaim, на відміну від idle.
+        const oldestPendingAgeSeconds = pending.length
+          ? Math.max(0, (Date.now() - Number(pending[0][0].split('-')[0])) / 1000)
+          : 0;
         return {
           stream,
           length,
           pending: Number(info.pending ?? 0),
+          oldestPendingAgeSeconds,
           lag: info.lag === null || info.lag === undefined ? null : Number(info.lag),
           lastDeliveredId: (info['last-delivered-id'] as string | undefined) ?? null,
         };
@@ -114,27 +139,34 @@ export class SettlementConsumer implements OnApplicationBootstrap, BeforeApplica
   private async run(): Promise<void> {
     while (!this.stopped) {
       try {
+        // Recovery не залежить від існування stream чи consumer group.
+        await this.handler
+          .recover?.(() => this.stopped)
+          .catch((error: Error) => {
+            // Окремий збій recovery не вимикає live доставку, reclaim або DLQ.
+            if (!this.stopped)
+              this.logger.warn({ alert: 'settlement_recovery_failed', reason: error.message });
+          });
+        if (this.stopped) return;
         await this.ensureGroups();
-        while (!this.stopped) {
-          await this.reclaimDue();
-          const read = (await this.reader.xreadgroup(
-            'GROUP',
-            GROUP,
-            this.name,
-            'COUNT',
-            BATCH_SIZE,
-            'BLOCK',
-            BLOCK_MS,
-            'STREAMS',
-            ...SETTLEMENT_STREAMS,
-            ...SETTLEMENT_STREAMS.map(() => '>'),
-          )) as [string, Entry[]][] | null;
-          for (const [stream, entries] of read ?? [])
-            for (const entry of entries) {
-              if (this.stopped) return;
-              await this.process(stream, entry);
-            }
-        }
+        await this.reclaimDue();
+        const read = (await this.reader.xreadgroup(
+          'GROUP',
+          GROUP,
+          this.name,
+          'COUNT',
+          BATCH_SIZE,
+          'BLOCK',
+          BLOCK_MS,
+          'STREAMS',
+          ...SETTLEMENT_STREAMS,
+          ...SETTLEMENT_STREAMS.map(() => '>'),
+        )) as [string, Entry[]][] | null;
+        for (const [stream, entries] of read ?? [])
+          for (const entry of entries) {
+            if (this.stopped) return;
+            await this.process(stream, entry);
+          }
       } catch (error) {
         if (this.stopped) return;
         this.logger.warn(`Consumer retry: ${(error as Error).message}`);

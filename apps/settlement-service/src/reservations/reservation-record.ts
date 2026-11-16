@@ -1,4 +1,4 @@
-import { EntityManager } from 'typeorm';
+import type { DatabaseQuery } from '../database/bounded-read';
 import type { Asset } from '../ledger/amount';
 
 export interface ReservationRecord {
@@ -13,7 +13,7 @@ export interface ReservationRecord {
   result: { status: 'accepted' | 'rejected' } | null;
 }
 
-export function lockReservations(db: EntityManager, ids: string[]): Promise<ReservationRecord[]> {
+export function lockReservations(db: DatabaseQuery, ids: string[]): Promise<ReservationRecord[]> {
   return db.query(
     `SELECT * FROM reservations WHERE reservation_id = ANY($1::uuid[])
      ORDER BY reservation_id FOR UPDATE`,
@@ -21,7 +21,7 @@ export function lockReservations(db: EntityManager, ids: string[]): Promise<Rese
   );
 }
 
-export async function consumeReservation(db: EntityManager, id: string, amount: bigint) {
+export async function consumeReservation(db: DatabaseQuery, id: string, amount: bigint) {
   const [, updated] = await db.query(
     `UPDATE reservations SET remaining=remaining-$2,
        status=CASE WHEN remaining=$2 THEN 'closed' ELSE 'active' END

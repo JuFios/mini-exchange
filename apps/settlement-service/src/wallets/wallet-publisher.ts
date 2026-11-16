@@ -49,7 +49,7 @@ export class WalletPublisher implements OnModuleDestroy {
       payload,
     };
     await this.redis.xadd(
-      'exchange:user-events',
+      'exchange:wallet-events',
       'MAXLEN',
       '~',
       this.maxLength,

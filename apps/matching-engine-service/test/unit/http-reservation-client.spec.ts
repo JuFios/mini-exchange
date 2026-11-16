@@ -15,7 +15,7 @@ const client = () =>
   new HttpReservationClient(
     new ConfigService({
       SETTLEMENT_URL: 'http://settlement.test',
-      INTERNAL_API_TOKEN: 'internal-token-for-tests-only-0000001',
+      RESERVATION_API_TOKEN: 'internal-token-for-tests-only-0000001',
       RESERVATION_TIMEOUT_MS: 1000,
     }),
   );

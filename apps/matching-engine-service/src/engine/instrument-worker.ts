@@ -24,8 +24,10 @@ import { insertOutboxEvents } from '../outbox/outbox-events';
 const DRAIN_BUDGET_MS = 1000;
 // Renew у Redis не залежить від PostgreSQL: запит у мертву мережу тримав би lease без роботи.
 // Рахується час без прогресу, а не вся операція: великий sweep легально триває довше.
-// Межа більша за очікування одного кроку: черга пулу 10 с, lock 3 с, statement 10 с.
-const WORKER_STALL_MS = 30000;
+// Drain віддає lease за 6,5 с без прогресу: резерв має час відновитися в межах 10 с.
+// Recovery може виконувати довші bulk-запити, тож зберігає окремий бюджет.
+const DRAIN_STALL_MS = 6500;
+const RECOVERY_STALL_MS = 30000;
 // Довше за інтервал acquire: резерв встигає забрати lease раніше за відрізаного власника.
 const STALL_BACK_OFF_MS = 5000;
 
@@ -100,6 +102,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
         instrument,
         lease,
         this.ownership.recover(instrument, lease, resume),
+        RECOVERY_STALL_MS,
       );
       this.owned.set(instrument, owned);
       return owned;
@@ -116,6 +119,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     instrument: string,
     lease: InstrumentLease | undefined,
     work: Promise<T>,
+    stallMs: number,
   ): Promise<T> {
     if (!lease) return work;
     this.beat(lease);
@@ -123,15 +127,15 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     const stalled = new Promise<never>((_resolve, reject) => {
       const check = () => {
         const idle = performance.now() - this.progress.get(lease)!;
-        if (idle < WORKER_STALL_MS) {
-          timer = setTimeout(check, WORKER_STALL_MS - idle);
+        if (idle < stallMs) {
+          timer = setTimeout(check, stallMs - idle);
           return;
         }
         this.logger.error({ alert: 'engine_worker_stalled', instrument });
         this.ownership.leases.drop(lease, STALL_BACK_OFF_MS);
         reject(new FencedOutError());
       };
-      timer = setTimeout(check, WORKER_STALL_MS);
+      timer = setTimeout(check, stallMs);
     });
     return Promise.race([work, stalled]).finally(() => clearTimeout(timer));
   }
@@ -218,7 +222,7 @@ export class InstrumentWorker implements OnApplicationBootstrap, OnModuleDestroy
     this.again.delete(instrument);
     // Lease цього drain: до завершення запису owned міг змінитися на нову епоху.
     const lease = this.owned.get(instrument)?.lease;
-    const task = this.bounded(instrument, lease, this.drain(instrument))
+    const task = this.bounded(instrument, lease, this.drain(instrument), DRAIN_STALL_MS)
       .catch(async (error: unknown) => {
         this.logger.error({
           alert: 'engine_apply_failed',

@@ -69,13 +69,19 @@ function statusFrom(address: string, port: number, path: string, headers = {}, a
 }
 
 /** Повні заголовки й неповне тіло тримають слот ліміту з'єднань без навантаження на engine. */
-function holdSlowBodies(address: string) {
+export function holdSlowBodies(
+  address: string,
+  owned: Socket[],
+  connect = () => createConnection({ host: address, port: 3001 }),
+  count = SLOW_BODIES,
+) {
   return Promise.all(
     Array.from(
-      { length: SLOW_BODIES },
+      { length: count },
       () =>
         new Promise<Socket>((resolve, reject) => {
-          const socket = createConnection({ host: address, port: 3001 });
+          const socket = connect();
+          owned.push(socket);
           socket.once('error', reject);
           socket.once('connect', () => {
             socket.on('error', () => undefined);
@@ -132,17 +138,30 @@ async function flood(mode: Mode, address: string, accessToken: string) {
   process.send!(counts, () => process.disconnect());
 }
 
-function startFlood(mode: Mode, address: string, accessToken: string) {
-  const child: ChildProcess = fork(__filename, ['--flood', mode, address, accessToken], {
+export function startFlood(
+  mode: Mode,
+  address: string,
+  accessToken: string,
+  child: ChildProcess = fork(__filename, ['--flood', mode, address, accessToken], {
     execArgv: ['--require', 'ts-node/register'],
     env: { ...process.env, TS_NODE_TRANSPILE_ONLY: 'true' },
-  });
+  }),
+) {
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
   child.on('error', () => undefined);
   const ready = new Promise<void>((resolve, reject) => {
-    child.on('message', (value) => value === 'ready' && resolve());
-    void exited.then(() => reject(new Error('Flood process exited before it started')));
-    setTimeout(() => reject(new Error('Flood did not start within 30 s')), 30000).unref();
+    const timer = setTimeout(() => reject(new Error('Flood did not start within 30 s')), 30000);
+    timer.unref();
+    child.on('message', (value) => {
+      if (value === 'ready') {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    void exited.then(() => {
+      clearTimeout(timer);
+      reject(new Error('Flood process exited before it started'));
+    });
   });
   return {
     ready,
@@ -152,9 +171,23 @@ function startFlood(mode: Mode, address: string, accessToken: string) {
         void exited.then(() => reject(new Error('Flood process exited before reporting')));
       });
       if (child.connected) child.send('stop', () => undefined);
-      const result = await counts;
-      await exited;
-      return result;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          counts.then(async (result) => {
+            await exited;
+            return result;
+          }),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              child.kill('SIGKILL');
+              reject(new Error('Flood did not stop within 5 s'));
+            }, 5000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
     },
     kill: () => child.kill('SIGKILL'),
   };
@@ -182,7 +215,7 @@ async function main() {
   try {
     // Клієнт A займає всі свої слоти. Клієнт B на обох listener і через BFF їх не втрачає.
     const user = await newUser();
-    sockets = await holdSlowBodies(address);
+    await holdSlowBodies(address, sockets);
     const own = await until(
       () => statusFrom(address, 3001, '/instruments'),
       (status) => status === 429,
@@ -337,9 +370,10 @@ async function main() {
 }
 
 const [flag, mode, address, accessToken] = process.argv.slice(2);
-void (flag === '--flood' ? flood(mode as Mode, address, accessToken) : main()).catch(
-  (error: unknown) => {
-    console.error(error);
-    process.exit(1);
-  },
-);
+if (require.main === module)
+  void (flag === '--flood' ? flood(mode as Mode, address, accessToken) : main()).catch(
+    (error: unknown) => {
+      console.error(error);
+      process.exit(1);
+    },
+  );

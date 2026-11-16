@@ -37,6 +37,8 @@ export function AdminStatus({ user, notice }: { user: string; notice?: string })
   const [report, setReport] = useState<Report>();
   const [error, setError] = useState('');
   const [reportError, setReportError] = useState<ReconciliationNotice>();
+  const [reportRequest, setReportRequest] = useState(0);
+  const [reportRunning, setReportRunning] = useState(false);
 
   useEffect(() => {
     document.title = 'Стан системи · Mini Exchange';
@@ -68,22 +70,26 @@ export function AdminStatus({ user, notice }: { user: string; notice?: string })
     }
 
     void poll();
-    void apiJson<Report>('/api/settlement/admin/reconciliation', {
-      method: 'POST',
-      signal,
-      headers,
-    })
-      .then((value) => {
-        if (!signal.aborted) setReport(value);
+    if (reportRequest > 0)
+      void apiJson<Report>('/api/settlement/admin/reconciliation', {
+        method: 'POST',
+        signal,
+        headers,
       })
-      .catch((error: unknown) => {
-        if (!signal.aborted) setReportError(reconciliationNotice(error));
-      });
+        .then((value) => {
+          if (!signal.aborted) setReport(value);
+        })
+        .catch((error: unknown) => {
+          if (!signal.aborted) setReportError(reconciliationNotice(error));
+        })
+        .finally(() => {
+          if (!signal.aborted) setReportRunning(false);
+        });
     return () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [user]);
+  }, [user, reportRequest]);
 
   return (
     <>
@@ -193,6 +199,17 @@ export function AdminStatus({ user, notice }: { user: string; notice?: string })
           <section className="panel">
             <div className="panel-title">
               <h2>Остання звірка</h2>
+              <button
+                type="button"
+                disabled={reportRunning}
+                onClick={() => {
+                  setReportRunning(true);
+                  setReportError(undefined);
+                  setReportRequest((value) => value + 1);
+                }}
+              >
+                Запустити звірку
+              </button>
               {report && (
                 <span className={`connection ${report.ok ? 'live' : 'error'}`}>
                   <i />
@@ -234,7 +251,13 @@ export function AdminStatus({ user, notice }: { user: string; notice?: string })
                 </div>
               </dl>
             ) : (
-              !reportError && <p className="empty">Виконуємо звірку…</p>
+              !reportError && (
+                <p className="empty">
+                  {reportRunning
+                    ? 'Виконуємо звірку…'
+                    : 'Запустіть звірку після завершення обробки заявок.'}
+                </p>
+              )
             )}
           </section>
         </div>

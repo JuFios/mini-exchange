@@ -389,14 +389,15 @@ it('keeps cancelled orders that are older than the latest hundred orders', async
   );
 });
 
-it('finishes a snapshot that needs more order reads than the ingress allows at once', async () => {
+it('finishes a large snapshot across deadlines without repeating completed order reads', async () => {
   const { startPrivateSocket } = require('../lib/use-private-socket');
-  // Терміналу відомі 150 заявок, яких уже немає серед активних: кожну він дочитує за ID.
-  const known = Array.from({ length: 150 }, (_, i) => `known-${i}`);
+  // Навіть початковий burst і 20 читань/с не вкладають450 ID в одну спробу.
+  const known = Array.from({ length: 450 }, (_, i) => `known-${i}`);
   // Двійник ліміту nginx: 100 читань заявок, далі 429, поки таймер не поверне квоту.
   let quota = 100;
   let inFlight = 0;
   let peak = 0;
+  const completed = new Set<string>();
   mock.method(globalThis, 'fetch', async (path: string) => {
     if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
     if (!path.startsWith('/api/engine/orders')) return Response.json([]);
@@ -408,6 +409,8 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
     inFlight--;
     const id = path.match(/\/orders\/([^?]+)$/)?.[1];
     if (!id) return Response.json([]);
+    assert.equal(completed.has(id), false, `Repeated a finished read of ${id}`);
+    completed.add(id);
     return Response.json({
       id,
       status: 'cancelled',
@@ -415,7 +418,8 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       version: 2,
     });
   });
-  const timers: (() => void)[] = [];
+  let now = 0;
+  const timers = new Map<() => void, number>();
   const errors: unknown[] = [];
   let snapshot: { orders: { id: string }[] } | undefined;
   const socket = new EventEmitter();
@@ -434,13 +438,12 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       onWallet() {},
     },
     {
-      setTimeout(callback: () => void) {
-        timers.push(callback);
+      setTimeout(callback: () => void, ms: number) {
+        timers.set(callback, now + ms);
         return callback;
       },
       clearTimeout(handle: unknown) {
-        const index = timers.indexOf(handle as () => void);
-        if (index >= 0) timers.splice(index, 1);
+        timers.delete(handle as () => void);
       },
     },
     (_url: string, options: { auth: (callback: (value: { token: string }) => void) => void }) =>
@@ -452,15 +455,21 @@ it('finishes a snapshot that needs more order reads than the ingress allows at o
       }),
   );
   // Кожен крок — секунда: квота відновлюється, і спрацьовують відкладені повтори.
-  for (let second = 0; second < 20 && !snapshot; second++) {
+  for (let second = 0; second < 50 && !snapshot; second++) {
     for (let tick = 0; tick < 50; tick++) await new Promise((resolve) => setImmediate(resolve));
     quota = Math.min(100, quota + 20);
-    for (const timer of timers.splice(0)) timer();
+    now += 1000;
+    for (const [callback, at] of timers) {
+      if (at > now) continue;
+      timers.delete(callback);
+      callback();
+    }
   }
   stop();
   assert.ok(snapshot, `No snapshot after ${errors.length} failed loads`);
   assert.deepEqual(snapshot.orders.map(({ id }) => id).sort(), [...known].sort());
-  // Дочитування за ID не відкриває 150 запитів одразу.
+  assert.equal(completed.size, 450);
+  assert(errors.some((error) => String(error).includes('Snapshot deadline exceeded')));
   assert.ok(peak <= 8, `Peak of ${peak} parallel order reads`);
 });
 
@@ -544,7 +553,9 @@ it('stops the remaining order reads of a snapshot attempt that already failed', 
       onWallet() {},
     },
     {
-      setTimeout(callback: () => void) {
+      setTimeout(callback: () => void, ms: number) {
+        // Ці тести рухають лише короткі паузи квоти, а не весь бюджет snapshot.
+        if (ms >= 15000) return callback;
         timers.push(callback);
       },
       clearTimeout() {},
@@ -762,7 +773,7 @@ function orderReads(statuses: number[]) {
   /** Запускає відкладений повтор і повертає його затримку. */
   const fire = async () => {
     await idle();
-    const [[handle, timer]] = [...timers];
+    const [[handle, timer]] = [...timers].sort((a, b) => a[1].ms - b[1].ms);
     timers.delete(handle);
     timer.callback();
     return timer.ms;
@@ -826,4 +837,107 @@ it('settles once without an order when the session closes during the read', asyn
   await reads.idle();
   assert.deepEqual(reads.events, ['settled']);
   assert.equal(reads.timers.size, 0);
+});
+
+it('resumes active pagination at the last completed cursor after an interrupted page', async () => {
+  const { readActiveOrders, orderCursor } = await import('../lib/active-orders');
+  const first = { id: 'first', createdAt: '2026-11-01T00:00:00.000Z' };
+  const second = { id: 'second', createdAt: '2026-10-01T00:00:00.000Z' };
+  const scan = { rows: [] as (typeof first)[], cursor: '', complete: false };
+  const queries: string[] = [];
+  const read = async (query: string) => {
+    queries.push(query);
+    if (queries.length === 1) return [first];
+    if (queries.length === 2) throw new TypeError('Snapshot deadline exceeded');
+    if (queries.length === 3) return [second];
+    return [];
+  };
+  await assert.rejects(readActiveOrders(read, 1, scan), /deadline/);
+  assert.deepEqual(await readActiveOrders(read, 1, scan), [first, second]);
+  assert.equal(queries[2], queries[1]);
+  assert(queries[2].endsWith(orderCursor(first)));
+  assert(queries[3].endsWith(orderCursor(second)));
+});
+
+it('publishes the snapshot and queues more than eight orders that arrive during a lookup', async () => {
+  const react = require('react');
+  const socketIo = require('socket.io-client');
+  const { usePrivateSocket } = require('../lib/use-private-socket');
+  const socket = new EventEmitter();
+  const completed = new EventEmitter();
+  const view: string[][] = [];
+  const disconnect = mock.fn();
+  let cleanup: (() => void) | undefined;
+  mock.method(react, 'useState', (initial: unknown) => [
+    initial,
+    (value: { orders?: Order[] }) => {
+      if (!value?.orders) return;
+      view.push(value.orders.map(({ id }) => id));
+      if (value.orders.length === 13) completed.emit('all');
+    },
+  ]);
+  mock.method(react, 'useEffect', (start: () => () => void) => {
+    cleanup = start();
+  });
+  mock.method(react, 'useRef', (current: unknown) => ({ current }));
+  const order = (id: string): Order => ({
+    id,
+    instrument: 'ABC',
+    side: 'buy',
+    price: '100.00',
+    quantity: '1.00000000',
+    status: 'open',
+    version: 1,
+    remainingQuantity: '1.00000000',
+    filledQuantity: '0.00000000',
+    createdAt: '2026-11-10T00:00:00.000Z',
+  });
+  const event = (id: string) => ({ ...order(id), orderId: id });
+  mock.method(socketIo, 'io', (_url: string, options: { auth: (done: () => void) => void }) =>
+    Object.assign(socket, {
+      connect: () =>
+        options.auth(() => {
+          socket.emit('connect');
+          socket.emit('order.updated', event('seed'));
+        }),
+      disconnect,
+    }),
+  );
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let inFlight = 0;
+  let peak = 0;
+  mock.method(globalThis, 'fetch', async (path: string) => {
+    if (path.endsWith('/ws-token')) return Response.json({ token: 'token' });
+    const id = path.match(/\/orders\/([^?]+)$/)?.[1];
+    if (!id) return Response.json([]);
+    if (id === 'seed') {
+      completed.emit('seed');
+      await wait;
+    } else {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight--;
+    }
+    return Response.json(order(id));
+  });
+  const signal = AbortSignal.timeout(2000);
+  const seed = once(completed, 'seed', { signal });
+  const all = once(completed, 'all', { signal });
+  usePrivateSocket('ws://localhost:3001');
+  try {
+    await seed;
+    for (let i = 0; i < 12; i++) socket.emit('order.updated', event('late-' + i));
+    release();
+    await all;
+    assert.deepEqual(view[0], ['seed']);
+    assert.equal(peak, 8);
+    assert.equal(disconnect.mock.callCount(), 0);
+  } finally {
+    release();
+    cleanup?.();
+  }
 });

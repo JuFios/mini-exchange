@@ -321,7 +321,14 @@ describe('with a reader that stops following the stream', () => {
 describe('with a reader that stops following entries that carry no new delta', () => {
   const entry = (type: string, payload: Record<string, unknown>, seq?: string) => {
     const eventId = `00000000-0000-4000-8000-${String(Date.now()).padStart(12, '0')}`;
-    const envelope = JSON.stringify({ eventId, type, version: 1, payload });
+    const envelope = JSON.stringify({
+      eventId,
+      type,
+      version: 1,
+      payload,
+      instrument: payload.instrument,
+      producer: type === 'wallet.updated' ? 'settlement' : 'matching-engine',
+    });
     return ['eventId', eventId, ...(seq ? ['seq', seq] : []), 'envelope', envelope];
   };
 

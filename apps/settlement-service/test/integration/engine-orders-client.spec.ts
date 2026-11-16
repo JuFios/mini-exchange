@@ -14,7 +14,7 @@ const client = (secret = token) =>
     getOrThrow: (key: string) =>
       ({
         ENGINE_INTERNAL_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-        INTERNAL_API_TOKEN: secret,
+        RECONCILIATION_TOKEN: secret,
       })[key],
   } as never);
 

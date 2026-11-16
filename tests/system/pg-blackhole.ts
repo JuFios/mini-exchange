@@ -13,7 +13,7 @@ import {
 
 const REPLICAS = ['matching-engine-1', 'matching-engine-2'];
 // Сторожовий таймер worker плюс запас на acquire і recovery резервної репліки.
-const TAKEOVER_LIMIT_MS = 45000;
+const TAKEOVER_LIMIT_MS = 10000;
 
 const address = (service: string) =>
   docker(
@@ -82,14 +82,15 @@ async function main() {
       TAKEOVER_LIMIT_MS,
     );
     const takeoverMs = Math.round(performance.now() - started);
+    assert(takeoverMs <= TAKEOVER_LIMIT_MS, `takeoverMs=${takeoverMs}`);
     assert.equal(`matching-${current.owner_instance}`, standby);
+    console.log(
+      `blackhole oldOwner=${previous.owner_instance} owner=${current.owner_instance} epoch=${current.owner_epoch} takeoverMs=${takeoverMs}`,
+    );
     // Через балансувальник: відрізана репліка має дати повторюваний 503, а не 500.
     const response = await submit(user, { ...body, side: 'buy' });
     assert([200, 201, 202].includes(response.status), await response.text());
     await until(read, (r) => r.last_applied_seq === r.next_seq);
-    console.log(
-      `blackhole oldOwner=${previous.owner_instance} owner=${current.owner_instance} epoch=${current.owner_epoch} takeoverMs=${takeoverMs}`,
-    );
     route('del', cut);
     cut = undefined;
     for (const service of REPLICAS) await waitReady(service);

@@ -5,7 +5,7 @@ import { OnGatewayConnection, OnGatewayInit, WebSocketGateway } from '@nestjs/we
 import type { Namespace, Socket } from 'socket.io';
 import { AuthService } from '../auth/auth.service';
 import { accessPrincipal, JwtPayload } from '../auth/strategies/jwt.strategy';
-import { USER_EVENTS_STREAM } from '../outbox/streams';
+import { USER_EVENTS_STREAM, WALLET_EVENTS_STREAM } from '../outbox/streams';
 import { privateOrder, privateWallet, UserEvent } from './realtime-events';
 import { RealtimeStreamReader } from './realtime-stream-reader.service';
 import { ReplicaLagMonitor } from './replica-lag.monitor';
@@ -69,9 +69,10 @@ export class PrivateGateway implements OnGatewayInit, OnGatewayConnection, OnMod
     server.use((socket, next) => void this.authenticate(socket, next));
     this.detach.push(
       this.reader.onUser((event) => this.publish(event)),
-      // Приватні події не мають `seq`, тож пропуск помітить лише сервер: клієнт перепідключається й читає REST.
+      // Пропуск у будь-якому приватному stream вимагає нового REST snapshot.
       this.reader.onGap((stream) => {
-        if (stream === USER_EVENTS_STREAM) server.disconnectSockets(false);
+        if (stream === USER_EVENTS_STREAM || stream === WALLET_EVENTS_STREAM)
+          server.disconnectSockets(false);
       }),
       this.monitor.onStale(() => server.disconnectSockets(true)),
     );

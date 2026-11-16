@@ -1,7 +1,1 @@
-# Origin запиту, якщо він є в `CORS_ORIGINS` engine; інакше порожньо. Compose передає nginx той
-# самий список, що й engine, тож відповіді, які формує сам nginx, мають ті самі CORS-заголовки.
-# `|` не буває в Origin: заголовок із комою чи `|` не збігається сам із собою.
-map "$http_origin|,${CORS_ORIGINS}," $engine_cors_origin {
-  "~*^(?<cors_origin>[^,|]+)\|,(?:[^,]*,)*?[ \t]*\k<cors_origin>/?[ \t]*," $cors_origin;
-  default "";
-}
+# Канонічний CORS allowlist створює check-public-origins.sh перед запуском nginx.

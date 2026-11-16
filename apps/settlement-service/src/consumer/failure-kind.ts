@@ -27,6 +27,7 @@ const TRANSIENT_REDIS =
 
 export function classifyFailure(error: unknown): FailureKind {
   if (error instanceof InvalidEventError || error instanceof PayloadConflictError) return 'invalid';
+  if (error instanceof HttpException && error.getStatus() >= 500) return 'transient';
   // Некоректні суми й адреси детерміновані: повтор дасть ту саму відповідь.
   if (error instanceof HttpException && error.getStatus() === 400) return 'invalid';
   const { code, driverError, message } = error as {

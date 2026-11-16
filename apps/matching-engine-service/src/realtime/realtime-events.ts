@@ -1,6 +1,6 @@
+import { marketStream, USER_EVENTS_STREAM, WALLET_EVENTS_STREAM } from '../outbox/streams';
 import type {
   BookDeltaV1,
-  Envelope,
   OrderUpdatedV1,
   TradePublicV1,
   WalletUpdatedV1,
@@ -86,7 +86,10 @@ export function seqOf(fields: readonly string[]): bigint | undefined {
  * Розбирає поле `envelope` запису stream. Невідомий тип чи версія й пошкоджений запис дають
  * `undefined`: читач пропускає такий запис, а не зупиняється на ньому.
  */
-export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefined {
+export function parseEnvelope(
+  fields: readonly string[],
+  stream?: string,
+): RealtimeEvent | undefined {
   const raw = fieldOf(fields, 'envelope');
   if (raw === undefined) return undefined;
   let envelope: unknown;
@@ -97,15 +100,41 @@ export function parseEnvelope(fields: readonly string[]): RealtimeEvent | undefi
   }
   // `null`, число чи масив теж коректний JSON, але розібрати їх на поля не можна.
   if (!isRecord(envelope)) return undefined;
-  const { type, eventId, version, payload } = envelope as Partial<Envelope<unknown>>;
-  if (version !== 1 || !isText(eventId) || !isText(type) || !isRecord(payload)) return undefined;
+  if (!hasHeader(envelope)) return undefined;
+  const { type, eventId, payload } = envelope;
   // `in` пропустив би `toString` та інші ключі прототипу.
   if (
     !Object.prototype.hasOwnProperty.call(hasShape, type) ||
     !hasShape[type as RealtimeEvent['type']](payload)
   )
     return undefined;
+  if (stream !== undefined && !matchesStream(envelope, type, payload, stream)) return undefined;
   return { type, eventId, payload } as unknown as RealtimeEvent;
+}
+
+function hasHeader(value: Record<string, unknown>): value is Record<string, unknown> & {
+  type: string;
+  eventId: string;
+  payload: Record<string, unknown>;
+} {
+  return (
+    value.version === 1 && isText(value.eventId) && isText(value.type) && isRecord(value.payload)
+  );
+}
+
+function matchesStream(
+  envelope: Record<string, unknown>,
+  type: string,
+  payload: Record<string, unknown>,
+  stream: string,
+): boolean {
+  if (type === 'wallet.updated')
+    return stream === WALLET_EVENTS_STREAM && envelope.producer === 'settlement';
+  if (envelope.producer !== 'matching-engine' || envelope.instrument !== payload.instrument)
+    return false;
+  return type === 'order.updated'
+    ? stream === USER_EVENTS_STREAM
+    : stream === marketStream(String(payload.instrument));
 }
 
 // Нижче поля перелічені явно: нова внутрішня властивість події не потрапить до клієнта сама.

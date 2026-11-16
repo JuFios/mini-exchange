@@ -200,3 +200,21 @@ describe('parseEnvelope payload shape', () => {
     expect(parseEnvelope(entry(type, payload))).toBeUndefined();
   });
 });
+
+it('rejects realtime events outside the producer and stream contract', () => {
+  const market = entry('book.delta', delta, { producer: 'matching-engine', instrument: 'ABC' });
+  expect(parseEnvelope(market, 'exchange:market:{ABC}')).toBeDefined();
+  expect(parseEnvelope(market, 'exchange:wallet-events')).toBeUndefined();
+  expect(parseEnvelope(market, 'exchange:market:{XYZ}')).toBeUndefined();
+  expect(
+    parseEnvelope(
+      entry('book.delta', delta, { producer: 'settlement', instrument: 'ABC' }),
+      'exchange:market:{ABC}',
+    ),
+  ).toBeUndefined();
+  const wallet = entry('wallet.updated', fixtures['wallet.updated'].payload, {
+    producer: 'settlement',
+  });
+  expect(parseEnvelope(wallet, 'exchange:wallet-events')).toBeDefined();
+  expect(parseEnvelope(wallet, 'exchange:user-events')).toBeUndefined();
+});

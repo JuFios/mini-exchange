@@ -1,4 +1,5 @@
 import { DataSource } from 'typeorm';
+
 import { CommittedBook } from '../../src/engine/committed-book';
 
 function fakeSource(delayMs: number) {
@@ -18,14 +19,21 @@ function fakeSource(delayMs: number) {
     },
   };
   const source = {
-    transaction: async (_level: string, run: (db: unknown) => Promise<unknown>) => {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      try {
-        return await run(db);
-      } finally {
-        inFlight--;
-      }
+    driver: {
+      master: {
+        connect: async () => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          return {
+            on: () => undefined,
+            removeListener: () => undefined,
+            release: () => {
+              inFlight--;
+            },
+            query: async (sql: string, args?: unknown[]) => ({ rows: await db.query(sql, args) }),
+          };
+        },
+      },
     },
   } as unknown as DataSource;
   return { source, queries, peak: () => peak };
@@ -56,8 +64,12 @@ it('sorts and limits levels in SQL and returns only the public fields', async ()
 
 it('releases the slot when a read fails', async () => {
   const failing = {
-    transaction: async () => {
-      throw new Error('database unavailable');
+    driver: {
+      master: {
+        connect: async () => {
+          throw new Error('database unavailable');
+        },
+      },
     },
   } as unknown as DataSource;
   const book = new CommittedBook(failing);
@@ -66,13 +78,20 @@ it('releases the slot when a read fails', async () => {
 
 it('refuses a public read of an instrument whose legacy state is unverified', async () => {
   const source = {
-    transaction: async (_level: string, run: (db: unknown) => Promise<unknown>) =>
-      run({
-        query: async (sql: string) =>
-          sql.includes('FROM instrument_state')
-            ? [{ last_applied_seq: '7', legacy_verified: false }]
-            : [],
-      }),
+    driver: {
+      master: {
+        connect: async () => ({
+          on: () => undefined,
+          removeListener: () => undefined,
+          release: () => undefined,
+          query: async (sql: string) => ({
+            rows: sql.includes('FROM instrument_state')
+              ? [{ last_applied_seq: '7', legacy_verified: false }]
+              : [],
+          }),
+        }),
+      },
+    },
   } as unknown as DataSource;
   await expect(new CommittedBook(source).read('ABC')).rejects.toMatchObject({
     status: 503,
@@ -84,10 +103,10 @@ it('stops waiting for a slot after the queue deadline and leaves the queue', asy
   jest.useFakeTimers();
   try {
     const stuck = {
-      transaction: () => new Promise<never>(() => undefined),
+      driver: { master: { connect: () => new Promise<never>(() => undefined) } },
     } as unknown as DataSource;
     const book = new CommittedBook(stuck);
-    for (let i = 0; i < 3; i++) void book.read('ABC');
+    for (let i = 0; i < 3; i++) void book.read('ABC').catch(() => undefined);
     const queued = book.read('ABC');
     const outcome = expect(queued).rejects.toMatchObject({
       status: 503,

@@ -73,12 +73,12 @@ it('signals a skipped trade to its market room even when its book delta arrives'
   const other = await connect(api.url(), '/market');
   const otherReceived = record(other, EVENTS);
   const reader = api.app().get(RealtimeStreamReader) as unknown as {
-    dispatch(fields: string[]): boolean;
+    dispatch(stream: string, fields: string[]): boolean;
   };
   const dispatch = reader.dispatch.bind(reader);
-  const skipTrade = jest.spyOn(reader, 'dispatch').mockImplementation((fields) => {
+  const skipTrade = jest.spyOn(reader, 'dispatch').mockImplementation((stream, fields) => {
     const typeIndex = fields.findIndex((field, index) => index % 2 === 0 && field === 'type');
-    return fields[typeIndex + 1] === 'trade.public' ? false : dispatch(fields);
+    return fields[typeIndex + 1] === 'trade.public' ? false : dispatch(stream, fields);
   });
   try {
     expect(await emitWithAck(other, 'book.subscribe', { instrument: 'XYZ' })).toMatchObject({

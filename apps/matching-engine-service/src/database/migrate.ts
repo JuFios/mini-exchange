@@ -21,6 +21,15 @@ export async function migrate(
     ]);
     // Блокуємо читання історії міграцій і DDL однією транзакцією на тому самому з’єднанні.
     await lockForTransaction(runner, advisoryLocks.migrations, lockTimeoutMs);
+    if (action === 'run') {
+      const [legacy] = await runner.query(
+        "SELECT to_regclass('public.users') IS NOT NULL OR to_regclass('public.orders') IS NOT NULL AS tables, to_regclass('public.migrations') IS NOT NULL AS history",
+      );
+      if (legacy.tables && !legacy.history)
+        throw new Error(
+          'Unsupported starter schema: preserve and export the existing database, then migrate a fresh database',
+        );
+    }
     const executor = new MigrationExecutor(source, runner);
     executor.transaction = 'all';
     if (action === 'run') await executor.executePendingMigrations();

@@ -19,15 +19,21 @@ it('does not accept a rebinding host as the trusted origin', () => {
 });
 
 it('uses the configured public origin behind the TLS proxy', () => {
-  process.env.PUBLIC_ORIGIN = 'HTTPS://EXCHANGE.Example.Test:443';
-  assert.equal(
-    sameOrigin(
-      new Request('http://frontend:3000/api/auth/login', {
-        headers: { host: 'exchange.example.test', origin: 'https://exchange.example.test' },
-      }),
-    ),
-    true,
-  );
+  for (const configured of [
+    'HTTPS://EXCHANGE.Example.Test:443',
+    'HTTPS://EXCHANGE.Example.Test:443/',
+  ]) {
+    process.env.PUBLIC_ORIGIN = configured;
+    assert.equal(
+      sameOrigin(
+        new Request('http://frontend:3000/api/auth/login', {
+          headers: { host: 'exchange.example.test', origin: 'https://exchange.example.test' },
+        }),
+      ),
+      true,
+      configured,
+    );
+  }
 });
 
 it('canonicalizes the local allowlist and keeps non-default ports distinct', () => {

@@ -131,7 +131,9 @@ const schema = {
   SETTLEMENT_GRACE_MS: integer(0, 86_400_000),
   ENGINE_INTERNAL_URL: origin,
   JWT_ACCESS_SECRET: secret,
-  INTERNAL_API_TOKEN: internalToken,
+  RESERVATION_API_TOKEN: internalToken,
+  RECONCILIATION_TOKEN: internalToken,
+  OUTBOX_READ_TOKEN: internalToken,
   DEMO_INITIAL_BALANCES: demoBalances,
 };
 
@@ -148,12 +150,26 @@ export function validateEnv(input: Record<string, unknown>): SettlementEnv {
   const parsed = Object.fromEntries(
     Object.entries(schema).map(([key, read]) => [key, read(input[key], key)]),
   ) as SettlementEnv;
+  const scopedTokens = [
+    'RESERVATION_API_TOKEN',
+    'RECONCILIATION_TOKEN',
+    'OUTBOX_READ_TOKEN',
+  ] as const;
+  const tokens = scopedTokens
+    .map((key) => input[key])
+    .filter((value) => value !== undefined && value !== '');
+  if (new Set(tokens).size !== tokens.length)
+    throw new Error(
+      'RESERVATION_API_TOKEN, RECONCILIATION_TOKEN and OUTBOX_READ_TOKEN must differ',
+    );
   if (parsed.DEPLOYMENT_MODE === 'remote') {
-    if (parsed.REDIS_USERNAME === 'default')
+    if (parsed.REDIS_USERNAME !== 'settlement')
       throw new Error('REDIS_USERNAME must identify a restricted role in remote mode');
     for (const key of [
       'JWT_ACCESS_SECRET',
-      'INTERNAL_API_TOKEN',
+      'RESERVATION_API_TOKEN',
+      'RECONCILIATION_TOKEN',
+      'OUTBOX_READ_TOKEN',
       'REDIS_PASSWORD',
       'LEDGER_DATABASE_PASSWORD',
     ] as const) {

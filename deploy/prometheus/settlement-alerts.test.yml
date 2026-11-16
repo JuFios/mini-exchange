@@ -2,6 +2,16 @@
 rule_files: [settlement-alerts.yml]
 evaluation_interval: 1m
 tests:
+  # Pending лишається старим після reclaim, навіть коли недоставлених записів немає.
+  - interval: 1m
+    input_series:
+      - series: 'engine_settlement_group_lag{stream="s"}'
+        values: '0x12'
+      - series: 'settlement_oldest_pending_age_seconds'
+        values: '120+60x12'
+    alert_rule_test:
+      - { eval_time: 4m, alertname: SettlementPendingStuck, exp_alerts: [] }
+      - { eval_time: 6m, alertname: SettlementPendingStuck, exp_alerts: [{ exp_labels: {} }] }
   # Короткий backlog нової серії (3 хв) не будить нікого: обіцяно 10 хвилин.
   - interval: 1m
     input_series:
@@ -65,3 +75,22 @@ tests:
       - eval_time: 6m
         alertname: SettlementQueueUnknown
         exp_alerts: [{ exp_labels: {} }]
+
+  # Постійна торгівля: сторінка recovery непорожня, але курсор щохвилини доходить до кінця.
+  - interval: 1m
+    input_series:
+      - series: 'settlement_durable_backlog'
+        values: '7x30'
+      - series: 'settlement_recovery_caught_up_timestamp_seconds'
+        values: '0+60x30'
+    alert_rule_test:
+      - { eval_time: 30m, alertname: SettlementDurableBacklog, exp_alerts: [] }
+
+  # Курсор востаннє наздогнав журнал на першій хвилині: тривога через 10 + 5 хвилин.
+  - interval: 1m
+    input_series:
+      - series: 'settlement_recovery_caught_up_timestamp_seconds'
+        values: '60x30'
+    alert_rule_test:
+      - { eval_time: 14m, alertname: SettlementDurableBacklog, exp_alerts: [] }
+      - { eval_time: 17m, alertname: SettlementDurableBacklog, exp_alerts: [{ exp_labels: {} }] }

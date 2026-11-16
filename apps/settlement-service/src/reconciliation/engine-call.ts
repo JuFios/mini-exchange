@@ -14,7 +14,10 @@ export async function engineCall<T>(
       ...init,
       redirect: 'error',
       headers: { ...init.headers, 'x-internal-token': token },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        ...(init.signal ? [init.signal] : []),
+      ]),
     });
     if (response.status !== 200) throw new Error(`HTTP ${response.status}`);
     return (await response.json()) as T;

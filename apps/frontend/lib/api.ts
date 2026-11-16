@@ -7,7 +7,7 @@ export function backendUrl(service: Service) {
 }
 
 function parsePublicOrigin(value: string, key: 'PUBLIC_ORIGIN' | 'PUBLIC_ORIGINS'): URL {
-  const origin = value.replace(/^[ \t]+|[ \t]+$/g, '');
+  const origin = value.replace(/^[ \t]+|[ \t]+$/g, '').replace(/\/$/, '');
   const authority = /^https?:\/\/([a-z0-9][a-z0-9.-]*|\[[0-9a-f:]+\])(?::([0-9]+))?$/i.exec(origin);
   if (authority) {
     const url = URL.canParse(origin) ? new URL(origin) : undefined;
@@ -21,7 +21,7 @@ function parsePublicOrigin(value: string, key: 'PUBLIC_ORIGIN' | 'PUBLIC_ORIGINS
   throw new Error(key + ' must contain HTTP origins without paths or credentials');
 }
 
-function allowedOrigins(): URL[] {
+export function allowedOrigins(): URL[] {
   const configured = process.env.PUBLIC_ORIGIN;
   if (configured) {
     const url = parsePublicOrigin(configured, 'PUBLIC_ORIGIN');

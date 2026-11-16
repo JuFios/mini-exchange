@@ -33,7 +33,7 @@ export class AccessSession {
       // Роль звіряє engine з поточним ADMIN_EMAILS: claim у токені живе до `exp`.
       admin: new URL('/internal/auth/admin', engine),
     };
-    this.internalToken = config.getOrThrow('INTERNAL_API_TOKEN');
+    this.internalToken = config.getOrThrow('RECONCILIATION_TOKEN');
   }
 
   async authenticate(

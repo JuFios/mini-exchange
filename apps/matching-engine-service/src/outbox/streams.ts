@@ -4,6 +4,7 @@ export const marketStream = (instrument: string): string => `exchange:market:{${
 export const settlementStream = (instrument: string): string =>
   `exchange:settlement:{${instrument}}`;
 export const USER_EVENTS_STREAM = 'exchange:user-events';
+export const WALLET_EVENTS_STREAM = 'exchange:wallet-events';
 
 export function streamForEvent(type: EngineEvent['type'], instrument: string): string {
   switch (type) {

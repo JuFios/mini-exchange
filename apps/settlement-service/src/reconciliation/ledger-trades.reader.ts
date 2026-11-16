@@ -13,7 +13,7 @@ interface TradeRow {
 
 /** Угоди ledger за період, відсортовані як у engine: (executed_at, trade_id). */
 export async function* ledgerTrades(
-  db: EntityManager,
+  db: Pick<EntityManager, 'query'>,
   period: Period,
 ): AsyncGenerator<LedgerTrade> {
   let cursor: { executedAt: Date; tradeId: string } | undefined;
@@ -53,7 +53,10 @@ export async function* ledgerTrades(
   }
 }
 
-async function postingsOf(db: EntityManager, ids: string[]): Promise<Map<string, PostingRow[]>> {
+async function postingsOf(
+  db: Pick<EntityManager, 'query'>,
+  ids: string[],
+): Promise<Map<string, PostingRow[]>> {
   const result = new Map<string, PostingRow[]>();
   if (!ids.length) return result;
   const rows: (PostingRow & { trade_id: string; user_id: string | null })[] = await db.query(

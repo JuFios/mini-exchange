@@ -24,6 +24,26 @@ afterEach(async () => {
   }
 });
 
+it('backfills immutable settlement positions without rewriting populated outbox history', async () => {
+  await migrate(source, 'run');
+  await migrate(source, 'revert');
+  for (const type of ['trade.executed', 'order.closed', 'book.delta']) {
+    await source.query(
+      `INSERT INTO outbox(event_id,stream,type,version,instrument,seq,payload,published_at)
+       VALUES($1,$2,$3,1,'ABC',1,$4,now())`,
+      [randomUUID(), 'exchange:test', type, { reference: randomUUID() }],
+    );
+  }
+  const [before] = await source.query(
+    'SELECT jsonb_agg(to_jsonb(o) ORDER BY id) AS rows FROM outbox o',
+  );
+  await migrate(source, 'run');
+  const [after] = await source.query(`SELECT
+    jsonb_agg(to_jsonb(o)-'settlement_position' ORDER BY id) AS rows,
+    bool_and(id=settlement_position) AS backfilled FROM outbox o`);
+  expect(after).toEqual({ ...before, backfilled: true });
+});
+
 it('applies, reverts, and reapplies the schema with database constraints', async () => {
   expect(await source.query("SELECT to_regclass('orders') AS name")).toEqual([{ name: null }]);
   await migrate(source, 'run');
@@ -56,6 +76,12 @@ it('applies, reverts, and reapplies the schema with database constraints', async
       EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='orders'::regclass
         AND tgname='orders_reservation_mode') AS trigger`);
   for (let cycle = 0; cycle < 2; cycle++) {
+    await migrate(source, 'revert');
+    expect(
+      await source.query(
+        "SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name='outbox' AND column_name='settlement_position'",
+      ),
+    ).toEqual([{ n: 0 }]);
     const liveIndex = () =>
       source.query("SELECT to_regclass('orders_live_id_idx') IS NOT NULL AS present");
     expect(await liveIndex()).toEqual([{ present: true }]);
@@ -152,7 +178,7 @@ it('serializes concurrent migrations on an empty schema', async () => {
   try {
     await Promise.all([migrate(source, 'run'), migrate(second, 'run')]);
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 9 },
+      { count: source.migrations.length },
     ]);
     expect(await source.query('SELECT count(*)::int AS count FROM instruments')).toEqual([
       { count: 2 },
@@ -187,7 +213,7 @@ it('rolls back schema and history when the migration connection is terminated', 
   ).toEqual([{ orders: null, migrations: null, probe: null }]);
   await migrate(source, 'run');
   expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-    { count: 9 },
+    { count: source.migrations.length },
   ]);
 });
 
@@ -209,7 +235,7 @@ it('fails with a clear error instead of waiting forever for a migration lock hel
     await runner.commitTransaction();
     await migrate(source, 'run', { lockTimeoutMs: 200 });
     expect(await source.query('SELECT count(*)::int AS count FROM migrations')).toEqual([
-      { count: 9 },
+      { count: source.migrations.length },
     ]);
   } finally {
     if (runner.isTransactionActive) await runner.rollbackTransaction();

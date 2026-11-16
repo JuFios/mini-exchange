@@ -6,6 +6,12 @@ export function orderCursor({ createdAt, id }: { createdAt: string; id: string }
     .replace(/=+$/, '');
 }
 
+export interface ActiveOrderScan<T> {
+  rows: T[];
+  cursor: string;
+  complete: boolean;
+}
+
 /**
  * Усі активні заявки сторінками за курсором. Без файлів React і шляхів frontend: ту саму
  * процедуру виконує system-тест проти справжнього API.
@@ -13,16 +19,21 @@ export function orderCursor({ createdAt, id }: { createdAt: string; id: string }
 export async function readActiveOrders<T extends { createdAt: string; id: string }>(
   read: (query: string) => Promise<T[]>,
   limit = 100,
+  scan: ActiveOrderScan<T> = { rows: [], cursor: '', complete: false },
 ): Promise<T[]> {
-  const orders: T[] = [];
-  let cursor = '';
-  for (;;) {
-    const page = await read(`status=active&limit=${limit}` + (cursor ? '&cursor=' + cursor : ''));
+  while (!scan.complete) {
+    const page = await read(
+      `status=active&limit=${limit}` + (scan.cursor ? '&cursor=' + scan.cursor : ''),
+    );
     const last = page.at(-1);
-    if (!last) return orders;
-    orders.push(...page);
+    if (!last) {
+      scan.complete = true;
+      break;
+    }
     const next = orderCursor(last);
-    if (next === cursor) throw new Error('Order cursor did not advance');
-    cursor = next;
+    if (next === scan.cursor) throw new Error('Order cursor did not advance');
+    scan.rows.push(...page);
+    scan.cursor = next;
   }
+  return scan.rows;
 }

@@ -1,4 +1,9 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { QueryFailedError, Repository } from 'typeorm';
@@ -13,6 +18,7 @@ import { LoginDto } from './dto/login.dto';
 import { passwordFitsBcrypt, passwordIsWellFormed } from './password';
 import { accessPrincipal } from './access-principal';
 import type { JwtPayload } from './strategies/jwt.strategy';
+import { boundedRead } from '../database/bounded-read';
 import {
   hashRefreshToken,
   matchesRefreshHash,
@@ -159,8 +165,21 @@ export class AuthService {
     await this.revokeSession(claims);
   }
 
-  isSessionActive(userId: string, sid: string): Promise<boolean> {
-    return this.users.existsBy({ id: userId, refreshSessionId: sid });
+  async isSessionActive(userId: string, sid: string, adminEmail?: string): Promise<boolean> {
+    const signal = AbortSignal.timeout(2000);
+    try {
+      return await boundedRead(this.users.manager.connection, signal, async (db) => {
+        const [{ active }] = await db.query<{ active: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM users WHERE id=$1 AND refresh_session_id=$2
+           AND ($3::text IS NULL OR (email=$3 AND admin_seeded))) AS active`,
+          [userId, sid, adminEmail ?? null],
+        );
+        return active;
+      });
+    } catch (error) {
+      if (signal.aborted) throw new ServiceUnavailableException('База даних тимчасово недоступна');
+      throw error;
+    }
   }
 
   /**

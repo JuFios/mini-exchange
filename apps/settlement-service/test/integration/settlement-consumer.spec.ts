@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { JwtService } from '@nestjs/jwt';
 import Redis from 'ioredis';
 import request from 'supertest';
+import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
 import { SettlementConsumer } from '../../src/consumer/settlement-consumer.service';
 import { SettlementStats } from '../../src/consumer/settlement-stats';
 import { DEAD_LETTER_STREAM, SETTLEMENT_STREAMS } from '../../src/consumer/streams';
@@ -12,6 +13,7 @@ import { EngineOrdersClient } from '../../src/reconciliation/engine-orders.clien
 import { EngineTradesClient } from '../../src/reconciliation/engine-trades.client';
 import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
 import type { EngineTrade } from '../../src/reconciliation/trade-comparison';
+import { ReservationsService } from '../../src/reservations/reservations.service';
 import { WalletPublisher } from '../../src/wallets/wallet-publisher';
 import { ledgerApp, tradeFixture } from '../ledger-app';
 import {
@@ -149,6 +151,63 @@ it('settles a published trade, pushes all four wallets and acknowledges the reco
     () => pendingCount(redis),
     (pending) => pending === 0,
   );
+});
+
+it('keeps the failed durable prefix while settling another instrument and draining live records', async () => {
+  const trade = tradeFixture();
+  await reserveTrade(ledger.app(), trade);
+  const orderId = randomUUID();
+  const userId = randomUUID();
+  await ledger.app().get(ReservationsService).reserve({
+    reservationId: orderId,
+    userId,
+    instrument: 'XYZ',
+    asset: 'XYZ',
+    limitPrice: '1.00',
+    amount: '100',
+  });
+  const invalid = streamFields('unknown.event', {});
+  const close = streamFields('order.closed', {
+    orderId,
+    userId,
+    releasedAsset: 'XYZ',
+    releasedAmount: '100',
+  });
+  const page = jest
+    .spyOn(ledger.app().get(EngineOutboxClient), 'page')
+    .mockImplementation(async (instrument, after) =>
+      after !== '0'
+        ? []
+        : [
+            {
+              position: '1',
+              envelope: (instrument === 'ABC' ? invalid : close).at(-1)!,
+            },
+          ],
+    );
+  try {
+    await redis.xadd(abcStream, '*', ...invalid);
+    await redis.xadd(abcStream, '*', ...tradeFields(trade));
+    consumer = startConsumer(ledger.app());
+    await until(
+      () => consumer!.queue(),
+      ({ streams, deadLetters }) =>
+        deadLetters === 1 && streams.every(({ pending, lag }) => pending === 0 && lag === 0),
+    );
+    expect(await entries(trade)).toHaveLength(1);
+    expect(await source().query('SELECT instrument,position FROM settlement_progress')).toEqual([
+      { instrument: 'XYZ', position: '1' },
+    ]);
+    expect(
+      await source().query('SELECT status,remaining FROM reservations WHERE reservation_id=$1', [
+        orderId,
+      ]),
+    ).toEqual([{ status: 'closed', remaining: '0' }]);
+  } finally {
+    await consumer?.beforeApplicationShutdown();
+    consumer = undefined;
+    page.mockRestore();
+  }
 });
 
 it('applies a redelivered trade once but still pushes the current wallets', async () => {

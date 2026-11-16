@@ -9,7 +9,7 @@ import { DEAD_LETTER_STREAM, settlementStream } from '../src/consumer/streams';
 import { ReservationsService } from '../src/reservations/reservations.service';
 import { tradeFixture } from './ledger-app';
 
-export const USER_EVENTS = 'exchange:user-events';
+export const USER_EVENTS = 'exchange:wallet-events';
 export const abcStream = settlementStream('ABC');
 export type Trade = ReturnType<typeof tradeFixture>;
 

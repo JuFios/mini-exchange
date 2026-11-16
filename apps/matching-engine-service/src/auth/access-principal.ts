@@ -22,12 +22,18 @@ export async function accessPrincipal(
     throw new UnauthorizedException('Некоректний токен доступу');
   }
   if (beforeSession) await beforeSession(payload);
-  if (!(await auth.isSessionActive(payload.sub, payload.sid))) {
+  const adminRequested = payload.roles?.includes('admin') && auth.isAdminEmail(payload.email);
+  if (
+    !(await auth.isSessionActive(
+      payload.sub,
+      payload.sid,
+      adminRequested ? payload.email : undefined,
+    ))
+  ) {
     throw new UnauthorizedException('Сесію оновлення відкликано');
   }
   // Роль у claims лише показує, що токен видано адміну. Без звірки з ADMIN_EMAILS прибрана
   // адреса лишалася б адміном до `exp`.
-  const roles: Role[] | undefined =
-    payload.roles?.includes('admin') && auth.isAdminEmail(payload.email) ? ['admin'] : undefined;
+  const roles: Role[] | undefined = adminRequested ? ['admin'] : undefined;
   return { userId: payload.sub, email: payload.email, roles };
 }

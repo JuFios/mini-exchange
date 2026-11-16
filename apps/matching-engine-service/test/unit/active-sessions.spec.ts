@@ -15,6 +15,20 @@ function service(connect: () => Promise<unknown>) {
   return new AuthService(users, {} as JwtService, {} as ConfigService);
 }
 
+it('bounds a single access-session check and discards the stalled connection', async () => {
+  const query = jest
+    .fn()
+    .mockResolvedValueOnce({ rows: [] })
+    .mockImplementationOnce(() => new Promise(() => undefined));
+  const client = Object.assign(new EventEmitter(), { query, release: jest.fn() });
+  await expect(
+    service(async () => client).isSessionActive(USER, SID, 'admin@example.test'),
+  ).rejects.toMatchObject({ status: 503 });
+  expect(query.mock.calls[1][1]).toEqual([USER, SID, 'admin@example.test']);
+  expect(client.release).toHaveBeenCalledTimes(1);
+  expect(client.release).toHaveBeenCalledWith(true);
+});
+
 it('destroys the pool client of a query abandoned at the deadline', async () => {
   const client = Object.assign(new EventEmitter(), {
     query: () => new Promise(() => undefined),

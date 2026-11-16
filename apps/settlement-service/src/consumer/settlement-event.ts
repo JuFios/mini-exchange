@@ -6,6 +6,8 @@ import { SettleTradeDto } from '../trades/dto/settle-trade.dto';
 
 /** Подію неможливо обробити за жодної кількості повторів. */
 export class InvalidEventError extends Error {}
+/** Engine не підтвердив подію чи компенсацію: на HTTP це відмова, а не збій сервера. */
+export class NotConfirmedError extends InvalidEventError {}
 
 export type SettlementEvent =
   | { type: 'trade.executed'; trade: SettleTradeDto; traceId?: string; traceparent?: string }

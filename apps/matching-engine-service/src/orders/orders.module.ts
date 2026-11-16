@@ -1,3 +1,4 @@
+import { InternalOutboxController } from '../outbox/internal-outbox.controller';
 import { RateLimitModule } from '../security/rate-limit.module';
 import { CommittedBook } from '../engine/committed-book';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -50,6 +51,7 @@ import { TerminusModule } from '@nestjs/terminus';
     ReadinessController,
     InternalTradesController,
     InternalOrdersController,
+    InternalOutboxController,
     OutboxRedriveController,
   ],
   providers: [
