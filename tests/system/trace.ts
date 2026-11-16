@@ -165,8 +165,11 @@ async function main() {
           entry.req.headers?.['x-internal-token'] === redacted,
       ),
     );
-    const internal = docker('exec', settlement, 'sh', '-c', 'printf %s "$RESERVATION_API_TOKEN"');
-    for (const secret of [password, buyer, seller, internal]) {
+    // Settlement отримує всі три внутрішні ключі; outbox-ключ іде в кожному запиті доставки.
+    const internal = ['RESERVATION_API_TOKEN', 'OUTBOX_READ_TOKEN', 'RECONCILIATION_TOKEN'].map(
+      (name) => docker('exec', settlement, 'printenv', name),
+    );
+    for (const secret of [password, buyer, seller, ...internal]) {
       assert(
         secret && !(engineLogs + settlementLogs).includes(secret),
         'A secret was written to the log',

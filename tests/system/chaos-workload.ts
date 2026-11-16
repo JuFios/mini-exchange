@@ -177,11 +177,18 @@ async function recover(
   }
   if (fault === 'settlement_after_commit_before_ack') {
     const event = crashEvent(victim, fault);
+    // Угоду проводить або ця live доставка, або durable recovery з outbox, якщо встиг раніше.
+    // Тоді live доставка отримує duplicate і все одно доходить до точки збою після COMMIT.
     const { rows } = await ledger.query(
-      'SELECT entry_id FROM settled_trades WHERE trade_id=$1 AND entry_id IS NOT NULL',
+      'SELECT entry_id, stream_id FROM settled_trades WHERE trade_id=$1 AND entry_id IS NOT NULL',
       [event.tradeId],
     );
     assert.equal(rows.length, 1, 'Settlement must commit before the process dies');
+    const committedBy = rows[0].stream_id === event.id ? 'live' : 'recovery';
+    assert(
+      committedBy === 'live' || /^outbox:[1-9][0-9]*$/.test(rows[0].stream_id as string),
+      `Unexpected settlement source ${rows[0].stream_id as string}`,
+    );
     const entryId = rows[0].entry_id as string;
     const originalUpdates = walletUpdates(redis, entryId);
     assert.equal(originalUpdates.length, 4, 'Expected four wallet updates before XACK');
@@ -203,7 +210,7 @@ async function recover(
     const recovered = walletUpdates(redis, entryId);
     assert.deepEqual(recovered.slice(4).sort(), originalUpdates.sort());
     console.log(
-      `fault=${fault} seq=${event.seq} committed=true pendingBeforeRestart=1 walletUpdatesRepublished=4`,
+      `fault=${fault} seq=${event.seq} committed=true committedBy=${committedBy} pendingBeforeRestart=1 walletUpdatesRepublished=4`,
     );
     return;
   }
