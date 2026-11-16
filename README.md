@@ -13,6 +13,10 @@ priority, а окремий сервіс розрахунків переноси
 | Redis 7 | Lease власника інструмента, Redis Streams, лічильники лімітів |
 | nginx (`engine-lb`) | Балансування реплік engine, ingress frontend, ліміти запитів |
 
+Ingress використовує stable nginx 1.30.6; Compose закріплює digest образу. Під час оновлення
+перевіряйте [офіційні advisories](https://nginx.org/en/security_advisories.html), обидва listener
+engine, frontend, WebSocket upgrade, CORS і квоти запитів.
+
 Ключові рішення:
 
 - кожен інструмент має одного writer: Redis lease з TTL і renewal та fencing епохою в PostgreSQL;
