@@ -119,5 +119,12 @@ export const Outbox = new EntitySchema({
     traceparent: { type: 'varchar', nullable: true },
     createdAt: { name: 'created_at', type: 'timestamptz', default: () => 'now()' },
     publishedAt: { name: 'published_at', type: 'timestamptz', nullable: true },
+    // Значення ставить і зберігає тригер: redrive міняє `id`, а курсор settlement — ні.
+    settlementPosition: {
+      name: 'settlement_position',
+      type: 'bigint',
+      insert: false,
+      update: false,
+    },
   },
 });
