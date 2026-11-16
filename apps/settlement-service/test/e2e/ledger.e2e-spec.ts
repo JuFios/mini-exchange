@@ -1,5 +1,5 @@
 import { EngineOutboxClient } from '../../src/consumer/engine-outbox.client';
-import { InvalidEventError } from '../../src/consumer/settlement-event';
+import { NotConfirmedError } from '../../src/consumer/settlement-event';
 import { ReservationsService } from '../../src/reservations/reservations.service';
 import { randomUUID } from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
@@ -141,14 +141,14 @@ it('refuses an unconfirmed release or settlement with 409 and leaves the ledger 
 
   jest
     .spyOn(outbox, 'assertCompensation')
-    .mockRejectedValueOnce(new InvalidEventError('Intake has not authorized compensation'));
+    .mockRejectedValueOnce(new NotConfirmedError('Intake has not authorized compensation'));
   const refused = await release(orderId).expect(409);
   expect(refused.body.code).toBe('NOT_COMMITTED');
 
   const trade = tradeFixture();
   jest
     .spyOn(outbox, 'trade')
-    .mockRejectedValueOnce(new InvalidEventError('Event is not committed'));
+    .mockRejectedValueOnce(new NotConfirmedError('Event is not committed'));
   expect(
     (
       await api()

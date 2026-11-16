@@ -1,14 +1,15 @@
 import { ArgumentsHost, Catch, ExceptionFilter } from '@nestjs/common';
 import type { Response } from 'express';
-import { InvalidEventError } from './settlement-event';
+import { NotConfirmedError } from './settlement-event';
 
 /**
  * Engine не підтвердив операцію: угоди немає в committed outbox або intake не дозволив
  * компенсацію. Повтор того самого запиту не допоможе, тож це відмова, а не збій сервера.
+ * Committed подію, яку settlement не може розібрати, лишаємо 500: це розбіжність версій.
  */
-@Catch(InvalidEventError)
+@Catch(NotConfirmedError)
 export class InvalidEventFilter implements ExceptionFilter {
-  catch(error: InvalidEventError, host: ArgumentsHost) {
+  catch(error: NotConfirmedError, host: ArgumentsHost) {
     host
       .switchToHttp()
       .getResponse<Response>()

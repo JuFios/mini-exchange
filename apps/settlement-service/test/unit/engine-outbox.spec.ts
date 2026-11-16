@@ -216,3 +216,38 @@ it('gives each recovered event its own budget and reports catching up only at th
   expect(stats.recoveryCaughtUp).toBeGreaterThan(0);
   expect(stats.durableBacklog).toBe(3);
 });
+
+it('leaves the rest of a slow page to the next pass so live delivery is not held up', async () => {
+  const connection = () =>
+    Object.assign(new EventEmitter(), {
+      release() {},
+      query: async () => ({ rows: [] }),
+    });
+  const page = jest.fn(async (instrument: string) =>
+    instrument === 'ABC'
+      ? [1, 2, 3].map((position) => ({ position: String(position), envelope: `event-${position}` }))
+      : [],
+  );
+  const stats = new SettlementStats();
+  const handler = new SettlementEventHandler(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    stats,
+    { page } as never,
+    { driver: { master: { connect: async () => connection() } } } as never,
+  );
+  let clock = 0;
+  jest.spyOn(performance, 'now').mockImplementation(() => clock);
+  const handled: string[] = [];
+  jest.spyOn(handler, 'handle').mockImplementation(async (_, envelope) => {
+    handled.push(envelope!);
+    // Кожна подія вкладається у свій бюджет, але дві разом вичерпують прохід.
+    clock += 3000;
+  });
+  await handler.recover(() => false);
+  expect(handled).toEqual(['event-1', 'event-2']);
+  expect(stats.recoveryLastSuccess).toBeGreaterThan(0);
+  expect(stats.recoveryCaughtUp).toBe(0);
+});

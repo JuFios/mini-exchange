@@ -1,5 +1,5 @@
 import { EngineOutboxClient } from '../consumer/engine-outbox.client';
-import { parseSettlementEvent, InvalidEventError } from '../consumer/settlement-event';
+import { parseSettlementEvent, NotConfirmedError } from '../consumer/settlement-event';
 import { describeTrade } from './trades.service';
 import {
   Body,
@@ -28,7 +28,7 @@ export class TradesController {
   @HttpCode(200)
   async settle(@Body() dto: SettleTradeDto) {
     const canonical = parseSettlementEvent((await this.outbox.trade(dto.tradeId)).envelope);
-    if (canonical.type !== 'trade.executed') throw new InvalidEventError('Not a committed trade');
+    if (canonical.type !== 'trade.executed') throw new NotConfirmedError('Not a committed trade');
     if (describeTrade(canonical.trade).hash !== describeTrade(dto).hash)
       throw new ConflictException('Дані угоди відрізняються');
     const result = await this.trades.settle(canonical.trade);

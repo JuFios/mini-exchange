@@ -1,7 +1,7 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { isUUID } from 'class-validator';
-import { InvalidEventError } from './settlement-event';
+import { InvalidEventError, NotConfirmedError } from './settlement-event';
 
 export interface CommittedEvent {
   position: string;
@@ -44,7 +44,7 @@ export class EngineOutboxClient {
 
   async assertCompensation(id: string): Promise<void> {
     if (!(await this.read<{ allowed: boolean }>(`compensation/${id}`)).allowed)
-      throw new InvalidEventError('Intake has not authorized compensation');
+      throw new NotConfirmedError('Intake has not authorized compensation');
   }
 
   private async read<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -56,7 +56,7 @@ export class EngineOutboxClient {
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         headers: { 'x-internal-token': this.token },
       });
-      if (response.status === 404) throw new InvalidEventError('Event is not committed');
+      if (response.status === 404) throw new NotConfirmedError('Event is not committed');
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return (await response.json()) as T;
     } catch (error) {

@@ -61,8 +61,11 @@ export class SettlementEventHandler {
     );
     const events = await this.outbox.page(instrument, progress?.position ?? '0', pageSignal);
     this.stats.durableBacklog += events.length;
+    // Recovery іде в циклі consumer перед читанням Redis: прохід інструмента не довший за крок,
+    // інакше повільний ledger затримав би live delivery на всю сторінку.
+    const passEnds = performance.now() + RECOVERY_STEP_MS;
     for (const event of events) {
-      if (stopped()) return false;
+      if (stopped() || performance.now() >= passEnds) return false;
       // Окремий бюджет на подію: повільний ledger просуває курсор подія за подією, а не
       // переривається щоразу посеред сторінки.
       const signal = AbortSignal.timeout(RECOVERY_STEP_MS);

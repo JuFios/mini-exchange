@@ -164,7 +164,7 @@ it('reserves separate connection capacity for internal committed outbox reads', 
   const outbox = /\n {2}location ~\* \^\/internal\/outbox\/ \{\n([\s\S]*?)\n {2}\}/.exec(
     internal ?? '',
   );
-  expect(outbox?.[1]).toContain('limit_conn engine_outbox_total 24;');
+  expect(outbox?.[1]).toContain('limit_conn engine_outbox_total 8;');
   expect(outbox?.[1]).toContain('proxy_pass http://engines_outbox;');
   expect(outbox?.[1]).not.toContain('engine_rest_total');
   expect(config).toContain('limit_conn_zone $server_port zone=engine_outbox_total:64k;');
