@@ -113,16 +113,26 @@ it('limits non-order engine connections per client below the shared ceiling', ()
 });
 
 // Next BFF обслуговує всіх користувачів одним процесом: ingress обмежує кожну адресу клієнта.
-it('limits every frontend route per client address except static assets', () => {
+// Відсутній статичний файл Next рендерить сторінку 404, тож префікс статики теж має квоту.
+it('limits every frontend route per client address, static assets in their own zone', () => {
   const config = readFileSync(join(__dirname, '../../../../deploy/nginx/engine-lb.conf'), 'utf8');
-  const map = /map \$uri \$frontend_client_key \{\n([\s\S]*?)\n\}\n/.exec(config);
-  expect(map?.[1].split('\n').map((line) => line.trim())).toEqual([
+  const map = (name: string) =>
+    new RegExp(`map \\$uri \\$${name} \\{\\n([\\s\\S]*?)\\n\\}\\n`)
+      .exec(config)?.[1]
+      .split('\n')
+      .map((line) => line.trim());
+  expect(map('frontend_client_key')).toEqual([
     '~^/_next/static/ "";',
     'default $binary_remote_addr;',
+  ]);
+  expect(map('frontend_static_key')).toEqual([
+    '~^/_next/static/ $binary_remote_addr;',
+    'default "";',
   ]);
   const frontend = config.split(/\nserver \{\n/).find((server) => server.includes('listen 3000;'));
   // На рівні server, щоб ліміт успадкували всі location, зокрема довга звірка.
   expect(frontend).toMatch(/\n {2}limit_req zone=frontend_by_client burst=\d+ nodelay;\n/);
+  expect(frontend).toMatch(/\n {2}limit_req zone=frontend_static_by_client burst=\d+ nodelay;\n/);
   expect(frontend).not.toMatch(/\n {4,}limit_req /);
 });
 
